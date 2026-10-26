@@ -1,0 +1,928 @@
+#include "procfs.h"
+#include "procfs_internal.h"
+#include "ioctl_abi.h"
+#include "vfs.h"
+#include "kernel.h"
+#include "klib.h"
+#include "memory.h"
+#include "task.h"
+#include "shm.h"
+#include "proc.h"          /* sched_sleep_ticks (the timed sigwait) */
+#include "validate.h"
+
+// procfs_proc.c — per-process and system service nodes under /proc.
+//
+// These nodes exist so userspace (CactLib) can obtain and mutate per-process
+// state without a dedicated syscall: reading a node or running an ioctl on it
+// goes through the ordinary open/read/ioctl syscall path.  The node content is
+// resolved dynamically against current_task at access time.
+//
+//   /proc/self       directory for the calling process
+//   /proc/self/info  binary cact_proc_info_t (read-only)
+//   /proc/self/cwd   current working directory text (read-only)
+//   /proc/self/ctl   process control ioctls (setsid/setpgid/setuid/...)
+
+static vfs_node_t self_info_node;
+static vfs_node_t self_cwd_node;
+static vfs_node_t self_ctl_node;
+static vfs_node_t self_comm_node;
+
+vfs_node_t proc_self_dir;   // exported for the procfs root walk
+
+// Copy a fixed-size kernel buffer with file offset semantics into the
+// (pre-validated) user buffer supplied by read_vfs.
+static int _emit(const void *src, uint32_t len, uint32_t off, uint32_t size,
+                 char *buf) {
+    if (off >= len) return 0;
+    uint32_t n = len - off;
+    if (size < n) n = size;
+    memcpy(buf, (const char *)src + off, n);
+    return (int)n;
+}
+
+// Fill the info struct from |t| (NULL when there is no such process).
+static void _fill_info(const struct task_struct *t, cact_proc_info_t *info) {
+    memset(info, 0, sizeof(cact_proc_info_t));
+    if (!t) return;
+
+    info->pid  = t->pid;
+    info->ppid = t->proc ? t->proc->parent_pid : 0;
+    info->state = (uint32_t)t->state;
+    info->flags = t->is_kernel ? 1u : 0u;
+
+    if (!t->proc) return;
+    info->pgid  = t->proc->pgid;
+    info->sid   = t->proc->sid;
+    info->uid   = t->proc->uid;
+    info->gid   = t->proc->gid;
+    info->euid  = t->proc->euid;
+    info->egid  = t->proc->egid;
+    info->umask = t->proc->umask;
+}
+
+static int _info_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                      char *buf) {
+    (void)node;
+    cact_proc_info_t info;
+    _fill_info(current_task, &info);
+    return _emit(&info, sizeof(info), off, size, buf);
+}
+
+static int _cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                     char *buf) {
+    (void)node;
+    if (!current_task || !current_task->proc) return 0;
+    uint32_t len = 0;
+    while (current_task->proc->cwd[len] && len < sizeof(current_task->proc->cwd))
+        len++;
+    return _emit(current_task->proc->cwd, len, off, size, buf);
+}
+
+// /proc/self/comm — the calling process's command name, with a trailing
+// newline (Linux shape).
+static int _comm_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                      char *buf) {
+    (void)node;
+    if (!current_task) return 0;
+    char out[TASK_COMM_LEN + 1];
+    int n = task_comm_get(current_task->pid, out, TASK_COMM_LEN);
+    if (n <= 0) return 0;
+    out[n++] = '\n';
+    return _emit(out, (uint32_t)n, off, size, buf);
+}
+
+// ---- /proc/self/ctl ioctl handler --------------------------------------
+
+#ifndef EPERM
+#define EPERM 1
+#endif
+#ifndef ENOENT
+#define ENOENT 2
+#endif
+#ifndef ESRCH
+#define ESRCH 3
+#endif
+#ifndef EINVAL
+#define EINVAL 22
+#endif
+#ifndef EFAULT
+#define EFAULT 14
+#endif
+#ifndef ENOTDIR
+#define ENOTDIR 20
+#endif
+#ifndef EAGAIN
+#define EAGAIN 11          /* sigtimedwait()/a polled sigwait() timed out */
+#endif
+
+extern uint32_t timer_ticks_get(void);
+extern void schedule(void);
+
+// Signal masking bits (same scheme as proc->pending_signals/signal_mask).
+static const uint32_t _SIG_UNCATCHABLE = 0x00000003u;   // SIGKILL | SIGSTOP
+
+// May the calling task signal |pid|?  0 = yes, negative = -errno.
+static int _sig_permitted(uint32_t pid) {
+    if (current_task->proc->euid == 0) {
+        if (pid == 0 || pid == current_task->pid) return 0;
+        struct task_struct *t = task_list_head;
+        while (t) {
+            if (t->pid == pid) return 0;
+            t = t->next;
+        }
+        return -ESRCH;
+    }
+    if (pid != current_task->pid) {
+        struct task_struct *t = task_list_head;
+        while (t) {
+            if (t->pid == pid)
+                return (t->proc && t->proc->uid == current_task->proc->uid)
+                       ? 0 : -EPERM;
+            t = t->next;
+        }
+        return -ESRCH;
+    }
+    return 0;
+}
+
+// chdir() with a kernel-side path string.
+static int _self_chdir(const char *path) {
+    if (!path || !path[0]) return -EINVAL;
+
+    char abs[256];
+    if (path[0] == '/') {
+        int i = 0;
+        while (path[i] && i < 255) { abs[i] = path[i]; i++; }
+        abs[i] = '\0';
+    } else {
+        int p = 0;
+        for (int i = 0; current_task->proc->cwd[i] && p < 254; i++)
+            abs[p++] = current_task->proc->cwd[i];
+        if (p > 0 && abs[p-1] != '/') abs[p++] = '/';
+        for (int i = 0; path[i] && p < 255; i++)
+            abs[p++] = path[i];
+        abs[p] = '\0';
+    }
+
+    int segs_start[64], segs_len[64];
+    int nseg = 0;
+    const char *s = abs;
+    while (*s) {
+        while (*s == '/') s++;
+        if (!*s) break;
+        const char *seg = s;
+        int slen = 0;
+        while (*s && *s != '/') { s++; slen++; }
+        if (slen == 1 && seg[0] == '.') continue;
+        if (slen == 2 && seg[0] == '.' && seg[1] == '.') {
+            if (nseg > 0) nseg--;
+            continue;
+        }
+        if (nseg >= 64) break;
+        segs_start[nseg] = (int)(seg - abs);
+        segs_len[nseg]   = slen;
+        nseg++;
+    }
+
+    char norm[256];
+    if (nseg == 0) {
+        norm[0] = '/'; norm[1] = '\0';
+    } else {
+        int p = 0;
+        for (int i = 0; i < nseg && p < 254; i++) {
+            norm[p++] = '/';
+            for (int j = 0; j < segs_len[i] && p < 255; j++)
+                norm[p++] = abs[segs_start[i] + j];
+        }
+        norm[p] = '\0';
+    }
+
+    vfs_node_t *node = vfs_walk_path(vfs_root, norm);
+    if (!node || node->type != VFS_DIRECTORY) return -ENOTDIR;
+
+    int i = 0;
+    while (norm[i] && i < 255) { current_task->proc->cwd[i] = norm[i]; i++; }
+    current_task->proc->cwd[i] = '\0';
+    return 0;
+}
+
+static int _self_ctl_ioctl(vfs_node_t *node, uint32_t cmd, void *arg) {
+    (void)node;
+    if (!current_task || !current_task->proc) return -1;
+
+    switch (cmd) {
+    case CACT_PROCCTL_SETSID: {
+        current_task->proc->sid  = current_task->pid;
+        current_task->proc->pgid = current_task->pid;
+        return (int)current_task->proc->sid;
+    }
+
+    case CACT_PROCCTL_SETPGID: {
+        cact_pgid_arg_t a;
+        if (!arg) return -1;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -1;
+
+        struct task_struct *t;
+        if (a.pid == 0 || a.pid == current_task->pid) {
+            t = current_task;
+        } else {
+            t = 0;
+            struct task_struct *cur = task_list_head;
+            while (cur) {
+                if (cur->pid == a.pid) { t = cur; break; }
+                cur = cur->next;
+            }
+            if (!t || !t->proc) return -3;                  // ESRCH
+            /* POSIX: root may move any process; anyone may move one of their
+             * own children.  The shell relies on this to give a job its own
+             * process group before handing it the console. */
+            if (current_task->proc->euid != 0 &&
+                t->proc->parent_pid != current_task->pid)
+                return -1;                                  // EPERM
+        }
+        uint32_t pgid = (a.pgid == 0) ? t->pid : a.pgid;
+        t->proc->pgid = pgid;
+        return 0;
+    }
+
+    case CACT_PROCCTL_SETUID: {
+        uint32_t uid;
+        if (!arg) return -1;
+        if (copy_from_user(&uid, arg, sizeof(uid)) != 0) return -1;
+        if (current_task->proc->euid != 0 && uid != current_task->proc->uid)
+            return -1;
+        current_task->proc->uid  = uid;
+        current_task->proc->euid = uid;
+        return 0;
+    }
+
+    case CACT_PROCCTL_SETGID: {
+        uint32_t gid;
+        if (!arg) return -1;
+        if (copy_from_user(&gid, arg, sizeof(gid)) != 0) return -1;
+        if (current_task->proc->euid != 0 && gid != current_task->proc->gid)
+            return -1;
+        current_task->proc->gid  = gid;
+        current_task->proc->egid = gid;
+        return 0;
+    }
+
+    case CACT_PROCCTL_UMASK: {
+        uint32_t mask;
+        if (!arg) return -1;
+        if (copy_from_user(&mask, arg, sizeof(mask)) != 0) return -1;
+        uint32_t old = current_task->proc->umask;
+        current_task->proc->umask = mask & 0777;
+        return (int)old;
+    }
+
+    case CACT_PROCCTL_CHDIR: {
+        if (!validate_user_str((const char *)arg)) return -EFAULT;
+        char *k = copy_path_from_user((const char *)arg);
+        if (!k) return -EFAULT;
+        int r = _self_chdir(k);
+        kfree(k);
+        return r;
+    }
+
+    case CACT_PROCCTL_CHROOT: {
+        if (current_task->proc->euid != 0) return -EPERM;
+        if (!validate_user_str((const char *)arg)) return -EFAULT;
+        char *k = copy_path_from_user((const char *)arg);
+        if (!k) return -EFAULT;
+        vfs_node_t *n = vfs_resolve_path(k);
+        kfree(k);
+        if (!n || n->type != VFS_DIRECTORY) return -ENOTDIR;
+        current_task->proc->root = n;
+        pr_notice("%s: chroot by pid %d\n", "proc", current_task->pid);
+        return 0;
+    }
+
+    case CACT_PROCCTL_SIGNAL: {
+        cact_signal_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        int p = _sig_permitted(a.pid);
+        if (p) return p;
+        /* signum — kernel signal index (mask bit). 0 = SIGKILL (forced). */
+        if (a.signum == 0) { task_kill(a.pid); return 0; }
+        if (a.signum >= NSIG) return -EINVAL;
+        /* task_signal() takes the pending_signals *mask*, not the bit index:
+         * passing the index raw set SIGKILL|SIGTERM for kill(SIGCONT), so
+         * every userspace kill() killed the target instead of signalling it. */
+        task_signal(a.pid, 1u << a.signum);
+        return 0;
+    }
+
+    case CACT_PROCCTL_KILLPG: {
+        cact_killpg_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (a.pgid == 0) return -EINVAL;
+        if (a.signum >= NSIG) return -EINVAL;
+        if (current_task->proc->euid != 0 && current_task->proc->pgid != a.pgid) {
+            /* Not the caller's own group: allowed only for a group one of its
+             * children is in — which is how a shell resumes a job it created. */
+            int mine = 0;
+            for (struct task_struct *it = task_list_head; it && !mine; it = it->next) {
+                if (it->proc && it->proc->pgid == a.pgid &&
+                    it->proc->parent_pid == current_task->pid) mine = 1;
+            }
+            if (!mine) return -1;                           // EPERM
+        }
+        /* Same convention as PROCCTL_SIGNAL: `signum` is the kernel bit index. */
+        task_signal_pgid(a.pgid, 1u << a.signum);
+        return 0;
+    }
+
+    case CACT_PROCCTL_SIGACTION: {
+        cact_sigaction_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (a.signum >= NSIG) return -EINVAL;
+        // Reject handlers in kernel space (SIG_DFL=0 / SIG_IGN=1 allowed).
+        if (a.handler > 1 &&
+            (a.handler < USER_SPACE_START || a.handler >= KERNEL_BASE))
+            return -EINVAL;
+        return task_sigaction(current_task, a.signum, a.handler, a.flags, a.mask);
+    }
+
+    case CACT_PROCCTL_SIGALTSTACK: {
+        cact_sigaltstack_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+
+        proc_metadata_t* p = current_task->proc;
+        uint32_t onstack = p->altstack_flags & CACT_SS_ONSTACK;  /* may be running on it now */
+
+        a.old_sp    = p->altstack_sp;
+        a.old_size  = p->altstack_size;
+        a.old_flags = p->altstack_flags;
+
+        if (a.sp == 0 && a.size == 0 && a.flags == 0) {
+            /* query only */
+        } else if (a.flags & CACT_SS_DISABLE) {
+            p->altstack_sp    = 0;
+            p->altstack_size  = 0;
+            p->altstack_flags = onstack | CACT_SS_DISABLE;
+        } else {
+            if (a.size < CACT_MINSIGSTKSZ) return -EINVAL;
+            if (a.sp < USER_SPACE_START) return -EINVAL;
+            if (a.sp + a.size < a.sp) return -EINVAL;             /* overflow */
+            if (a.sp + a.size > KERNEL_BASE) return -EINVAL;      /* stays in the user window */
+            p->altstack_sp    = a.sp;
+            p->altstack_size  = a.size;
+            p->altstack_flags = onstack;
+        }
+
+        if (copy_to_user(arg, &a, sizeof(a)) != 0) return -EFAULT;
+        return 0;
+    }
+
+    case CACT_PROCCTL_SIGPROCMASK: {
+        cact_sigprocmask_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        uint32_t old = current_task->proc->signal_mask;
+        switch (a.how) {
+        case 0: current_task->proc->signal_mask = old | a.set;      break;  // SIG_BLOCK
+        case 1: current_task->proc->signal_mask = old & ~a.set;     break;  // SIG_UNBLOCK
+        case 2: current_task->proc->signal_mask = a.set;            break;  // SIG_SETMASK
+        default: return -EINVAL;
+        }
+        a.oldset = old;
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_PROCCTL_SIGPENDING: {
+        if (!arg || !validate_user_ptr(arg, sizeof(uint32_t))) return -EFAULT;
+        *(uint32_t *)arg = current_task->proc->pending_signals &
+                           current_task->proc->signal_mask;
+        return 0;
+    }
+
+    case CACT_PROCCTL_SIGSUSPEND: {
+        uint32_t sigmask;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&sigmask, arg, sizeof(sigmask)) != 0) return -EFAULT;
+        if (current_task->is_kernel) return -1;
+        current_task->proc->saved_signal_mask = current_task->proc->signal_mask;
+        current_task->proc->signal_mask = sigmask & ~_SIG_UNCATCHABLE;
+        current_task->proc->in_sigsuspend = 1;
+        /* Park atomically: `task_park_state` does the Zombie check under
+         * SCHEDULER_LOCK, so the tick that marks a terminated task Zombie cannot
+         * slip in between the check and the state write and resurrect us.  If
+         * the task is already Zombie it is left as-is and switched away. */
+        (void)task_park_state(TASK_SLEEPING);
+        schedule();   // woken by a delivered signal
+        return -1;
+    }
+
+    case CACT_PROCCTL_ALARM: {
+        uint32_t seconds;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&seconds, arg, sizeof(seconds)) != 0) return -EFAULT;
+        uint32_t now = timer_ticks_get();
+        uint32_t remaining = 0;
+        if (current_task->proc->alarm_ticks) {
+            uint32_t left = (current_task->proc->alarm_ticks > now)
+                            ? (current_task->proc->alarm_ticks - now) : 0;
+            remaining = (left + 99) / 100;   // 100 Hz ticks -> seconds
+        }
+        if (seconds == 0)
+            current_task->proc->alarm_ticks = 0;
+        else
+            current_task->proc->alarm_ticks = now + seconds * 100;
+        return (int)remaining;
+    }
+
+    case CACT_PROCCTL_SETITIMER: {
+        cact_itimerval_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        uint32_t now = timer_ticks_get();
+
+        if (current_task->proc->itimer_value &&
+            current_task->proc->itimer_value > now) {
+            uint32_t left = current_task->proc->itimer_value - now;
+            a.old_value_ms = left * 10;   // 100 Hz ticks -> ms
+        } else {
+            a.old_value_ms = 0;
+        }
+        a.old_interval_ms = current_task->proc->itimer_interval * 10;
+
+        uint32_t val_ticks = (a.it_value_ms + 9) / 10;
+        uint32_t int_ticks = (a.it_interval_ms + 9) / 10;
+        if (val_ticks == 0) {
+            current_task->proc->itimer_value    = 0;
+            current_task->proc->itimer_interval = 0;
+        } else {
+            current_task->proc->itimer_value    = now + val_ticks;
+            current_task->proc->itimer_interval = int_ticks;
+        }
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_PROCCTL_SHMGET: {
+        cact_shmget_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return shm_get((int)a.key, a.size, (int)a.flags);
+    }
+
+    case CACT_PROCCTL_SHMAT: {
+        cact_shmat_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        uint32_t addr = shm_at((int)a.shmid, a.addr, (int)a.flags);
+        a.addr = addr;
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_PROCCTL_SHMDT: {
+        uint32_t addr;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&addr, arg, sizeof(addr)) != 0) return -EFAULT;
+        return shm_dt(addr);
+    }
+
+    case CACT_PROCCTL_SHMCTL: {
+        cact_shmctl_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (a.buf && !validate_user_ptr(a.buf, 64)) return -EFAULT;
+        return shm_ctl((int)a.shmid, (int)a.cmd, a.buf);
+    }
+
+    case CACT_PROCCTL_THREAD_CREATE:
+        return proc_thread_create(arg);
+
+    case CACT_PROCCTL_THREAD_EXIT: {
+        uint32_t code = 0;
+        if (arg && copy_from_user(&code, arg, sizeof(code)) != 0) return -EFAULT;
+        return proc_thread_exit(code);   /* sched_task_exit never returns */
+    }
+
+    case CACT_PROCCTL_FUTEX:
+        return proc_futex(arg);
+
+    case CACT_PROCCTL_GET_TID:
+        return proc_thread_gettid();
+
+    case CACT_PROCCTL_SET_TLS: {
+        uint32_t base = 0;
+        if (arg && copy_from_user(&base, arg, sizeof(base)) != 0) return -EFAULT;
+        return proc_set_tls(base);
+    }
+
+    case CACT_PROCCTL_YIELD:
+        /* sched_yield(2): give up the CPU to another runnable task.  `schedule`
+         * parks this task at the tail of its level and switches away; with
+         * nothing else runnable it returns and the caller keeps the CPU
+         * (POSIX's own wording for sched_yield). */
+        schedule();
+        return 0;
+
+    case CACT_PROCCTL_SIGWAIT: {
+        cact_sigwait_arg_t a;
+        uint32_t set, hit;
+        int bit;
+
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (current_task->is_kernel) return -1;
+        /* SIGKILL/SIGSTOP can be neither blocked nor caught, so waiting for one
+         * is meaningless — strip them rather than swallow a kill. */
+        set = a.set & ~(uint32_t)(SIGKILL | SIGSTOP);
+        if (set == 0) return -EINVAL;
+
+        if (a.timeout_ms == 0) {
+            if (!(current_task->proc->pending_signals & set)) return -EAGAIN;
+        } else if (a.timeout_ms < 0) {
+            /* Unbounded: a signal in `set` wakes us, because the waiter is marked
+             * with sigwait_set and task_signal_locked looks at that (see
+             * task_park_sigwait).  No polling — a task sitting in sigwait() must
+             * let its core go idle. */
+            for (;;) {
+                uint32_t r = task_park_sigwait(set);
+                if (r == 2) return -1;          /* Zombie: let the exit path run */
+                if (r == 1) break;              /* one of `set` is pending */
+                schedule();
+            }
+            current_task->proc->sigwait_set = 0;
+        } else {
+            /* Timed (sigtimedwait): the timeout lives here, polling the timer
+             * wheel in one-tick slices.  A wheel park is not signal-interruptible
+             * — the wake path unlinks the *blocked* queue, not the wheel — so
+             * this is the only correct way to bound the wait. */
+            uint32_t deadline = timer_ticks_get() + ((uint32_t)a.timeout_ms + 9u) / 10u;
+            while (!(current_task->proc->pending_signals & set)) {
+                if ((int32_t)(timer_ticks_get() - deadline) >= 0) return -EAGAIN;
+                sched_sleep_ticks(1);
+            }
+        }
+
+        /* Consume the lowest-numbered signal of the set: that is what sigwait()
+         * means, and why a handler installed for it does not run. */
+        hit = current_task->proc->pending_signals & set;
+        bit = 0;
+        while (bit < NSIG && !(hit & 1u)) { hit >>= 1; bit++; }
+        current_task->proc->pending_signals &= ~(1u << bit);
+        a.signum = (uint32_t)bit;
+        a.code   = current_task->proc->signal_codes[bit];
+        a.value  = current_task->proc->signal_value;
+        current_task->proc->signal_codes[bit] = CACT_SI_USER;
+        current_task->proc->signal_value      = 0;
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_PROCCTL_SIGQUEUE: {
+        cact_sigqueue_arg_t a;
+        int p;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        p = _sig_permitted(a.pid);
+        if (p) return p;
+        /* Like CACT_PROCCTL_SIGNAL, `signum` is the signal's index; unlike it, 0
+         * (SIGKILL) is refused — a kill cannot carry a value. */
+        if (a.signum == 0 || a.signum >= NSIG) return -EINVAL;
+        task_signal_value(a.pid, 1u << a.signum, a.value);
+        return 0;
+    }
+
+    default:
+        pr_debug("%s: unknown ctl ioctl 0x%x\n", "proc", cmd);
+        return -1;
+    }
+}
+
+// ---- node ops -----------------------------------------------------------
+
+static vfs_ops_t self_info_ops = { .read = _info_read };
+static vfs_ops_t self_cwd_ops  = { .read = _cwd_read };
+static vfs_ops_t self_comm_ops = { .read = _comm_read };
+static vfs_ops_t self_ctl_ops  = { .ioctl = _self_ctl_ioctl };
+
+static vfs_dirent_t _self_de;
+
+static vfs_node_t *_self_walk(vfs_node_t *dir, const char *name) {
+    (void)dir;
+    if (streq(name, "info")) return &self_info_node;
+    if (streq(name, "cwd"))  return &self_cwd_node;
+    if (streq(name, "ctl"))  return &self_ctl_node;
+    if (streq(name, "comm")) return &self_comm_node;
+    return 0;
+}
+
+static vfs_dirent_t *_self_readdir(vfs_node_t *dir, uint32_t index) {
+    (void)dir;
+    const char *name = 0;
+    switch (index) {
+    case 0:  name = "info"; break;
+    case 1:  name = "cwd";  break;
+    case 2:  name = "ctl";  break;
+    case 3:  name = "comm"; break;
+    default: return 0;
+    }
+    strlcpy(_self_de.name, name, 128);
+    _self_de.inode = index + 1;
+    return &_self_de;
+}
+
+static void _self_listdir(vfs_node_t *dir) {
+    (void)dir;
+    printk("  info\n  cwd\n  ctl\n  comm\n");
+}
+
+static vfs_ops_t self_dir_ops = {
+    .walk    = _self_walk,
+    .readdir = _self_readdir,
+    .listdir = _self_listdir,
+};
+
+// ---- /proc/<pid> -------------------------------------------------------
+//
+// Linux-shaped numeric process directories: one /proc/<pid>/ per live task,
+// exposing the same read-only view as /proc/self — `info` (binary
+// cact_proc_info_t) and `cwd`.  Process *control* is deliberately not
+// published here: every CACT_PROCCTL_* command mutates the caller's own
+// process state, so it stays on /proc/self/ctl.
+//
+// Slots are recycled.  dir/info/cwd carry the pid they were built for in
+// `inode`, and the slot's own `pid` changes when the owner dies and the slot
+// is handed to a new task; walks and reads compare the two, so a node (or an
+// fd) that outlives its process reports -ENOENT instead of the new owner's
+// data.
+//
+// scheduler_lock guards both the task list and this table, so a lookup never
+// races a reap (task_reap unlinks under the same lock, then frees).
+
+#define PROC_PID_SLOTS 64
+
+typedef struct proc_pid_slot {
+    uint32_t   pid;        // 0 = slot never used
+    vfs_node_t dir;
+    vfs_node_t info;
+    vfs_node_t cwd;
+    vfs_node_t comm;
+} proc_pid_slot_t;
+
+static proc_pid_slot_t _pid_slots[PROC_PID_SLOTS];
+static vfs_dirent_t    _pid_de;
+
+// All-digits, non-zero, <= 2^31-1.
+static int _parse_pid(const char *s, uint32_t *out) {
+    if (!s || !*s) return -1;
+    uint32_t v = 0;
+    for (const char *p = s; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;
+        v = v * 10u + (uint32_t)(*p - '0');
+        if (v > 0x7FFFFFFFu) return -1;
+    }
+    if (v == 0) return -1;
+    *out = v;
+    return 0;
+}
+
+// Caller must hold scheduler_lock.
+static struct task_struct *_find_task_locked(uint32_t pid) {
+    struct task_struct *head = (struct task_struct *)task_list_head;
+    struct task_struct *t    = head;
+    if (!t) return 0;
+    do {
+        if (t->pid == pid) return t;
+        t = t->next;
+    } while (t && t != head);
+    return 0;
+}
+
+// May |t|'s /proc view be read by the caller?  Root and the owner (or the task
+// itself) may — the ptrace-style default, and no stricter than the flat
+// /proc/tasks file this replaces, which was readable by everyone.
+static int _may_read(const struct task_struct *t) {
+    if (!current_task || !current_task->proc) return 1;
+    if (current_task->is_kernel) return 1;
+    if (current_task->proc->euid == 0) return 1;
+    if (t->pid == current_task->pid) return 1;
+    return t->proc && t->proc->uid == current_task->proc->uid;
+}
+
+static int _pid_info_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                          char *buf) {
+    proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
+    if (!s || s->pid != node->inode) return -ENOENT;
+
+    cact_proc_info_t info;
+    int rc = 0;
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(s->pid);
+    if (!t)                  rc = -ENOENT;
+    else if (!_may_read(t))  rc = -EPERM;
+    else                     _fill_info(t, &info);
+    irq_spinlock_release(&scheduler_lock);
+
+    if (rc) return rc;
+    return _emit(&info, sizeof(info), off, size, buf);
+}
+
+static int _pid_cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                         char *buf) {
+    proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
+    if (!s || s->pid != node->inode) return -ENOENT;
+
+    char path[256];
+    uint32_t len = 0;
+    int rc = 0;
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(s->pid);
+    if (!t || !t->proc)      rc = -ENOENT;
+    else if (!_may_read(t))  rc = -EPERM;
+    else {
+        // Snapshot under the lock: the owner may be inside chdir().
+        memcpy(path, t->proc->cwd, sizeof(path) - 1);
+        path[sizeof(path) - 1] = '\0';
+        while (path[len]) len++;
+    }
+    irq_spinlock_release(&scheduler_lock);
+
+    if (rc) return rc;
+    return _emit(path, len, off, size, buf);
+}
+
+static int _pid_comm_read(vfs_node_t *node, uint32_t off, uint32_t size,
+                          char *buf) {
+    proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
+    if (!s || s->pid != node->inode) return -ENOENT;
+
+    char name[TASK_COMM_LEN + 1];
+    uint32_t len = 0;
+    int rc = 0;
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(s->pid);
+    if (!t)                  rc = -ENOENT;
+    else if (!_may_read(t))  rc = -EPERM;
+    else {
+        int n = task_comm_get(s->pid, name, TASK_COMM_LEN);
+        if (n <= 0) { name[0] = '?'; n = 1; }
+        name[n++] = '\n';
+        len = (uint32_t)n;
+    }
+    irq_spinlock_release(&scheduler_lock);
+
+    if (rc) return rc;
+    return _emit(name, len, off, size, buf);
+}
+
+static vfs_node_t *_pid_walk(vfs_node_t *dir, const char *name) {
+    proc_pid_slot_t *s = (proc_pid_slot_t *)dir->priv;
+    if (!s || s->pid != dir->inode) return 0;   // dir node recycled under us
+    if (streq(name, "info")) return &s->info;
+    if (streq(name, "cwd"))  return &s->cwd;
+    if (streq(name, "comm")) return &s->comm;
+    return 0;
+}
+
+static vfs_dirent_t *_pid_readdir(vfs_node_t *dir, uint32_t index) {
+    (void)dir;
+    const char *name = 0;
+    switch (index) {
+    case 0:  name = "info"; break;
+    case 1:  name = "cwd";  break;
+    case 2:  name = "comm"; break;
+    default: return 0;
+    }
+    strlcpy(_pid_de.name, name, 128);
+    _pid_de.inode = index + 1;
+    return &_pid_de;
+}
+
+static void _pid_listdir(vfs_node_t *dir) {
+    (void)dir;
+    printk("  info\n  cwd\n  comm\n");
+}
+
+static vfs_ops_t _pid_dir_ops  = {
+    .walk    = _pid_walk,
+    .readdir = _pid_readdir,
+    .listdir = _pid_listdir,
+};
+static vfs_ops_t _pid_info_ops = { .read = _pid_info_read };
+static vfs_ops_t _pid_cwd_ops  = { .read = _pid_cwd_read };
+static vfs_ops_t _pid_comm_ops = { .read = _pid_comm_read };
+
+// Caller must hold scheduler_lock.
+static void _slot_init(proc_pid_slot_t *s, uint32_t pid) {
+    memset(s, 0, sizeof(*s));
+    s->pid = pid;
+
+    s->dir.type  = VFS_DIRECTORY;
+    s->dir.ops   = &_pid_dir_ops;
+    s->dir.priv  = s;
+    s->dir.inode = pid;
+    snprintf(s->dir.name, sizeof(s->dir.name), "%u", pid);
+
+    s->info.type  = VFS_FILE;
+    s->info.ops   = &_pid_info_ops;
+    s->info.priv  = s;
+    s->info.inode = pid;
+    strlcpy(s->info.name, "info", 128);
+
+    s->cwd.type  = VFS_FILE;
+    s->cwd.ops   = &_pid_cwd_ops;
+    s->cwd.priv  = s;
+    s->cwd.inode = pid;
+    strlcpy(s->cwd.name, "cwd", 128);
+
+    s->comm.type  = VFS_FILE;
+    s->comm.ops   = &_pid_comm_ops;
+    s->comm.priv  = s;
+    s->comm.inode = pid;
+    strlcpy(s->comm.name, "comm", 128);
+}
+
+// Caller must hold scheduler_lock.  The slot for |pid|, recycling one whose
+// owner has left the task list when it has to.  NULL only when all 64 slots
+// are held by live tasks.
+static proc_pid_slot_t *_slot_locked(uint32_t pid) {
+    proc_pid_slot_t *victim = 0;
+    for (int i = 0; i < PROC_PID_SLOTS; i++) {
+        proc_pid_slot_t *s = &_pid_slots[i];
+        if (s->pid == pid) return s;
+        if (!victim && (s->pid == 0 || !_find_task_locked(s->pid)))
+            victim = s;
+    }
+    if (!victim) return 0;
+    _slot_init(victim, pid);
+    return victim;
+}
+
+// procfs.c: map a /proc entry name to that process's directory.
+vfs_node_t *procfs_proc_pid_dir(const char *name) {
+    uint32_t pid;
+    if (_parse_pid(name, &pid) != 0) return 0;
+
+    vfs_node_t *node = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    if (_find_task_locked(pid)) {
+        proc_pid_slot_t *s = _slot_locked(pid);
+        if (s) node = &s->dir;
+    }
+    irq_spinlock_release(&scheduler_lock);
+    return node;
+}
+
+// procfs.c: k-th live pid in task-list order, for readdir/listdir.  pid 0 is
+// the scheduler's idle task — Linux keeps the swapper out of /proc, so skip it
+// (it has no proc metadata anyway, and /proc/0 would not resolve).
+int procfs_proc_pid_at(uint32_t index, uint32_t *pid_out) {
+    int rc = -1;
+    uint32_t i = 0;
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *head = (struct task_struct *)task_list_head;
+    struct task_struct *t    = head;
+    if (t) do {
+        if (t->pid != 0 && i++ == index) { *pid_out = t->pid; rc = 0; break; }
+        t = t->next;
+    } while (t && t != head);
+    irq_spinlock_release(&scheduler_lock);
+
+    return rc;
+}
+
+// Register the per-process service subtree.
+void procfs_proc_init(void) {
+    memset(_pid_slots, 0, sizeof(_pid_slots));
+
+    memset(&proc_self_dir, 0, sizeof(vfs_node_t));
+    strlcpy(proc_self_dir.name, "self", 128);
+    proc_self_dir.type = VFS_DIRECTORY;
+    proc_self_dir.ops  = &self_dir_ops;
+
+    memset(&self_info_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_info_node.name, "info", 128);
+    self_info_node.type = VFS_FILE;
+    self_info_node.ops  = &self_info_ops;
+    self_info_node.uid  = 0;
+
+    memset(&self_cwd_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_cwd_node.name, "cwd", 128);
+    self_cwd_node.type = VFS_FILE;
+    self_cwd_node.ops  = &self_cwd_ops;
+
+    memset(&self_comm_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_comm_node.name, "comm", 128);
+    self_comm_node.type = VFS_FILE;
+    self_comm_node.ops  = &self_comm_ops;
+
+    memset(&self_ctl_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_ctl_node.name, "ctl", 128);
+    self_ctl_node.type = VFS_FILE;
+    self_ctl_node.ops  = &self_ctl_ops;
+
+    pr_info("%s: /proc/self ready (info, cwd, comm, ctl)\n", "proc");
+    pr_info("%s: /proc/<pid> ready (info, cwd, comm)\n", "proc");
+}

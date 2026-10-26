@@ -1,0 +1,146 @@
+#include "proc.h"
+#include "proc_mm.h"
+#include "vfs.h"
+#include "validate.h"
+#include "tty.h"
+
+// Maximum number of argv/envp entries to validate (prevents runaway loops)
+#define EXEC_VALIDATE_MAX 256
+
+// getpid() — return the calling process's PID
+int sys_get_pid(void) {
+    return (int)current_task->pid;
+}
+
+// getppid() — return the parent process's PID
+int sys_getppid(void) {
+    if (!current_task) return -1;
+    return (int)current_task->proc->parent_pid;
+}
+
+// fork() — create a child process that is a copy of the caller
+int sys_fork(struct syscall_frame* regs) {
+    // Copy the syscall frame into a context_frame for task_fork
+    struct context_frame cf;
+    cf.es        = regs->es;        cf.ds       = regs->ds;
+    cf.edi       = regs->edi;       cf.esi      = regs->esi;
+    cf.ebp       = regs->ebp;       cf.esp_dummy= regs->esp_dummy;
+    cf.ebx       = regs->ebx;       cf.edx      = regs->edx;
+    cf.ecx       = regs->ecx;       cf.eax      = regs->eax;
+    cf.eip       = regs->eip;       cf.cs       = regs->cs;
+    cf.eflags    = regs->eflags;
+    cf.useresp   = regs->useresp;   cf.ss       = regs->ss;
+    struct task_struct* child = task_fork(&cf);
+    if (!child) {
+        return -1;
+    }
+    task_comm_inherit((uint32_t)child->pid, current_task->pid);
+    return (int)child->pid;   // child sees 0, parent sees child PID
+}
+
+// exec() — replace the current process image with a new program
+int sys_exec(struct syscall_frame* regs) {
+    char* path = (char*)regs->ebx;
+
+    char** argv = (char**)regs->ecx;
+    char** envp = (char**)regs->edx;
+
+    // Validate argv array and each string pointer. The array ends at its first
+    // NULL entry, so only the slots up to that terminator may be required to
+    // live in userspace: a fixed-length window would reject a perfectly valid
+    // argv sitting near the top of the user stack (which ends at KERNEL_BASE).
+    if (argv) {
+        for (int i = 0; i < EXEC_VALIDATE_MAX; i++) {
+            if ((uint32_t)&argv[i] < USER_SPACE_START || (uint32_t)&argv[i] >= KERNEL_BASE) return -1;
+            if (!argv[i]) break;
+            if (!validate_user_str(argv[i])) return -1;
+        }
+    }
+
+    // Validate envp array and each string pointer (same NULL-terminated rule).
+    if (envp) {
+        for (int i = 0; i < EXEC_VALIDATE_MAX; i++) {
+            if ((uint32_t)&envp[i] < USER_SPACE_START || (uint32_t)&envp[i] >= KERNEL_BASE) return -1;
+            if (!envp[i]) break;
+            if (!validate_user_str(envp[i])) return -1;
+        }
+    }
+
+    // Check execute permission on the file — uses kernel copy of path
+    char *kpath = copy_path_from_user(path);
+    if (!kpath) return -1;
+
+    vfs_node_t* exec_node = _resolve_path(kpath);
+    if (!exec_node || vfs_check_perm(exec_node, VFS_PERM_EXEC) < 0) {
+        kfree(kpath);
+        return -1;
+    }
+
+    struct context_frame cf;
+    cf.eip     = regs->eip;
+    cf.cs      = regs->cs;
+    cf.eflags  = regs->eflags;
+    cf.useresp = regs->useresp;
+    cf.ss      = regs->ss;
+    task_comm_set_path(current_task->pid, kpath);
+    int ret = task_exec(kpath, argv, envp, &cf);   // never returns on success
+    kfree(kpath);
+    return ret;
+}
+
+// exit() — terminate the calling process
+int sys_exit(struct syscall_frame* regs) {
+    if (!current_task) return -1;
+
+    // Drop the console's foreground process group once its last member is gone.
+    // A stale pgid would swallow ^C (the line discipline only hands the byte
+    // through to a raw-mode reader when no foreground group is set) instead of
+    // letting the shell's line editor see it.
+    if (terminal_fg_pgid != 0 && current_task->proc &&
+        terminal_fg_pgid == current_task->proc->pgid) {
+        int still_alive = 0;
+        for (struct task_struct *it = task_list_head; it; it = it->next) {
+            if (it == current_task || !it->proc) continue;
+            if (it->proc->pgid == terminal_fg_pgid) { still_alive = 1; break; }
+        }
+        if (!still_alive) terminal_fg_pgid = 0;
+    }
+
+    // Drop the process's controlling-terminal assignment
+    tty_clear_ctty(current_task->pid);
+
+    // exit() ends the whole process, not just the calling thread: ask every
+    // other thread of the group to die too.  pthread_exit() uses the separate
+    // CACT_PROCCTL_THREAD_EXIT path, which ends only the caller.
+    task_signal_group(current_task->pid, SIGKILL);
+
+    sched_task_exit((int)regs->ebx);   // sets zombie state, reschedules
+
+    // Safety net: if schedule() returns, spin forever in HLT
+    for (;;)
+        __asm__ volatile ("hlt");
+}
+
+// waitpid() — wait for a child process to change state
+int sys_waitpid(struct syscall_frame* regs) {
+    int  target_pid = (int)regs->ebx;
+    int* status     = (int*)regs->ecx;
+    int  options    = (int)regs->edx;
+
+    if (!current_task) return -1;
+    if (status && !validate_user_ptr(status, sizeof(int))) return -1;
+
+    return sched_waitpid(target_pid, status, options);
+}
+
+// sleep() — sleep for a given number of milliseconds
+int sys_sleep(struct syscall_frame* regs) {
+    uint32_t ms = regs->ebx;
+    if (!current_task) return -1;
+    if (ms == 0) return 0;
+
+    // Convert ms to timer ticks (100 Hz = 10 ms per tick)
+    uint32_t ticks = (ms + 9) / 10;
+    sched_sleep_ticks(ticks);
+    return 0;
+}

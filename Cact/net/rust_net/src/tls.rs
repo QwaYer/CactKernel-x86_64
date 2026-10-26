@@ -1,0 +1,685 @@
+//! TLS via vendored rustls: full handshake and application data transfer over a
+//! connected TCP socket, driven by a poll/sleep loop so it works with the
+//! non-blocking smoltcp-backed `tcp_*` layer.
+//!
+//! Two configs are available:
+//!   * verified (the default) — webpki roots and standard chain verification,
+//!     backed by `cact_crypto`'s `SignatureVerificationAlgorithm`s (RSA
+//!     PKCS#1/PSS, ECDSA P-256/P-384).  The HTTP client uses this unless the
+//!     caller asks otherwise.
+//!   * skip-verify — `dangerous()` custom verifier that accepts any chain.
+//!     Selected explicitly (`CACT_HTTP_FLAG_INSECURE_TLS` / `skip_verify != 0`)
+//!     for environments with no trustworthy clock, where a valid chain would
+//!     fail on its validity dates anyway.
+//!
+//! The C ABI (`cact_tls_connect/send/recv/close`) is preserved for external
+//! callers; the in-crate API (`TlsStream`) is what the HTTP client uses.
+
+use alloc::string::String;
+use alloc::sync::Arc;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ffi::{c_int, c_void};
+
+use cact_crypto::provider::cact_crypto_provider;
+use rustls::client::UnbufferedClientConnection;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+use rustls::conn::unbuffered::ConnectionState;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::time_provider::TimeProvider;
+use rustls::{ClientConfig, DigitallySignedStruct, Error, SignatureScheme};
+
+use crate::ffi_kernel;
+
+const TLS_MAX_CONNECTIONS: usize = 4;
+const BUF_SIZE: usize = 16384;
+const HANDSHAKE_TIMEOUT_TICKS: u32 = 600;
+const IO_TIMEOUT_TICKS: u32 = 600;
+
+/// Read outcomes for [`TlsStream`] (non-blocking style).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TlsRead {
+    /// `n` plaintext bytes were copied into the caller buffer.
+    Data(usize),
+    /// No plaintext available right now; try again after a short sleep.
+    WouldBlock,
+    /// Peer sent close_notify (or the connection is fully closed).
+    Closed,
+    /// Fatal TLS or transport error.
+    Err,
+}
+
+/// TLS connection bound to an open, established TCP socket index (`sock`).
+pub(crate) struct TlsStream {
+    conn: UnbufferedClientConnection,
+    sock: c_int,
+    inbuf: Vec<u8>,
+    outbuf: Vec<u8>,
+    ready_plaintext: Vec<u8>,
+    plaintext_off: usize,
+}
+
+#[derive(Debug)]
+struct CactTimeProvider;
+
+impl TimeProvider for CactTimeProvider {
+    fn current_time(&self) -> Option<UnixTime> {
+        let now = cact_shim::time::SystemTime::now()
+            .duration_since(cact_shim::time::UNIX_EPOCH)
+            .ok()?;
+        Some(UnixTime::since_unix_epoch(core::time::Duration::from_secs(now.as_secs())))
+    }
+}
+
+/// Accepts every certificate chain.  Only reachable when a caller explicitly
+/// asks for an unverified connection; the default path verifies against the
+/// webpki roots with `cact_crypto`'s signature algorithms.
+#[derive(Debug)]
+struct NoVerifyVerifier;
+
+impl ServerCertVerifier for NoVerifyVerifier {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &CertificateDer<'_>,
+        _intermediates: &[CertificateDer<'_>],
+        _server_name: &ServerName<'_>,
+        _ocsp_response: &[u8],
+        _now: UnixTime,
+    ) -> Result<ServerCertVerified, Error> {
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        _message: &[u8],
+        _cert: &CertificateDer<'_>,
+        _dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, Error> {
+        Ok(HandshakeSignatureValid::assertion())
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        vec![
+            SignatureScheme::RSA_PSS_SHA256,
+            SignatureScheme::RSA_PSS_SHA384,
+            SignatureScheme::RSA_PSS_SHA512,
+            SignatureScheme::RSA_PKCS1_SHA256,
+            SignatureScheme::RSA_PKCS1_SHA384,
+            SignatureScheme::RSA_PKCS1_SHA512,
+            SignatureScheme::ECDSA_NISTP256_SHA256,
+            SignatureScheme::ECDSA_NISTP384_SHA384,
+        ]
+    }
+}
+
+fn make_config(skip_verify: bool) -> Arc<ClientConfig> {
+    let provider = cact_crypto_provider();
+    if skip_verify {
+        return Arc::new(
+            ClientConfig::builder_with_details(Arc::new(provider), Arc::new(CactTimeProvider))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(NoVerifyVerifier))
+                .with_no_client_auth(),
+        );
+    }
+    let mut root_store = rustls::RootCertStore::empty();
+    for ta in webpki_roots::TLS_SERVER_ROOTS.iter() {
+        root_store.roots.push(rustls::pki_types::TrustAnchor {
+            subject: ta.subject.as_ref().into(),
+            subject_public_key_info: ta.subject_public_key_info.as_ref().into(),
+            name_constraints: ta.name_constraints.as_ref().map(|nc| nc.as_ref().into()),
+        });
+    }
+    Arc::new(
+        ClientConfig::builder_with_details(Arc::new(provider), Arc::new(CactTimeProvider))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(root_store)
+            .with_no_client_auth(),
+    )
+}
+
+// SAFETY: backed by the C-ABI tcp_recv exported by this crate.
+unsafe extern "C" {
+    fn tcp_recv(sock: c_int, buf: *mut u8, max_len: u16) -> i32;
+}
+
+/// Current kernel tick counter (safe wrapper).
+fn now_ticks() -> u32 {
+    // SAFETY: ffi_kernel re-exports the C timer.
+    unsafe { ffi_kernel::timer_ticks_get() }
+}
+
+/// Sleep for `t` ticks (safe wrapper).
+fn sleep_ticks(t: u32) {
+    // SAFETY: ffi_kernel re-exports the C scheduler sleep.
+    unsafe { sched::timer_wheel::sched_sleep_ticks(t) }
+}
+
+/// True when the underlying TCP socket reached a closed state (FIN received or
+/// fully closed) — used to surface EOF even when the peer omits close_notify.
+fn tcp_socket_eof(sock: i32) -> bool {
+    use smoltcp::socket::tcp as stcp;
+    crate::tcp::with_tcp_socket(sock, |s| {
+        matches!(
+            s.state(),
+            stcp::State::CloseWait | stcp::State::Closed | stcp::State::TimeWait
+        )
+    })
+    .unwrap_or(true)
+}
+
+/// Write `buf` to the TCP socket in small chunks, sleeping briefly when the
+/// smoltcp TX buffer is full. Advances by the actual number of bytes the
+/// socket accepted.
+fn tcp_write(sock: i32, buf: &[u8]) -> Result<(), ()> {
+    let deadline = now_ticks().saturating_add(IO_TIMEOUT_TICKS);
+    let mut off = 0usize;
+    while off < buf.len() {
+        let chunk = core::cmp::min(1400, buf.len() - off);
+        let sent = crate::tcp::with_tcp_socket(sock, |s| {
+            if !s.may_send() {
+                return 0;
+            }
+            s.send_slice(&buf[off..off + chunk]).unwrap_or_default()
+        })
+        .unwrap_or(0);
+        if sent > 0 {
+            off += sent;
+            continue;
+        }
+        if now_ticks() >= deadline {
+            return Err(());
+        }
+        sleep_ticks(1);
+    }
+    Ok(())
+}
+
+/// Read up to `buf.len()` encrypted bytes from the TCP socket (0 means nothing
+/// available right now; the caller polls again later).
+fn tcp_read(sock: i32, buf: &mut [u8]) -> Result<usize, ()> {
+    let max = core::cmp::min(buf.len(), u16::MAX as usize) as u16;
+    // SAFETY: `tcp_recv` is the crate's C-ABI TCP receive entry point; `sock` is a
+    // live socket index and `buf` is a `max`-byte writable buffer owned by this
+    // call for its duration.
+    let n = unsafe { tcp_recv(sock, buf.as_mut_ptr(), max) };
+    if n < 0 {
+        Err(())
+    } else {
+        Ok(n as usize)
+    }
+}
+
+fn remove_front(v: &mut Vec<u8>, n: usize) {
+    if n > 0 && n <= v.len() {
+        v.copy_within(n.., 0);
+        v.truncate(v.len() - n);
+    }
+}
+
+/// Drain accumulated plaintext into `dst`. Returns bytes copied.
+fn drain_pt(tls: &mut TlsStream, dst: &mut [u8]) -> usize {
+    if tls.plaintext_off >= tls.ready_plaintext.len() {
+        tls.ready_plaintext.clear();
+        tls.plaintext_off = 0;
+        return 0;
+    }
+    let avail = &tls.ready_plaintext[tls.plaintext_off..];
+    let n = core::cmp::min(dst.len(), avail.len());
+    dst[..n].copy_from_slice(&avail[..n]);
+    tls.plaintext_off += n;
+    if tls.plaintext_off >= tls.ready_plaintext.len() {
+        tls.ready_plaintext.clear();
+        tls.plaintext_off = 0;
+    }
+    n
+}
+
+/// Append newly received encrypted bytes to `inbuf`. Returns bytes appended
+/// (0 is fine; the caller polls again later).
+pub(crate) fn append_to_inbuf(tls: &mut TlsStream) -> Result<usize, ()> {
+    let mut scratch = [0u8; 4096];
+    let n = tcp_read(tls.sock, &mut scratch)?;
+    tls.inbuf.extend_from_slice(&scratch[..n]);
+    Ok(n)
+}
+
+/// Drive the rustls state machine until the handshake completes.
+fn handshake(tls: &mut TlsStream) -> Result<(), ()> {
+    let deadline = now_ticks().saturating_add(HANDSHAKE_TIMEOUT_TICKS);
+    // Prime the state machine with a read attempt so ClientHello gets encoded.
+    if tls.inbuf.is_empty() {
+        let _ = append_to_inbuf(tls);
+    }
+    loop {
+        if now_ticks() >= deadline {
+            return Err(());
+        }
+        tls.outbuf.resize(BUF_SIZE, 0);
+        let status = tls.conn.process_tls_records(&mut tls.inbuf[..]);
+        let discard = status.discard;
+        match status.state {
+            Ok(ConnectionState::EncodeTlsData(mut encoder)) => {
+                if let Ok(n) = encoder.encode(&mut tls.outbuf) {
+                    if n > 0 {
+                        tcp_write(tls.sock, &tls.outbuf[..n])?;
+                    }
+                }
+                remove_front(&mut tls.inbuf, discard);
+            }
+            Ok(ConnectionState::TransmitTlsData(transmit)) => {
+                transmit.done();
+                remove_front(&mut tls.inbuf, discard);
+            }
+            Ok(ConnectionState::BlockedHandshake) => {
+                remove_front(&mut tls.inbuf, discard);
+                let _ = append_to_inbuf(tls);
+                sleep_ticks(1);
+            }
+            Ok(ConnectionState::WriteTraffic(_))
+            | Ok(ConnectionState::ReadTraffic(_))
+            | Ok(ConnectionState::ReadEarlyData(_)) => {
+                remove_front(&mut tls.inbuf, discard);
+                if !tls.conn.is_handshaking() {
+                    return Ok(());
+                }
+            }
+            Ok(ConnectionState::PeerClosed) | Ok(ConnectionState::Closed) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+            Ok(_) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+            Err(_) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+        }
+    }
+}
+
+/// Open a TLS stream over an already-connected TCP socket `sock` (socket index).
+/// `server_name` is the SNI/hostname. `skip_verify` disables certificate checks.
+pub(crate) fn tls_stream_open(sock: c_int, server_name: &str, skip_verify: bool) -> Option<TlsStream> {
+    if sock < 0 {
+        return None;
+    }
+    let server_name = ServerName::try_from(String::from(server_name)).ok()?;
+    let config = make_config(skip_verify);
+    let conn = UnbufferedClientConnection::new(config, server_name).ok()?;
+    let mut tls = TlsStream {
+        conn,
+        sock,
+        inbuf: Vec::with_capacity(BUF_SIZE),
+        outbuf: Vec::with_capacity(BUF_SIZE),
+        ready_plaintext: Vec::with_capacity(BUF_SIZE),
+        plaintext_off: 0,
+    };
+    handshake(&mut tls).ok()?;
+    Some(tls)
+}
+
+/// Send plaintext application data (fragmented into TLS records).
+pub(crate) fn tls_stream_write(tls: &mut TlsStream, data: &[u8]) -> Result<(), ()> {
+    let deadline = now_ticks().saturating_add(IO_TIMEOUT_TICKS);
+    let mut off = 0usize;
+    while off < data.len() {
+        let chunk = core::cmp::min(1536, data.len() - off);
+        tls.outbuf.resize(BUF_SIZE, 0);
+        let status = tls.conn.process_tls_records(&mut tls.inbuf[..]);
+        let discard = status.discard;
+        match status.state {
+            Ok(ConnectionState::WriteTraffic(mut writer)) => {
+                match writer.encrypt(&data[off..off + chunk], &mut tls.outbuf) {
+                    Ok(n) => {
+                        remove_front(&mut tls.inbuf, discard);
+                        if n > 0 {
+                            tcp_write(tls.sock, &tls.outbuf[..n])?;
+                        }
+                        off += chunk;
+                    }
+                    Err(_) => {
+                        remove_front(&mut tls.inbuf, discard);
+                        return Err(());
+                    }
+                }
+            }
+            Ok(ConnectionState::EncodeTlsData(mut encoder)) => {
+                let _ = encoder.encode(&mut tls.outbuf);
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+            Ok(ConnectionState::TransmitTlsData(transmit)) => {
+                transmit.done();
+                remove_front(&mut tls.inbuf, discard);
+            }
+            Ok(ConnectionState::BlockedHandshake) => {
+                remove_front(&mut tls.inbuf, discard);
+                if now_ticks() >= deadline {
+                    return Err(());
+                }
+                sleep_ticks(1);
+            }
+            Ok(ConnectionState::PeerClosed) | Ok(ConnectionState::Closed) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+            Ok(_) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+            Err(_) => {
+                remove_front(&mut tls.inbuf, discard);
+                return Err(());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Read plaintext application data. Caller should try `append_to_inbuf` first
+/// to give the state machine fresh encrypted input.
+pub(crate) fn tls_stream_read(tls: &mut TlsStream, dst: &mut [u8]) -> TlsRead {
+    let n = drain_pt(tls, dst);
+    if n > 0 {
+        return TlsRead::Data(n);
+    }
+    tls.outbuf.resize(BUF_SIZE, 0);
+    let status = tls.conn.process_tls_records(&mut tls.inbuf[..]);
+    let discard = status.discard;
+    let result = match status.state {
+        Ok(ConnectionState::ReadTraffic(mut reader)) => {
+            let mut copied = 0usize;
+            while let Some(rec) = reader.next_record() {
+                if let Ok(record) = rec {
+                    let payload = record.payload;
+                    if copied + payload.len() <= dst.len() {
+                        dst[copied..copied + payload.len()].copy_from_slice(payload);
+                        copied += payload.len();
+                    } else {
+                        let n = dst.len() - copied;
+                        dst[copied..].copy_from_slice(&payload[..n]);
+                        tls.ready_plaintext.extend_from_slice(&payload[n..]);
+                        tls.plaintext_off = 0;
+                        copied = dst.len();
+                        break;
+                    }
+                }
+            }
+            remove_front(&mut tls.inbuf, discard);
+            if copied > 0 {
+                TlsRead::Data(copied)
+            } else {
+                TlsRead::WouldBlock
+            }
+        }
+        Ok(ConnectionState::PeerClosed) | Ok(ConnectionState::Closed) => {
+            remove_front(&mut tls.inbuf, discard);
+            let n = drain_pt(tls, dst);
+            if n > 0 {
+                TlsRead::Data(n)
+            } else {
+                TlsRead::Closed
+            }
+        }
+        Ok(ConnectionState::BlockedHandshake) => {
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::WouldBlock
+        }
+        Ok(ConnectionState::WriteTraffic(_)) => {
+            // Idle after handshake with no pending plaintext and no new
+            // encrypted data — not an error.
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::WouldBlock
+        }
+        Ok(ConnectionState::EncodeTlsData(mut encoder)) => {
+            let _ = encoder.encode(&mut tls.outbuf);
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::WouldBlock
+        }
+        Ok(ConnectionState::TransmitTlsData(transmit)) => {
+            transmit.done();
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::WouldBlock
+        }
+        Ok(_) => {
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::Err
+        }
+        Err(_) => {
+            remove_front(&mut tls.inbuf, discard);
+            TlsRead::Err
+        }
+    };
+    if result == TlsRead::WouldBlock && tcp_socket_eof(tls.sock) {
+        // A peer that closes TCP without close_notify (common with
+        // `Connection: close`) never transitions rustls to PeerClosed/Closed;
+        // surface EOF ourselves once the underlying socket is gone.
+        TlsRead::Closed
+    } else {
+        result
+    }
+}
+
+// ──────────────────────────────── C ABI ────────────────────────────────────
+
+static mut TLS_CONNS: [Option<TlsStream>; TLS_MAX_CONNECTIONS] = [const { None }; TLS_MAX_CONNECTIONS];
+
+/// Guards slot allocation/release in [`TLS_CONNS`].
+///
+/// The C ABI can be reached from more than one task (the HTTP client runs in
+/// whichever task issued the request), and without this two callers could take
+/// the same slot.  Only the table is locked — never a live connection, since the
+/// handshake and the data path block by design and a lock held across a sleep
+/// would wedge the stack.  Using one handle from two tasks at once is still not
+/// supported.
+static mut TLS_LOCK: [u32; 2] = [0; 2];
+
+struct TlsGuard;
+
+impl TlsGuard {
+    #[inline]
+    fn new() -> Self {
+        // SAFETY: `TLS_LOCK` is a kernel-lifetime `irq_spinlock_t` static;
+        // `addr_of_mut!` yields its stable, properly aligned address for the kernel's
+        // C acquire/release pair.
+        unsafe {
+            ffi_kernel::irq_spinlock_acquire(core::ptr::addr_of_mut!(TLS_LOCK).cast());
+        }
+        TlsGuard
+    }
+}
+
+impl Drop for TlsGuard {
+    #[inline]
+    fn drop(&mut self) {
+        // SAFETY: as in `TlsGuard::new` — `TLS_LOCK` is a live kernel-lifetime lock,
+        // and this is the matching release for the acquire in `TlsGuard::new`.
+        unsafe {
+            ffi_kernel::irq_spinlock_release(core::ptr::addr_of_mut!(TLS_LOCK).cast());
+        }
+    }
+}
+
+/// Read a NUL-terminated C string (bounded).
+///
+/// # Safety
+///
+/// `ptr` must be a NUL-terminated string readable up to and including its
+/// terminator (the scan is capped at 1024 bytes).
+unsafe fn cstr(ptr: *const c_void) -> Option<alloc::string::String> {
+    let p = ptr as *const u8;
+    let mut len = 0usize;
+    loop {
+        if len > 1024 {
+            return None;
+        }
+        // SAFETY: the caller contract (see # Safety) makes `p` a NUL-terminated
+        // string; `len <= 1024` here, so `add` stays within that string's first
+        // 1025 bytes (or the cap fails the call).
+        let q = unsafe { p.add(len) };
+        // SAFETY: `q` is a byte of the NUL-terminated string above; the scan
+        // stops as soon as it is the terminator.
+        if unsafe { *q } == 0 {
+            break;
+        }
+        len += 1;
+    }
+    // SAFETY: as above, `len` is the number of initialised bytes before the NUL
+    // and they all stay readable for the call.
+    let slice = unsafe { core::slice::from_raw_parts(p, len) };
+    core::str::from_utf8(slice).ok().map(String::from)
+}
+
+#[no_mangle]
+pub extern "C" fn cact_tls_init() {}
+
+/// Connect TLS over an open connected TCP socket. Legacy entry: uses the
+/// verified (root store) path.
+///
+/// # Safety
+///
+/// `server_name` must be a NUL-terminated C string that stays readable for the
+/// call (the name is copied out before use).
+#[no_mangle]
+pub unsafe extern "C" fn cact_tls_connect(sock: c_int, server_name: *const c_void) -> c_int {
+    // SAFETY: this only forwards its arguments; the caller contract above
+    // (identical to `cact_tls_connect_ex`'s) is what makes the call sound.
+    unsafe { cact_tls_connect_ex(sock, server_name, 0) }
+}
+
+/// Connect TLS over an open connected TCP socket. `skip_verify` != 0 disables
+/// certificate chain verification (see module docs). Returns a connection
+/// handle >= 0 to use with [`cact_tls_send`]/[`cact_tls_recv`], or -1.
+///
+/// # Safety
+///
+/// `server_name` must be a NUL-terminated C string that stays readable for the
+/// duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn cact_tls_connect_ex(
+    sock: c_int,
+    server_name: *const c_void,
+    skip_verify: c_int,
+) -> c_int {
+    if sock < 0 || server_name.is_null() {
+        return -1;
+    }
+    // SAFETY: server_name is a NUL-terminated C string.
+    let Some(name) = (unsafe { cstr(server_name) }) else {
+        return -1;
+    };
+    let Some(stream) = tls_stream_open(sock, &name, skip_verify != 0) else {
+        return -1;
+    };
+    // SAFETY: the slot table is guarded so two tasks cannot take one slot; the
+    // stream itself is moved in and never touched under the lock.
+    unsafe {
+        let _guard = TlsGuard::new();
+        for (i, slot) in (*core::ptr::addr_of_mut!(TLS_CONNS)).iter_mut().enumerate() {
+            if slot.is_none() {
+                *slot = Some(stream);
+                return i as c_int;
+            }
+        }
+    }
+    -1
+}
+
+/// Send plaintext data over a TLS connection. Returns bytes accepted, or -1.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes that stay live for the duration of
+/// the call (it may be null, in which case the call returns -1).
+#[no_mangle]
+pub unsafe extern "C" fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int {
+    if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || data.is_null() {
+        return -1;
+    }
+    // SAFETY: `conn_idx` is bounds-checked above, so this indexes the
+    // kernel-lifetime `TLS_CONNS` static in bounds; the borrow is the only
+    // access to that slot for the rest of the call.
+    let Some(stream) = (unsafe { TLS_CONNS[conn_idx as usize].as_mut() }) else {
+        return -1;
+    };
+    // SAFETY: the caller contract (see # Safety) makes `data` point to `len`
+    // readable bytes that stay live for the duration of the call.
+    let plaintext = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    if tls_stream_write(stream, plaintext).is_ok() {
+        len as c_int
+    } else {
+        -1
+    }
+}
+
+/// Receive plaintext data from a TLS connection. Returns bytes read, 0 when no
+/// data is available yet, or -1 on error/close.
+///
+/// # Safety
+///
+/// `buf` must point to `max_len` writable bytes that stay live for the duration
+/// of the call (it may be null, in which case the call returns -1).
+#[no_mangle]
+pub unsafe extern "C" fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u16) -> c_int {
+    if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || buf.is_null() {
+        return -1;
+    }
+    // SAFETY: `conn_idx` is bounds-checked above, so this indexes the
+    // kernel-lifetime `TLS_CONNS` static in bounds; the borrow is the only
+    // access to that slot for the rest of the call.
+    let Some(stream) = (unsafe { TLS_CONNS[conn_idx as usize].as_mut() }) else {
+        return -1;
+    };
+    // SAFETY: the caller contract (see # Safety) makes `buf` point to `max_len`
+    // writable bytes that stay live for the duration of the call.
+    let dst = unsafe { core::slice::from_raw_parts_mut(buf, max_len as usize) };
+    if append_to_inbuf(stream).is_err() {
+        return -1;
+    }
+    match tls_stream_read(stream, dst) {
+        TlsRead::Data(n) => n as c_int,
+        TlsRead::WouldBlock => 0,
+        TlsRead::Closed => {
+            if stream.ready_plaintext.len() > stream.plaintext_off {
+                drain_pt(stream, dst) as c_int
+            } else {
+                -1
+            }
+        }
+        TlsRead::Err => -1,
+    }
+}
+
+/// Close and free a TLS connection (does not close the underlying TCP socket).
+#[no_mangle]
+pub extern "C" fn cact_tls_close(conn: c_int) {
+    if conn < 0 || conn as usize >= TLS_MAX_CONNECTIONS {
+        return;
+    }
+    // Take the stream out under the lock, then drop it outside: freeing the
+    // rustls state can touch the allocator, which has no business running with
+    // interrupts disabled.
+    // SAFETY: `conn` was bounds-checked above and `TLS_CONNS` is a kernel-lifetime
+    // static; the take runs under `TlsGuard`, so no other task can take the same
+    // slot, and the stream is dropped outside the lock.
+    let victim = unsafe {
+        let _guard = TlsGuard::new();
+        TLS_CONNS[conn as usize].take()
+    };
+    drop(victim);
+}

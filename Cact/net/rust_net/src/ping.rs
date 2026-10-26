@@ -1,0 +1,85 @@
+//! ICMP echo (ping) helper: validates the destination and forwards to the stack layer.
+
+use core::ffi::c_int;
+
+pub fn send_echo_request_host(dst_ip_host: u32, id: u16, seq: u16) -> c_int {
+    if dst_ip_host == 0 || dst_ip_host == 0xFFFF_FFFF {
+        return -1;
+    }
+    if crate::stack::icmp_echo_request_host(dst_ip_host, id, seq) {
+        0
+    } else {
+        -1
+    }
+}
+
+/// Send one echo request and wait for its reply.
+///
+/// Returns the round-trip time in microseconds, or -1 on timeout/failure.  On
+/// success `src_ip_out` receives the responder's address (host order) and
+/// `bytes_out` the ICMP message length.
+///
+/// The wait is driven from here — this runs in the calling task's context — so
+/// ping works even if the background poll task is busy elsewhere.  It spins
+/// briefly to keep sub-millisecond RTT resolution, then falls back to a tick
+/// sleep so a lost probe does not burn a whole timeout in the CPU.
+///
+/// # Safety
+///
+/// `src_ip_out` and `bytes_out` may be null (the corresponding result is then
+/// discarded), but each non-null one must point to a writable, properly aligned
+/// `u32` that stays live until this call returns.
+pub unsafe fn ping_wait_host(
+    dst_ip_host: u32,
+    id: u16,
+    seq: u16,
+    timeout_ms: u32,
+    src_ip_out: *mut u32,
+    bytes_out: *mut u32,
+) -> c_int {
+    if send_echo_request_host(dst_ip_host, id, seq) != 0 {
+        return -1;
+    }
+    let timeout_us = (timeout_ms as u64).saturating_mul(1000);
+    // SAFETY: `ktime_get_usec` is a kernel C service, safe to call from task
+    // context; it only reads the monotonic clock.
+    let t0 = unsafe { crate::ffi_kernel::ktime_get_usec() };
+    loop {
+        crate::stack::stack_poll();
+        if let Some((src, bytes)) = crate::stack::icmp_try_recv_reply(id, seq) {
+            // SAFETY: as for `t0` — the same monotonic-clock read.
+            let rtt = unsafe { crate::ffi_kernel::ktime_get_usec() }.saturating_sub(t0);
+            if !src_ip_out.is_null() {
+                // SAFETY: the caller contract (see # Safety) makes `src_ip_out`
+                // a writable, aligned `u32`; the null check above excluded null.
+                unsafe { *src_ip_out = src };
+            }
+            if !bytes_out.is_null() {
+                // SAFETY: as above, for `bytes_out`.
+                unsafe { *bytes_out = bytes as u32 };
+            }
+            return rtt.min(i32::MAX as u64) as c_int;
+        }
+        // A pending signal ends the wait with EINTR instead of burning the whole
+        // timeout: Ctrl+C during `ping -W` should stop it, not be ignored.
+        if crate::socket::signal_pending() {
+            return -4; // EINTR
+        }
+        // SAFETY: as for `t0` — the same monotonic-clock read.
+        let elapsed = unsafe { crate::ffi_kernel::ktime_get_usec() }.saturating_sub(t0);
+        if elapsed >= timeout_us {
+            return -1;
+        }
+        if elapsed < 250_000 {
+            // Poll every millisecond while the reply is still plausible: a 10 ms
+            // tick sleep would inflate every WAN RTT by that much.
+            // SAFETY: `ktime_busy_wait_us` is a kernel C service that spins for
+            // the requested microseconds; it touches no memory of ours.
+            unsafe { crate::ffi_kernel::ktime_busy_wait_us(1000) };
+        } else {
+            // SAFETY: `sched_sleep_ticks` is a kernel service that suspends the
+            // calling task for the requested number of ticks.
+            unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+        }
+    }
+}

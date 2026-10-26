@@ -1,0 +1,625 @@
+//! Signal delivery, sigaction/sigprocmask syscall support, and alarm/itimer
+//! bookkeeping.
+
+use crate::mlfq;
+use crate::sync::{irq_spinlock_acquire, irq_spinlock_release};
+use crate::timer_wheel;
+use crate::task::{
+    find_task_by_pid, task_list_head, TaskStruct, TaskState, SCHEDULER_LOCK,
+    KERNEL_BASE, NSIG, SIGALRM, SIGCHLD, SIGCONT, SIGFPE, SIGHUP, SIGINT, SIGKILL,
+    SIGPIPE, SIGQUIT, SIGSEGV, SIGTERM, SIGSTOP, SIGWINCH, SIG_DFL, SIG_IGN, SIG_UNCATCHABLE,
+};
+
+/// # Safety
+///
+/// Must be called from kernel context with `SCHEDULER_LOCK` free.
+#[no_mangle]
+pub unsafe extern "C" fn task_kill(pid: u32) {
+    // SAFETY: Delegates to `task_signal`, which takes `SCHEDULER_LOCK` itself.
+    unsafe {
+        if pid == 0 { return; }
+        task_signal(pid, SIGKILL);
+    }
+}
+
+/// # Safety
+///
+/// Must be called from kernel context with `SCHEDULER_LOCK` free.
+#[no_mangle]
+pub unsafe extern "C" fn task_signal(pid: u32, signal: u32) {
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // SAFETY: `task_signal_locked` requires `SCHEDULER_LOCK`, which is held here.
+    unsafe { task_signal_locked(pid, signal) };
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+/// Send `signal` to `pid` carrying `value` — POSIX's `sigqueue()`.  The value is
+/// kept with the pending signal (`signal_value`) and read back as `si_value` by
+/// a `sigwaitinfo()`/`sigtimedwait()` or an `SA_SIGINFO` handler.  A second
+/// `sigqueue` for a signal that is already pending does not queue another
+/// instance, which is what POSIX asks of non-realtime signals.
+///
+/// # Safety
+///
+/// Must be called from kernel context with `SCHEDULER_LOCK` free.
+#[no_mangle]
+pub unsafe extern "C" fn task_signal_value(pid: u32, signal: u32, value: u32) {
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // SAFETY: `find_task_by_pid` walks the task list, which the lock makes stable.
+    let t = find_task_by_pid(pid);
+    if !t.is_null() {
+        // SAFETY: `t` is a live task found by pid.
+        let p = unsafe { (*t).proc };
+        if !p.is_null() {
+            // SAFETY: `p` is that task's live `ProcMeta`; the lock is held.
+            unsafe { (*p).signal_value = value };
+        }
+    }
+    // SAFETY: `task_signal_locked` requires `SCHEDULER_LOCK`, held here, and
+    // tolerates a pid that names no task (it simply finds nothing).
+    unsafe { task_signal_locked(pid, signal) };
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+/// Non-zero when the *current* task has a signal that is pending and not blocked
+/// by its mask — i.e. one that will be delivered as soon as this task returns to
+/// userspace.
+///
+/// Blocking syscalls (socket read/write) poll this and return `-EINTR` instead
+/// of sleeping on.  Signals are only acted on when a task reaches userspace or
+/// the scheduler, so without this a task stuck in a blocking `read()` could not
+/// be killed with Ctrl+C at all.
+///
+/// # Safety
+///
+/// Must be called from a task context with `SCHEDULER_LOCK` free (it only reads).
+#[no_mangle]
+pub unsafe extern "C" fn task_signal_pending_current() -> u32 {
+    let t = crate::task::current_task();
+    if t.is_null() {
+        return 0;
+    }
+    // SAFETY: `t` is the live current task (non-null checked above).
+    let proc_ptr = unsafe { (*t).proc };
+    if proc_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: `proc_ptr` is the live `ProcMeta` of the current task.
+    let p = unsafe { &*proc_ptr };
+    p.pending_signals & !p.signal_mask
+}
+
+/// # Safety
+///
+/// Must be called with `SCHEDULER_LOCK` held.
+#[no_mangle]
+pub unsafe extern "C" fn task_signal_locked(pid: u32, signal: u32) {
+    // SAFETY: `task_list_head` is a scheduler-owned global, read with the caller's
+    // `SCHEDULER_LOCK` held (see # Safety).
+    let head = unsafe { task_list_head };
+    if head.is_null() || pid == 0 {
+        return;
+    }
+
+    let t = find_task_by_pid(pid);
+    if t.is_null() {
+        return;
+    }
+
+    // SAFETY: `t` is a live task found in the task list (non-null checked above).
+    let p = unsafe { (*t).proc };
+    // SAFETY: `p` is that task's live `ProcMeta`.
+    unsafe { (*p).pending_signals |= signal };
+
+    if signal & (SIGKILL | SIGSTOP) != 0 {
+        // SAFETY: `t` is live; the caller holds `SCHEDULER_LOCK`.
+        unsafe { mlfq::mlfq_wake_task_locked(t) };
+        return;
+    }
+
+    // SAFETY: `t` is live.
+    let t_state = unsafe { (*t).state };
+    if signal & SIGCONT != 0 && matches!(t_state, TaskState::Stopped) {
+        // SAFETY: `t` is live; the caller holds `SCHEDULER_LOCK`.
+        unsafe { mlfq::mlfq_wake_task_locked(t) };
+        return;
+    }
+
+    // SAFETY: `p` is the live `ProcMeta` of `t`.
+    let in_sigsuspend = unsafe { (*p).in_sigsuspend };
+    // SAFETY: `p` is live.
+    let intr_wait = unsafe { (*p).intr_wait };
+    // SAFETY: `p` is live.
+    let signal_mask = unsafe { (*p).signal_mask };
+    // SAFETY: `p` is live.
+    let sigwait_set = unsafe { (*p).sigwait_set };
+    // SAFETY: `t` is live.
+    let t_state = unsafe { (*t).state };
+    // A sigwait() waiter wants a signal from *its* set, and POSIX has it block
+    // those signals first — so the test is against the set, not the mask: the
+    // waiter consumes the signal instead of having it delivered to a handler.
+    let sigwait_hit = (sigwait_set & signal) != 0;
+    if (sigwait_hit
+        || ((in_sigsuspend != 0 || intr_wait != 0) && (signal & !signal_mask) != 0))
+        && matches!(t_state, TaskState::Sleeping)
+    {
+        // Only queue the task if it has already parked; a still-running one is
+        // left Ready and its own `sched_park_prev` queues it.
+        let parked = mlfq::mlfq_remove_from_sleep(t);
+        // SAFETY: `t` is live.
+        unsafe { (*t).state = TaskState::Ready };
+        if parked {
+            // SAFETY: `t` is live.
+            let pri = unsafe { (*t).priority };
+            // SAFETY: `t` is live; the caller holds `SCHEDULER_LOCK`.
+            unsafe { mlfq::mlfq_enqueue_locked(t, pri) };
+        }
+    }
+}
+
+/// Send `signal` to every task whose process group is `pgid` — the console's
+/// foreground job.  POSIX delivers ^C/^\ /^Z/size-change to the foreground
+/// process *group*, which is what makes the signal reach a whole pipeline
+/// rather than just its last member.
+///
+/// # Safety
+///
+/// Must be called from a task context with `SCHEDULER_LOCK` free.
+#[no_mangle]
+pub unsafe extern "C" fn task_signal_pgid(pgid: u32, signal: u32) {
+    if pgid == 0 {
+        return;
+    }
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
+    let mut t = unsafe { task_list_head };
+    while !t.is_null() {
+        // SAFETY: `t` is a live task on the list.
+        let next = unsafe { (*t).next };
+        // SAFETY: `t` is live, so its `proc` field is in bounds.
+        let tp = unsafe { (*t).proc };
+        if !tp.is_null() {
+            // SAFETY: `tp` is that task's live `ProcMeta`.
+            let t_pgid = unsafe { (*tp).pgid };
+            if t_pgid == pgid {
+                // SAFETY: `t` is live.
+                let t_pid = unsafe { (*t).pid };
+                // SAFETY: `t` is live and the lock is held.
+                unsafe { task_signal_locked(t_pid, signal) };
+            }
+        }
+        t = next;
+    }
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+/// Send `signal` to every task of the calling task's thread group except
+/// `except_pid` (normally the caller).  Used by `exit()` to take the whole
+/// process down when one thread exits.
+///
+/// # Safety
+///
+/// Must be called from a task context with `SCHEDULER_LOCK` free.
+#[no_mangle]
+pub unsafe extern "C" fn task_signal_group(except_pid: u32, signal: u32) {
+    let cur = crate::task::current_task();
+    if cur.is_null() {
+        return;
+    }
+    // SAFETY: `cur` is the live current task (non-null checked above), so its `proc` field is in
+    // bounds.
+    let cur_proc = unsafe { (*cur).proc };
+    if cur_proc.is_null() {
+        return;
+    }
+    // SAFETY: `cur_proc` is that task's live `ProcMeta`.
+    let tgid = unsafe { (*cur_proc).tgid };
+
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
+    let mut t = unsafe { task_list_head };
+    while !t.is_null() {
+        // SAFETY: `t` is a live task on the list.
+        let next = unsafe { (*t).next };
+        // SAFETY: `t` is live, so its `proc` field is in bounds.
+        let tp = unsafe { (*t).proc };
+        if !tp.is_null() {
+            // SAFETY: `tp` is that task's live `ProcMeta`.
+            let t_tgid = unsafe { (*tp).tgid };
+            // SAFETY: `t` is live.
+            let t_pid = unsafe { (*t).pid };
+            if t_pid != except_pid && t_tgid == tgid {
+                // SAFETY: `t` is live and the lock is held.
+                unsafe { task_signal_locked(t_pid, signal) };
+            }
+        }
+        t = next;
+    }
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+/// # Safety
+///
+/// `t` must be null or a live `TaskStruct`; must be called from kernel context.
+#[no_mangle]
+pub unsafe extern "C" fn task_handle_signals(t: *mut TaskStruct) {
+    if t.is_null() {
+        return;
+    }
+    // SAFETY: `t` is the live task being delivered to (see # Safety).
+    let proc_ptr = unsafe { (*t).proc };
+    if proc_ptr.is_null() {
+        return;
+    }
+    // SAFETY: `proc_ptr` is that task's live `ProcMeta`; this runs in the task's own context and
+    // the reference is not live across the `handle_signal_bit` calls at the end.
+    let p = unsafe { &mut *proc_ptr };
+
+    if p.pending_signals == 0 {
+        return;
+    }
+
+    if p.in_sigsuspend != 0 {
+        p.signal_mask   = p.saved_signal_mask;
+        p.in_sigsuspend = 0;
+    }
+
+    if p.pending_signals & SIGKILL != 0 {
+        p.pending_signals = 0;
+        let parent_pid = p.parent_pid;
+        // Publish a thread's death to its joiner (clear_child_tid) before it
+        // stops running; a no-op for a process leader.  `p`'s borrow ends above.
+        // SAFETY: `t` is the live task being delivered to; this is its context.
+        unsafe { crate::task::clear_child_tid_on_exit(t) };
+        // SAFETY: signalling the parent requires `SCHEDULER_LOCK`, held by the caller.
+        unsafe { task_signal_locked(parent_pid, SIGCHLD) };
+        // Same invariant as the terminating-signal path below: a task killed by
+        // SIGKILL also never runs `sched_task_exit`, so its file descriptions
+        // (pipe/socket ends) have to go away here or they linger until reap.
+        // SAFETY: `t` is the live task being killed.
+        unsafe { crate::task::release_fds_on_death(t) };
+        // SAFETY: `t` is live.
+        unsafe { (*t).state = TaskState::Zombie };
+        return;
+    }
+
+    if p.pending_signals & SIGSTOP != 0 {
+        p.pending_signals &= !SIGSTOP;
+        // SAFETY: `t` is live.
+        unsafe { (*t).state = TaskState::Stopped };
+        // SAFETY: `t` is live.
+        unsafe { notify_parent_of_stop(t) };
+        // SAFETY: yields the CPU; the scheduler's lock protocol is respected by `schedule`.
+        unsafe { crate::mlfq::schedule() };
+        return;
+    }
+
+    let deliverable = p.pending_signals & !p.signal_mask;
+    if deliverable == 0 {
+        return;
+    }
+
+    handle_signal_bit(t, deliverable, SIGTERM,  1,  true);
+    handle_signal_bit(t, deliverable, SIGCONT,  3,  false);
+    // SIGPIPE: writing to a pipe/socket whose read end is gone kills the writer
+    // by default.  It was missing from this table, so the bit was set by
+    // `pipe_write`/`unix_sock` and then never acted on (and never cleared) —
+    // a writer kept looping on its own `-EPIPE` instead of dying.
+    handle_signal_bit(t, deliverable, SIGPIPE,  4,  true);
+    handle_signal_bit(t, deliverable, SIGALRM,  5,  true);
+    handle_signal_bit(t, deliverable, SIGCHLD,  6,  false);
+    handle_signal_bit(t, deliverable, SIGFPE,   7,  true);
+    handle_signal_bit(t, deliverable, SIGSEGV,  8,  true);
+    handle_signal_bit(t, deliverable, SIGWINCH, 9,  false);
+    handle_signal_bit(t, deliverable, SIGHUP,   10, true);
+    handle_signal_bit(t, deliverable, SIGINT,   11, true);
+    handle_signal_bit(t, deliverable, SIGQUIT,  12, true);
+}
+
+/// A stopped child must be reported to its parent or `waitpid(…, WUNTRACED)`
+/// would sleep forever: the child is not a zombie, so nothing else wakes it.
+unsafe fn notify_parent_of_stop(t: *mut TaskStruct) {
+    if t.is_null() {
+        return;
+    }
+    // SAFETY: `t` is live (non-null checked above), so its `proc` field is in bounds.
+    let proc_ptr = unsafe { (*t).proc };
+    if proc_ptr.is_null() {
+        return;
+    }
+    // SAFETY: `proc_ptr` is that task's live `ProcMeta`; the reference is not live across the
+    // calls below, which never touch this task's own proc.
+    let parent_pid = unsafe { (*proc_ptr).parent_pid };
+
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    if parent_pid != 0 {
+        // SAFETY: signalling the parent requires the lock, which is held here.
+        unsafe { task_signal_locked(parent_pid, SIGCHLD) };
+        let parent = find_task_by_pid(parent_pid);
+        if !parent.is_null() {
+            // SAFETY: `parent` is a live task (non-null checked here).
+            let parent_state = unsafe { (*parent).state };
+            if matches!(parent_state, TaskState::Waiting) {
+                // Only queue a parked parent; a still-running one is left Ready
+                // and its own park step queues it.
+                let parent_parked = mlfq::mlfq_remove_from_sleep(parent);
+                // SAFETY: `parent` is live.
+                unsafe { (*parent).state = TaskState::Ready };
+                if parent_parked {
+                    // SAFETY: `parent` is live.
+                    let pri = unsafe { (*parent).priority };
+                    // SAFETY: `parent` is live and the lock is held.
+                    unsafe { mlfq::mlfq_enqueue_locked(parent, pri) };
+                }
+            }
+        }
+    }
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+fn handle_signal_bit(
+    t:          *mut TaskStruct,
+    deliverable: u32,
+    sig:        u32,
+    handler_idx: usize,
+    term_by_default: bool,
+) {
+    if t.is_null() {
+        return;
+    }
+    if deliverable & sig == 0 {
+        return;
+    }
+    // SAFETY: `t` is non-null (checked by the caller) and, per `task_handle_signals`' contract,
+    // is the live task currently being delivered to.
+    let proc_ptr = unsafe { (*t).proc };
+    // SAFETY: `t` is that live task.
+    let t_state = unsafe { (*t).state };
+    if matches!(t_state, TaskState::Zombie) {
+        return;
+    }
+    // SAFETY: `proc_ptr` is that task's live `ProcMeta`; the reference is not live across the
+    // `task_signal_locked` call at the end.
+    let p = unsafe { &mut *proc_ptr };
+
+    p.pending_signals &= !sig;
+    let handler = p.signal_handlers[handler_idx];
+
+    if sig == SIGCONT {
+        // SAFETY: `t` is live.
+        let t_state = unsafe { (*t).state };
+        if matches!(t_state, TaskState::Sleeping) {
+            // SAFETY: `t` is live.
+            unsafe { (*t).state = TaskState::Ready };
+        }
+        return;
+    }
+
+    if sig == SIGCHLD || sig == SIGWINCH {
+        if handler != SIG_DFL && handler != SIG_IGN {
+            p.pending_signals |= sig;
+        }
+        return;
+    }
+
+    // A signal with a user handler is not acted on here — it is *delivered*, and
+    // that happens in deliver_pending_signal() on the way back to userspace,
+    // which builds the frame and then clears the bit.  Clearing it here without
+    // delivering is what made every custom handler unreachable (Ctrl-C into a
+    // userspace handler included): the bit was gone before the syscall return.
+    if handler != SIG_DFL && handler != SIG_IGN {
+        p.pending_signals |= sig;
+        return;
+    }
+
+    if term_by_default {
+        let parent_pid = p.parent_pid;
+        // Publish a thread's death to any joiner even on an abnormal exit
+        // (SIGSEGV/SIGINT/...), or pthread_join() would sleep forever.
+        // SAFETY: `t` is the live task being delivered to; this is its context.
+        unsafe { crate::task::clear_child_tid_on_exit(t) };
+        // SAFETY: signalling the parent requires `SCHEDULER_LOCK`, held by the caller.
+        unsafe { task_signal_locked(parent_pid, SIGCHLD) };
+        // A terminating signal ends the whole process, not just this thread:
+        // kill the rest of the group so blocked joiners/workers do not survive.
+        // SAFETY: `t` is live.
+        let t_pid = unsafe { (*t).pid };
+        // SAFETY: `t_pid` is this live task's pid; `task_signal_group` takes the
+        // scheduler lock itself (the caller holds none).
+        unsafe { task_signal_group(t_pid, SIGKILL) };
+        // A task killed by a signal never runs `sched_task_exit`, so its file
+        // descriptions have to be released here too: otherwise the pipe/socket
+        // ends it held stay open until its parent reaps it, which is exactly what
+        // wedges `A | B` when ^C kills only the far end of the pipeline.  Done
+        // before the Zombie transition so a `waitpid()` cannot reap the task
+        // while the release is still running.
+        // SAFETY: `t` is the live task being terminated.
+        unsafe { crate::task::release_fds_on_death(t) };
+        // SAFETY: `t` is live.
+        unsafe { (*t).state = TaskState::Zombie };
+    }
+}
+
+/// # Safety
+///
+/// `t` must be null or a live `TaskStruct`; must be called from kernel context.
+#[no_mangle]
+pub unsafe extern "C" fn task_sigaction(
+    t:       *mut TaskStruct,
+    signum:  u32,
+    handler: u32,
+    flags:   u32,
+    mask:    u32,
+) -> i32 {
+    if t.is_null() {
+        return -1;
+    }
+    // SAFETY: `t` is live (non-null checked above), so its `proc` field is in bounds.
+    let proc_ptr = unsafe { (*t).proc };
+    if proc_ptr.is_null() || signum >= NSIG as u32 || signum == 0 {
+        return -1;
+    }
+
+    if handler != SIG_DFL && handler != SIG_IGN && handler >= KERNEL_BASE {
+        return -1;
+    }
+
+    if (1u32 << signum) & SIG_UNCATCHABLE != 0 {
+        return -1;
+    }
+
+    // SAFETY: `proc_ptr` is the task's live `ProcMeta`; `signum` was bounded against `NSIG`
+    // above, so the handler write is in bounds.
+    let p = unsafe { &mut *proc_ptr };
+    p.signal_handlers[signum as usize] = handler;
+    // The disposition's flags travel with the handler so delivery can honour
+    // SA_ONSTACK (see deliver_pending_signal).
+    p.signal_flags[signum as usize] = if handler <= SIG_IGN { 0 } else { flags };
+    // ...and so is the set the disposition asks to have blocked while it runs.
+    p.signal_masks[signum as usize] = if handler <= SIG_IGN { 0 } else { mask };
+    0
+}
+
+/// # Safety
+///
+/// `t` must be null or a live `TaskStruct`; `set`/`oldset` must be null or point to a live
+/// `u32`.
+#[no_mangle]
+pub unsafe extern "C" fn task_sigprocmask(
+    t:      *mut TaskStruct,
+    how:    i32,
+    set:    *const u32,
+    oldset: *mut u32,
+) -> i32 {
+    if t.is_null() {
+        return -1;
+    }
+    // SAFETY: `t` is live (non-null checked above), so its `proc` field is in bounds.
+    let proc_ptr = unsafe { (*t).proc };
+    if proc_ptr.is_null() {
+        return -1;
+    }
+    // SAFETY: `proc_ptr` is the task's live `ProcMeta`.
+    let p = unsafe { &mut *proc_ptr };
+    if !oldset.is_null() {
+        // SAFETY: `oldset` is non-null (checked here) and points to a live `u32` (caller
+        // contract).
+        unsafe { *oldset = p.signal_mask };
+    }
+    if set.is_null() {
+        return 0;
+    }
+
+    // SAFETY: `set` is non-null (checked above) and points to a live `u32` (caller contract).
+    let new_mask = unsafe { *set } & !SIG_UNCATCHABLE;
+    match how {
+        0 => p.signal_mask |=  new_mask,
+        1 => p.signal_mask &= !new_mask,
+        2 => p.signal_mask  =  new_mask,
+        _ => return -1,
+    }
+    0
+}
+
+/// # Safety
+///
+/// Must be called with `SCHEDULER_LOCK` free; it takes the lock itself inside the timer-wheel
+/// path.
+#[no_mangle]
+pub unsafe extern "C" fn task_check_timers() {
+    timer_wheel::timer_wheel_tick();
+    check_alarm_timers();
+}
+
+fn check_alarm_timers() {
+    let now = timer_wheel::timer_current_tick();
+
+    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+
+    // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
+    let mut cur = unsafe { task_list_head };
+    while !cur.is_null() {
+        // SAFETY: `cur` is a live task on the task list (the lock is held).
+        let next = unsafe { (*cur).next };
+        // SAFETY: `cur` is live, so its `proc` field is in bounds.
+        let p = unsafe { (*cur).proc };
+        if p.is_null() {
+            cur = next;
+            continue;
+        }
+
+        // SAFETY: `p` is the live `ProcMeta` of `cur`.
+        let alarm_ticks = unsafe { (*p).alarm_ticks };
+        if alarm_ticks != 0 && now >= alarm_ticks {
+            // SAFETY: `p` is live.
+            unsafe { (*p).alarm_ticks = 0 };
+            // SAFETY: `p` is live.
+            unsafe { (*p).pending_signals |= SIGALRM };
+            wake_if_sigsuspend(cur, SIGALRM);
+        }
+
+        // SAFETY: `p` is live.
+        let itimer_value = unsafe { (*p).itimer_value };
+        if itimer_value != 0 && now >= itimer_value {
+            // SAFETY: `p` is live.
+            unsafe { (*p).pending_signals |= SIGALRM };
+            // SAFETY: `p` is live.
+            let itimer_interval = unsafe { (*p).itimer_interval };
+            let next_value = if itimer_interval != 0 {
+                now + itimer_interval
+            } else {
+                0
+            };
+            // SAFETY: `p` is live.
+            unsafe { (*p).itimer_value = next_value };
+            wake_if_sigsuspend(cur, SIGALRM);
+        }
+
+        cur = next;
+    }
+
+    // SAFETY: the lock was acquired above.
+    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+}
+
+fn wake_if_sigsuspend(t: *mut TaskStruct, signal: u32) {
+    if t.is_null() {
+        return;
+    }
+    // SAFETY: `t` is non-null and a live `TaskStruct` (per the caller), so its `proc` field is in
+    // bounds.
+    let proc_ptr = unsafe { (*t).proc };
+    // SAFETY: `proc_ptr` is that task's live `ProcMeta`.
+    let in_sigsuspend = unsafe { (*proc_ptr).in_sigsuspend };
+    // SAFETY: `t` is live.
+    let t_state = unsafe { (*t).state };
+    // SAFETY: `proc_ptr` is live.
+    let signal_mask = unsafe { (*proc_ptr).signal_mask };
+    if in_sigsuspend != 0
+        && matches!(t_state, TaskState::Sleeping)
+        && (signal & !signal_mask) != 0
+    {
+        // Only queue the task if it has already parked; a still-running one is
+        // left Ready and its own `sched_park_prev` queues it.
+        let parked = mlfq::mlfq_remove_from_sleep(t);
+        // SAFETY: `t` is live.
+        unsafe { (*t).state = TaskState::Ready };
+        if parked {
+            // SAFETY: `t` is live.
+            let pri = unsafe { (*t).priority };
+            // SAFETY: `t` is live and `SCHEDULER_LOCK` is held by the caller.
+            unsafe { mlfq::mlfq_enqueue_locked(t, pri) };
+        }
+    }
+}

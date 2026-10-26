@@ -1,0 +1,577 @@
+#include "procfs.h"
+#include "procfs_internal.h"
+#include "ioctl_abi.h"
+#include "vfs.h"
+#include "kernel.h"
+#include "memory.h"
+#include "slab.h"
+#include "shm.h"
+#include "swap.h"
+#include "klib.h"
+#include "task.h"
+#include "version.h"
+#include "initfs_modblob.h"
+#include "cpudev.h"
+#include "apic.h"
+#include "msi.h"
+#include "energy.h"
+#include "rtc.h"
+#include "vfsdev.h"
+#include "module/kmod.h"
+#include "fs_mod.h"
+#include "usb_mod.h"
+#include "usb.h"
+#include "dmi.h"
+
+// Mutable host name reported by /proc/uname (default "cact").  Bounded to the
+// kernel's 65-byte utsname field.
+static char procfs_nodename[65] = "cact";
+
+const char *procfs_get_nodename(void) { return procfs_nodename; }
+
+void procfs_set_nodename(const char *name) {
+    if (!name || !name[0]) return;
+    int i = 0;
+    for (; name[i] && i < 64; i++) procfs_nodename[i] = name[i];
+    procfs_nodename[i] = '\0';
+}
+
+// Approximate CPU MHz via short TSC busy-wait.
+static uint32_t _tsc_mhz(void) {
+    uint32_t lo1, hi1, lo2, hi2;
+    __asm__ volatile("rdtsc" : "=a"(lo1), "=d"(hi1));
+    volatile uint32_t c = 10000000;
+    while (c--) __asm__ volatile("nop");
+    __asm__ volatile("rdtsc" : "=a"(lo2), "=d"(hi2));
+    uint32_t delta = lo2 - lo1;
+    return delta / 10000u;
+}
+
+// /proc/cpuinfo generator — uses cpudev.c cached data + the energy core map
+int _cpuinfo_read(uint32_t off, uint32_t size, char *buf) {
+    /* Sized for 16 logical CPUs including the feature line.  Both the generator
+     * and the per-core loop are bounds-checked, so more cores truncate the file
+     * instead of running past this frame (the previous 1.5 KB buffer with an
+     * unbounded append smashed the kernel stack from ~6 CPUs up). */
+    char tmp[4096];
+    int  p = 0;
+
+    #define _APP(s) { const char *_s=(s); while (*_s && p < (int)sizeof(tmp) - 1) tmp[p++]=*_s++; }
+    #define _APPN(n) { char _nb[16]; snprintf(_nb, sizeof(_nb), "%d", (int)(n)); _APP(_nb); }
+
+    uint32_t mhz = _tsc_mhz();
+    uint32_t present = energy_core_count_present();
+    if (present == 0) present = 1;
+
+    for (uint32_t cpu = 0; cpu < present; cpu++) {
+        /* Reserve room for one full core block (the cpu0 feature line is the
+         * largest single append). */
+        if (p > (int)sizeof(tmp) - 512)
+            break;
+
+        uint32_t apic_id = energy_core_lapic_id(cpu);
+        if (apic_id == 0xFFFFFFFFu && cpu == 0)
+            apic_id = apic_lapic_id();
+
+        _APP("processor       : "); _APPN(cpu); _APP("\n");
+        _APP("apicid          : "); _APPN(apic_id); _APP("\n");
+        _APP("physical id     : "); _APPN(cpu_topo_package(cpu)); _APP("\n");
+        _APP("siblings        : "); _APPN(cpu_topo_siblings(cpu)); _APP("\n");
+        _APP("core id         : "); _APPN(cpu_topo_core(cpu)); _APP("\n");
+        _APP("cpu cores       : "); _APPN(cpu_topo_cpu_cores(cpu)); _APP("\n");
+        _APP("vendor_id       : "); _APP(cpu_vendor_str(cpu_vendor())); _APP("\n");
+        _APP("model name      : "); _APP(cpu_brand_str()); _APP("\n");
+        _APP("cpu MHz         : "); _APPN(mhz); _APP("\n");
+
+        switch (energy_core_role(cpu)) {
+        case ENERGY_ROLE_MASTER: _APP("role            : master\n"); break;
+        case ENERGY_ROLE_WORKER: _APP("role            : worker\n"); break;
+        default:                 _APP("role            : none\n");  break;
+        }
+        switch (energy_core_cstate(cpu)) {
+        case ENERGY_CSTATE_C0: _APP("cstate          : C0\n"); break;
+        case ENERGY_CSTATE_C1: _APP("cstate          : C1\n"); break;
+        case ENERGY_CSTATE_C3: _APP("cstate          : C3\n"); break;
+        case ENERGY_CSTATE_C6: _APP("cstate          : C6\n"); break;
+        default:               _APP("cstate          : ?\n");  break;
+        }
+        _APP("online          : "); _APP(energy_core_is_online(cpu) ? "yes\n" : "no\n");
+        _APP("idle            : "); _APP(energy_core_is_idle(cpu) ? "yes\n" : "no\n");
+
+        // Full feature flags are identical on every core; print once (cpu0).
+        if (cpu != 0)
+            continue;
+
+        _APP("flags           :");
+        uint32_t edx = cpu_features_edx();
+        uint32_t ecx = cpu_features_ecx();
+        uint32_t ext_edx = cpu_features_ext_edx();
+        uint32_t l7_ebx = cpu_features_leaf7_ebx();
+        uint32_t l7_ecx = cpu_features_leaf7_ecx();
+        uint32_t l7_edx = cpu_features_leaf7_edx();
+
+        if (edx & (1u<<0))  _APP(" fpu");
+        if (edx & (1u<<1))  _APP(" vme");
+        if (edx & (1u<<2))  _APP(" de");
+        if (edx & (1u<<3))  _APP(" pse");
+        if (edx & (1u<<4))  _APP(" tsc");
+        if (edx & (1u<<5))  _APP(" msr");
+        if (edx & (1u<<6))  _APP(" pae");
+        if (edx & (1u<<7))  _APP(" mce");
+        if (edx & (1u<<8))  _APP(" cx8");
+        if (edx & (1u<<9))  _APP(" apic");
+        if (edx & (1u<<11)) _APP(" sep");
+        if (edx & (1u<<12)) _APP(" mtrr");
+        if (edx & (1u<<13)) _APP(" pge");
+        if (edx & (1u<<14)) _APP(" mca");
+        if (edx & (1u<<15)) _APP(" cmov");
+        if (edx & (1u<<16)) _APP(" pat");
+        if (edx & (1u<<17)) _APP(" pse36");
+        if (edx & (1u<<19)) _APP(" clflush");
+        if (edx & (1u<<21)) _APP(" ds");
+        if (edx & (1u<<22)) _APP(" acpi");
+        if (edx & (1u<<23)) _APP(" mmx");
+        if (edx & (1u<<24)) _APP(" fxsr");
+        if (edx & (1u<<25)) _APP(" sse");
+        if (edx & (1u<<26)) _APP(" sse2");
+        if (edx & (1u<<28)) _APP(" ht");
+        if (edx & (1u<<29)) _APP(" tm1");
+        if (edx & (1u<<31)) _APP(" pbe");
+
+        if (ecx & (1u<<0))  _APP(" sse3");
+        if (ecx & (1u<<1))  _APP(" pclmulqdq");
+        if (ecx & (1u<<2))  _APP(" dtes64");
+        if (ecx & (1u<<3))  _APP(" monitor");
+        if (ecx & (1u<<4))  _APP(" dscpl");
+        if (ecx & (1u<<5))  _APP(" vmx");
+        if (ecx & (1u<<6))  _APP(" smx");
+        if (ecx & (1u<<7))  _APP(" est");
+        if (ecx & (1u<<8))  _APP(" tm2");
+        if (ecx & (1u<<9))  _APP(" ssse3");
+        if (ecx & (1u<<12)) _APP(" fma");
+        if (ecx & (1u<<13)) _APP(" cx16");
+        if (ecx & (1u<<14)) _APP(" xtpr");
+        if (ecx & (1u<<15)) _APP(" pdcm");
+        if (ecx & (1u<<17)) _APP(" pcid");
+        if (ecx & (1u<<19)) _APP(" sse4_1");
+        if (ecx & (1u<<20)) _APP(" sse4_2");
+        if (ecx & (1u<<21)) _APP(" x2apic");
+        if (ecx & (1u<<22)) _APP(" movbe");
+        if (ecx & (1u<<23)) _APP(" popcnt");
+        if (ecx & (1u<<24)) _APP(" tsc-deadline");
+        if (ecx & (1u<<25)) _APP(" aes");
+        if (ecx & (1u<<26)) _APP(" xsave");
+        if (ecx & (1u<<27)) _APP(" osxsave");
+        if (ecx & (1u<<28)) _APP(" avx");
+        if (ecx & (1u<<29)) _APP(" f16c");
+        if (ecx & (1u<<30)) _APP(" rdrand");
+        if (ecx & (1u<<31)) _APP(" hypervisor");
+
+        if (l7_ebx & (1u<<0))  _APP(" fsgsbase");
+        if (l7_ebx & (1u<<1))  _APP(" tsc-adjust");
+        if (l7_ebx & (1u<<2))  _APP(" sgx");
+        if (l7_ebx & (1u<<3))  _APP(" bmi1");
+        if (l7_ebx & (1u<<4))  _APP(" hle");
+        if (l7_ebx & (1u<<5))  _APP(" avx2");
+        if (l7_ebx & (1u<<7))  _APP(" smep");
+        if (l7_ebx & (1u<<8))  _APP(" bmi2");
+        if (l7_ebx & (1u<<9))  _APP(" erms");
+        if (l7_ebx & (1u<<10)) _APP(" invpcid");
+        if (l7_ebx & (1u<<11)) _APP(" rtm");
+        if (l7_ebx & (1u<<14)) _APP(" mpx");
+        if (l7_ebx & (1u<<18)) _APP(" rdseed");
+        if (l7_ebx & (1u<<19)) _APP(" adx");
+        if (l7_ebx & (1u<<20)) _APP(" smap");
+        if (l7_ebx & (1u<<23)) _APP(" clflushopt");
+        if (l7_ebx & (1u<<24)) _APP(" clwb");
+        if (l7_ebx & (1u<<29)) _APP(" sha");
+
+        if (l7_ecx & (1u<<2))  _APP(" umip");
+        if (l7_ecx & (1u<<3))  _APP(" pku");
+        if (l7_ecx & (1u<<4))  _APP(" ospke");
+        if (l7_ecx & (1u<<7))  _APP(" cet-ss");
+        if (l7_ecx & (1u<<9))  _APP(" vaes");
+        if (l7_ecx & (1u<<10)) _APP(" vpclmulqdq");
+        if (l7_ecx & (1u<<16)) _APP(" la57");
+
+        if (l7_edx & (1u<<10)) _APP(" md-clear");
+        if (l7_edx & (1u<<26)) _APP(" ibrs");
+        if (l7_edx & (1u<<27)) _APP(" stibp");
+        if (l7_edx & (1u<<28)) _APP(" l1d-flush");
+        if (l7_edx & (1u<<29)) _APP(" arch-cap");
+        if (l7_edx & (1u<<30)) _APP(" core-cap");
+        if (l7_edx & (1u<<31)) _APP(" ssbd");
+
+        if (ext_edx & (1u<<11)) _APP(" syscall");
+        if (ext_edx & (1u<<20)) _APP(" nx");
+        if (ext_edx & (1u<<22)) _APP(" mmxext");
+        if (ext_edx & (1u<<25)) _APP(" fxsr-opt");
+        if (ext_edx & (1u<<26)) _APP(" pdpe1gb");
+        if (ext_edx & (1u<<27)) _APP(" rdtscp");
+        if (ext_edx & (1u<<29)) _APP(" lm");
+        _APP("\n");
+    }
+
+    #undef _APP
+    #undef _APPN
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// Memory total (set by mntfs during init)
+static uint32_t _mb_mem_total_kb = 0;
+
+void procfs_set_meminfo(uint32_t mem_total_kb) {
+    _mb_mem_total_kb = mem_total_kb;
+}
+
+static uint32_t _get_total_memory_kb(void) {
+    return _mb_mem_total_kb;
+}
+
+// /proc/apic generator
+int _apic_read(uint32_t off, uint32_t size, char *buf) {
+    char tmp[512]; int p = 0;
+
+    #define _A(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
+    #define _N(n) { char _b[16]; snprintf(_b, sizeof(_b), "%d", (int)(n)); _A(_b); }
+
+    _A("APIC enabled    : ");
+    _A(apic_is_enabled() ? "yes" : "no"); _A("\n");
+
+    if (apic_is_enabled()) {
+        _A("LAPIC mode      : ");
+        _A(apic_x2apic_mode() ? "x2APIC (MSR)" : "xAPIC (MMIO)");
+        _A("\n");
+        _A("LAPIC reason    : "); _A(apic_x2apic_note()); _A("\n");
+        _A("LAPIC base      : 0x");
+        { char h[12]; snprintf(h, sizeof(h), "0x%x", (unsigned)apic_lapic_base()); _A(h); }
+        _A("\n");
+        _A("LAPIC ID        : "); _N(apic_lapic_id()); _A("\n");
+
+        uint32_t io_base, io_id, io_max, io_gsi;
+        if (apic_ioapic_info(&io_base, &io_id, &io_max, &io_gsi)) {
+            _A("IOAPIC ID       : "); _N(io_id); _A("\n");
+            _A("IOAPIC base     : 0x");
+            { char h[12]; snprintf(h, sizeof(h), "0x%x", (unsigned)io_base); _A(h); }
+            _A("\n");
+            _A("IOAPIC max entry: "); _N(io_max); _A("\n");
+            _A("IOAPIC GSI base : "); _N(io_gsi); _A("\n");
+
+            _A("ISA IRQ overrides:");
+            for (int i = 0; i < 16; i++) {
+                int gsi = apic_irq_override(i);
+                if (gsi != i) {
+                    _A(" "); _N(i); _A("->"); _N(gsi);
+                }
+            }
+            _A("\n");
+        }
+    }
+
+    _A("irq vectors     : 0x");
+    { char h[12]; snprintf(h, sizeof(h), "0x%x", (unsigned)MSIDEV_VECTOR_BASE); _A(h); }
+    _A("-0x");
+    { char h[12]; snprintf(h, sizeof(h), "0x%x", (unsigned)(MSIDEV_VECTOR_END - 1)); _A(h); }
+    _A(" ("); _N(MSIDEV_VECTOR_COUNT); _A(" total)\n");
+
+    int used = msidev_used_vectors();
+    _A("irq vectors used: "); _N(used); _A("\n");
+    _A("irq vectors free: "); _N(MSIDEV_VECTOR_COUNT - used); _A("\n");
+
+    #undef _A
+    #undef _N
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/meminfo generator
+//
+// Physical accounting comes from the PMM (frames), not from the fixed kernel
+// heap window: MemTotal is the usable RAM the boot map handed to the PMM minus
+// the hard-reserved low 32 MB (kernel image + static page tables), MemFree is
+// the PMM free list plus the unused part of the kernel heap window, and MemUsed
+// is the remainder.  The kernel heap / slab / shm figures are reported
+// separately so `free` can show them without disturbing the physical numbers.
+int _meminfo_read(uint32_t off, uint32_t size, char *buf) {
+    char tmp[768]; int p = 0;
+
+    const uint32_t frame_kb    = PAGE_SIZE / 1024u;      /* 4 KiB per frame      */
+    const uint32_t reserved_kb = RESERVED_END / 1024u;   /* low-memory reserve */
+
+    uint32_t pmm_total_kb = pmm_total_frames() * frame_kb;
+    uint32_t pmm_free_kb  = pmm_free_frames()  * frame_kb;
+
+    /* Fall back to the multiboot total if the PMM was not probed. */
+    if (pmm_total_kb == 0) pmm_total_kb = _get_total_memory_kb();
+
+    uint32_t mem_total_kb = pmm_total_kb > reserved_kb ? pmm_total_kb - reserved_kb
+                                                       : pmm_total_kb;
+
+    uint32_t heap_total_kb = HEAP_SIZE / 1024u;
+    uint32_t heap_free_kb  = get_free_heap_memory() / 1024u;
+    if (heap_free_kb > heap_total_kb) heap_free_kb = heap_total_kb;
+    uint32_t heap_used_kb  = heap_total_kb - heap_free_kb;
+
+    uint32_t mem_free_kb = pmm_free_kb + heap_free_kb;
+    if (mem_free_kb > mem_total_kb) mem_free_kb = mem_total_kb;
+    uint32_t mem_used_kb  = mem_total_kb - mem_free_kb;
+    uint32_t mem_avail_kb = mem_free_kb;
+
+    uint32_t slab_kb  = slab_total_bytes() / 1024u;
+    uint32_t shmem_kb = shm_total_bytes()  / 1024u;
+
+    swap_stats_t sw = swap_get_stats();
+    uint32_t swap_total_kb = sw.total_slots * frame_kb;
+    uint32_t swap_used_kb  = sw.used_slots  * frame_kb;
+    uint32_t swap_free_kb  = swap_total_kb > swap_used_kb ? swap_total_kb - swap_used_kb : 0;
+
+    #define _A(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
+    #define _N(n) { char _b[16]; snprintf(_b, sizeof(_b), "%d", (int)(n)); _A(_b); }
+
+    _A("MemTotal:        "); _N(mem_total_kb); _A(" kB\n");
+    _A("MemFree:         "); _N(mem_free_kb);  _A(" kB\n");
+    _A("MemAvailable:    "); _N(mem_avail_kb); _A(" kB\n");
+    _A("MemUsed:         "); _N(mem_used_kb);  _A(" kB\n");
+    _A("Buffers:         0 kB\n");
+    _A("Cached:          0 kB\n");
+    _A("Slab:            "); _N(slab_kb);      _A(" kB\n");
+    _A("Shmem:           "); _N(shmem_kb);     _A(" kB\n");
+    _A("SwapTotal:       "); _N(swap_total_kb); _A(" kB\n");
+    _A("SwapFree:        "); _N(swap_free_kb);  _A(" kB\n");
+    _A("SwapUsed:        "); _N(swap_used_kb);  _A(" kB\n");
+    _A("HeapTotal:       "); _N(heap_total_kb); _A(" kB\n");
+    _A("HeapFree:        "); _N(heap_free_kb);  _A(" kB\n");
+    _A("HeapUsed:        "); _N(heap_used_kb);  _A(" kB\n");
+
+    #undef _A
+    #undef _N
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+extern unsigned int timer_ticks_get(void);
+
+// /proc/uname — binary struct cact_uname_t (relay for uname()).
+int _uname_read(uint32_t off, uint32_t size, char *buf) {
+    cact_uname_t u;
+    memset(&u, 0, sizeof(u));
+    const char *sysname  = "CactOS";
+    const char *nodename = procfs_get_nodename();
+    const char *release  = kernel_version;
+    const char *machine  = "i686";
+    char version[65];
+    snprintf(version, sizeof(version), "#1 %s", kernel_build_time);
+
+    int i;
+    for (i = 0; sysname[i] && i < 64; i++)  u.sysname[i]  = sysname[i];
+    for (i = 0; nodename[i] && i < 64; i++) u.nodename[i] = nodename[i];
+    for (i = 0; release[i] && i < 64; i++)  u.release[i]  = release[i];
+    for (i = 0; version[i] && i < 64; i++)  u.version[i]  = version[i];
+    for (i = 0; machine[i] && i < 64; i++)  u.machine[i]  = machine[i];
+
+    uint32_t len = sizeof(u);
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, (const char *)&u + off, size);
+    return (int)size;
+}
+
+// /proc/dmi — SMBIOS system identity (vendor / product / BIOS version) as
+// "key: value" lines.  Zero-length when the firmware exposes no SMBIOS, so a
+// reader simply sees an empty file.
+int _dmi_read(uint32_t off, uint32_t size, char *buf) {
+    char tmp[256];
+    int p = 0;
+    const char *vendor  = dmi_vendor_string();
+    const char *product = dmi_product_string();
+    const char *bios    = dmi_bios_string();
+
+    if (vendor)  p += snprintf(tmp + p, (int)sizeof(tmp) - p, "vendor: %s\n", vendor);
+    if (product) p += snprintf(tmp + p, (int)sizeof(tmp) - p, "product: %s\n", product);
+    if (bios)    p += snprintf(tmp + p, (int)sizeof(tmp) - p, "bios: %s\n", bios);
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/time — binary monotonic time (cact_time_t), used by the libc
+// gettimeofday()/clock_gettime() relay instead of a dedicated syscall.
+int _time_read(uint32_t off, uint32_t size, char *buf) {
+    cact_time_t t;
+    uint32_t ticks = timer_ticks_get();
+    t.sec  = ticks / 100;
+    t.usec = (ticks % 100) * (1000000 / 100);
+    uint32_t len = sizeof(t);
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, (const char *)&t + off, size);
+    return (int)size;
+}
+
+// /proc/wallclock — binary cact_time_t: civil time, i.e. seconds since the
+// Unix epoch, from the CMOS RTC read at boot.  /proc/time stays the monotonic
+// boot clock; this is the one to use when the answer has to agree with the
+// outside world (X.509 validity, file timestamps).
+int _wallclock_read(uint32_t off, uint32_t size, char *buf) {
+    cact_time_t t;
+    uint64_t us = rtc_epoch_usec();
+    if (us == 0) {
+        /* No usable RTC date: report the boot clock rather than 1970, so a
+         * caller that only needs something monotonic still behaves. */
+        uint32_t ticks = timer_ticks_get();
+        t.sec  = ticks / 100;
+        t.usec = (ticks % 100) * (1000000 / 100);
+    } else {
+        t.sec  = (uint32_t)(us / 1000000ull);
+        t.usec = (uint32_t)(us % 1000000ull);
+    }
+    uint32_t len = sizeof(t);
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, (const char *)&t + off, size);
+    return (int)size;
+}
+
+// /proc/uptime generator
+int _uptime_read(uint32_t off, uint32_t size, char *buf) {
+    char tmp[64];
+    int  p = 0;
+    char nb[16]; snprintf(nb, sizeof(nb), "%d", (int)(timer_ticks_get() / 100));
+    for (int i = 0; nb[i]; i++) tmp[p++] = nb[i];
+    const char *s = " seconds\n";
+    for (int i = 0; s[i]; i++) tmp[p++] = s[i];
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/version generator
+int _version_read(uint32_t off, uint32_t size, char *buf) {
+    char tmp[512];
+    int  p = 0;
+
+    #define _V(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
+
+    _V("Cact Kernel ");  _V(kernel_version_meta);    _V("\n");
+    _V("Arch: x86 (i686)\n");
+    _V("Compiler: ");    _V(kernel_compiler);   _V("\n");
+    _V("Built by: ");    _V(kernel_builder);    _V("\n");
+    _V("Commit: ");     _V(kernel_commit_hash); _V("\n");
+    _V("Build: ");      _V(kernel_build_time);  _V("\n");
+
+    #undef _V
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/mounts generator — the kernel layout mounts (from the VFS mount tree)
+// followed by the block-device mounts tracked by vfsdev, all in the Linux
+// mount-table form "<src> <path> <fstype> rw 0 0".
+int _mounts_read(uint32_t off, uint32_t size, char *buf) {
+    static char tmp[4096];
+    int p = vfs_render_mounts(tmp, (int)sizeof(tmp) - 1);
+    if (p < 0) p = 0;
+    if (p < (int)sizeof(tmp) - 1) {
+        int q = vfsdev_mounts_text(tmp + p, (int)sizeof(tmp) - p);
+        if (q > 0) p += q;
+    }
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/modules generator — resident loadable modules in the Linux form
+// "<name> <size> <refcount> - Live 0x00000000": filesystem modules (fs_mod),
+// USB driver modules (usb_mod) and resident PCI kernel modules (kmod).  Size
+// is the resident relocation image in bytes; the refcount is how many users
+// the loader can account for — fs_mod: devices mounted; usb_mod: devices its
+// drivers claim; kmod: PCI functions its driver serves.  Slots are scanned
+// directly, not by count: unloading the first of two modules leaves a hole at
+// slot 0.
+int _modules_read(uint32_t off, uint32_t size, char *buf) {
+    static char tmp[4096];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    for (int i = 0; i < FS_MOD_MAX && p <= cap - 128; i++) {
+        const char *nm = fs_mod_instance(i);
+        if (!nm) continue;
+        p += snprintf(tmp + p, (size_t)(cap - p), "%s %u %d - Live 0x00000000\n",
+                      nm, (unsigned)fs_mod_size(i), fs_mod_refs(i));
+    }
+    for (int i = 0; i < USB_MOD_MAX && p <= cap - 128; i++) {
+        const char *nm = usb_mod_instance(i);
+        if (!nm) continue;
+        p += snprintf(tmp + p, (size_t)(cap - p), "%s %u %d - Live 0x00000000\n",
+                      nm, (unsigned)usb_mod_size(i), usb_mod_refs(i));
+    }
+    for (int i = 0; i < KMOD_MAX_SLOTS && p <= cap - 128; i++) {
+        const char *nm = kmod_name_at(i);
+        if (!nm) continue;
+        p += snprintf(tmp + p, (size_t)(cap - p), "%s %u %d - Live 0x00000000\n",
+                      nm, (unsigned)kmod_size_at(i), kmod_refs_at(i));
+    }
+    if (p < 0) p = 0;
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/usb generator — one line per attached USB device:
+//   <address> <vendor> <product> <class> <subclass> <protocol> <speed> <port>
+// (vendor/product as 0x%04x, the rest decimal).  lsusb formats it.
+int _usb_read(uint32_t off, uint32_t size, char *buf) {
+    static char tmp[2048];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    int n = usb_device_count();
+    for (int i = 0; i < n && p < cap - 96; i++) {
+        const usb_device_t *d = usb_device_at(i);
+        if (!d) continue;
+        p += snprintf(tmp + p, (size_t)(cap - p),
+                      "%u %04x %04x %02x %02x %02x %u %u\n",
+                      (unsigned)d->address,
+                      (unsigned)d->dev_desc.idVendor,
+                      (unsigned)d->dev_desc.idProduct,
+                      (unsigned)d->class_code,
+                      (unsigned)d->subclass,
+                      (unsigned)d->protocol,
+                      (unsigned)d->speed,
+                      (unsigned)d->port);
+    }
+    if (p < 0) p = 0;
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = len - off;
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}

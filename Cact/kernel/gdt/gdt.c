@@ -1,0 +1,71 @@
+#include "gdt.h"
+#include "klib.h"
+#include "kernel.h"
+
+// GDT: null, kernel code, data, user code, data, TSS, then the per-CPU TSS
+// slots a per-CPU GDT reserves (indices 6..68 are unused on the BSP) and the
+// TLS descriptor at GDT_TLS_SLOT.  The array has to reach GDT_TLS_SLOT so the
+// TLS selector means the same thing on the BSP as on an AP.
+struct gdt_entry gdt[GDT_ENTRIES];
+struct gdt_ptr   gp;
+struct tss_entry_struct tss_entry;
+uint8_t early_kernel_stack[4096] __attribute__((aligned(16)));
+
+// Set GDT entry at index 'num' with base, limit, access flags, and granularity
+void set_gdt_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
+    gdt[num].base_low    = (base & 0xFFFF);
+    gdt[num].base_middle = (base >> 16) & 0xFF;
+    gdt[num].base_high   = (base >> 24) & 0xFF;
+    gdt[num].limit_low   = (limit & 0xFFFF);
+    gdt[num].granularity = (limit >> 16) & 0x0F;
+    gdt[num].granularity |= gran & 0xF0;  // Merge granularity bits (G, DB, L)
+    gdt[num].access      = access;
+}
+
+// Initialize TSS entry for ring0 stack on privilege transitions
+void write_tss(int num, uint16_t ss0, uint32_t esp0) {
+    uint32_t base = (uint32_t)&tss_entry;
+    uint32_t limit = sizeof(tss_entry) - 1;
+
+    set_gdt_gate(num, base, limit, 0xE9, 0x00);  // Type 0xE9 = 32-bit TSS (available)
+    memory_set(&tss_entry, 0, sizeof(tss_entry));
+
+    tss_entry.ss0 = ss0;    // Kernel data segment
+    tss_entry.esp0 = esp0;  // Kernel stack pointer
+    tss_entry.iomap_base = sizeof(tss_entry);  // No I/O permission bitmap
+}
+
+// Initialize GDT: null, kernel code/data, user code/data, TSS, TLS
+void init_gdt() {
+    gp.limit = (sizeof(struct gdt_entry) * GDT_ENTRIES) - 1;
+    gp.base  = (uint32_t)&gdt;
+    
+    // Null segment (required by x86)
+    set_gdt_gate(0, 0, 0, 0, 0);
+    
+    // Kernel Code segment: base=0, 4GB limit, present, ring0, code, readable
+    set_gdt_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);
+    // Kernel Data segment: base=0, 4GB limit, present, ring0, data, writable
+    set_gdt_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);
+    // User Code segment: base=0, 4GB limit, present, ring3, code, readable
+    set_gdt_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);
+    // User Data segment: base=0, 4GB limit, present, ring3, data, writable
+    set_gdt_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+
+    write_tss(5, 0x10, (uint32_t)early_kernel_stack + sizeof(early_kernel_stack));
+
+    // The per-task TLS descriptor: a ring-3 data segment whose base the
+    // scheduler rewrites per task.  Written here so the selector is valid from
+    // the start, with a zero base (a task that sets no TLS then reads address 0).
+    set_gdt_gate(GDT_TLS_SLOT, 0, 0xFFFFFFFF, 0xF2, 0xCF);
+
+    // Load GDT into GDTR and reload segment registers
+    gdt_flush((uint32_t)&gp);
+
+    // Load Task Register with TSS selector
+    tss_flush();
+}
+
+void gdt_write_tls(uint32_t base) {
+    set_gdt_gate(GDT_TLS_SLOT, base, 0xFFFFFFFF, 0xF2, 0xCF);
+}

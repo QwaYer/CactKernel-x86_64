@@ -1,0 +1,267 @@
+#include "ksym.h"
+#include "klib.h"
+#include "memory.h"
+#include "kernel.h"
+#include "net.h"
+#include "pci.h"
+#include "sync.h"
+#include "devfs.h"
+#include "blkdev.h"
+#include "pagecache.h"
+#include "msi.h"
+#include "drm_drv.h"
+#include "validate.h"
+#include "usb.h"
+#include "firmware.h"
+#include "ktime.h"
+#include "proc.h"
+
+/* 64-bit signed division (compiler runtime).  An i386 module doing int64_t
+ * arithmetic — e.g. the i915 WRPLL calculator — resolves these here; the
+ * kernel already provides them. */
+extern long long __divdi3(long long, long long);
+extern long long __moddi3(long long, long long);
+extern unsigned long long __udivdi3(unsigned long long, unsigned long long);
+
+/* In-kernel 802.11 station engine (Rust, cact80211): a Wi-Fi module registers
+ * its radio ops and hands received MPDUs to cact80211_rx. */
+int  cact80211_register(void *hw);
+void cact80211_unregister(void *hw);
+void cact80211_rx(void *hw, const unsigned char *frame, int len);
+
+typedef struct {
+    const char* name;
+    uint32_t    addr;
+} ksym_entry_t;
+
+/*
+ * Static export list — extend as driver modules need more kernel entry points.
+ * Keep sorted by name if you switch to binary search; linear scan is fine
+ * for a small table.
+ */
+static const ksym_entry_t ksym_table[] = {
+    { "kmalloc_aligned", (uint32_t)kmalloc_aligned },
+    { "compare_string",  (uint32_t)compare_string },
+    { "copy_string",     (uint32_t)copy_string },
+    { "memory_copy",     (uint32_t)memory_copy },
+    { "memory_set",      (uint32_t)memory_set },
+    { "irq_spinlock_init",    (uint32_t)irq_spinlock_init },
+    { "irq_spinlock_acquire", (uint32_t)irq_spinlock_acquire },
+    { "irq_spinlock_release", (uint32_t)irq_spinlock_release },
+    { "free_page",      (uint32_t)free_page },
+    { "kalloc",         (uint32_t)kalloc },
+    { "kfree",          (uint32_t)kfree },
+    { "kmalloc",        (uint32_t)kmalloc },
+
+    /* User-memory access.  A driver module decodes its own ioctl payloads
+     * (DRM_COMMAND_BASE and above are passed through to it untouched), so it
+     * needs the same validate/copy primitives the core uses.  Modules are
+     * HMAC-verified at load time, i.e. trusted kernel code. */
+    { "validate_user_ptr", (uint32_t)validate_user_ptr },
+    { "copy_from_user",     (uint32_t)copy_from_user },
+    { "copy_to_user",       (uint32_t)copy_to_user },
+    { "snprintf",       (uint32_t)snprintf },
+    { "memcpy",         (uint32_t)memcpy },
+    { "memcmp",         (uint32_t)memcmp },
+    { "memset",         (uint32_t)memset },
+    { "sema_init",      (uint32_t)sema_init },
+    { "down",           (uint32_t)down },
+    { "up",             (uint32_t)up },
+    { "mutex_init",     (uint32_t)mutex_init },
+    { "mutex_lock",     (uint32_t)mutex_lock },
+    { "mutex_unlock",   (uint32_t)mutex_unlock },
+    { "spin_lock_init", (uint32_t)spin_lock_init },
+    { "spin_lock",      (uint32_t)spin_lock },
+    { "spin_unlock",    (uint32_t)spin_unlock },
+    { "spin_lock_irqsave",    (uint32_t)spin_lock_irqsave },
+    { "spin_unlock_irqrestore", (uint32_t)spin_unlock_irqrestore },
+    { "register_chrdev",      (uint32_t)register_chrdev },
+    { "unregister_chrdev",    (uint32_t)unregister_chrdev },
+    { "register_blkdev",       (uint32_t)register_blkdev },
+    { "unregister_blkdev",     (uint32_t)unregister_blkdev },
+    { "blkdev_set_ident",      (uint32_t)blkdev_set_ident },
+    { "blkdev_read_sector",    (uint32_t)blkdev_read_sector },
+    { "blkdev_write_sector",   (uint32_t)blkdev_write_sector },
+    { "blkdev_read",           (uint32_t)blkdev_read },
+    { "blkdev_write",          (uint32_t)blkdev_write },
+    { "blkdev_by_id",          (uint32_t)blkdev_by_id },
+    { "pc_get_page",           (uint32_t)pc_get_page },
+    { "pc_put_page",           (uint32_t)pc_put_page },
+    { "pc_mark_dirty",         (uint32_t)pc_mark_dirty },
+    { "pc_flush_dev",          (uint32_t)pc_flush_dev },
+
+    /* Generic inode address space (page cache) — an fs module points an
+     * (owner, ino) object at its own disk backing and then reads, writes and
+     * maps the file through the page cache.  Only the calls a filesystem
+     * module makes are exported; vfs_as_truncate/flush/release/flush_fd/stats
+     * stay kernel-internal. */
+    { "vfs_as_set_backing",    (uint32_t)vfs_as_set_backing },
+    { "vfs_as_setsize",        (uint32_t)vfs_as_setsize },
+    { "vfs_as_size",           (uint32_t)vfs_as_size },
+    { "vfs_as_read",           (uint32_t)vfs_as_read },
+    { "vfs_as_write",          (uint32_t)vfs_as_write },
+    { "vfs_as_backing",        (uint32_t)vfs_as_backing },
+    { "vfs_as_flush_all",      (uint32_t)vfs_as_flush_all },
+
+    { "printk",         (uint32_t)printk },
+    { "printk_color",   (uint32_t)printk_color },
+    { "printk_hex",     (uint32_t)printk_hex },
+    { "netif_rx",         (uint32_t)netif_rx },
+    { "net_receive_packet",  (uint32_t)net_receive_packet },
+    { "net_driver_irq_wake", (uint32_t)net_driver_irq_wake },
+    { "active_nic",          (uint32_t)&active_nic },
+    { "register_netdev",   (uint32_t)register_netdev },
+    { "unregister_netdev", (uint32_t)unregister_netdev },
+    /* In-kernel 802.11 station engine: a Wi-Fi module is a dumb radio that
+     * registers its ops and hands received MPDUs to cact80211_rx. */
+    { "cact80211_register",   (uint32_t)cact80211_register },
+    { "cact80211_unregister", (uint32_t)cact80211_unregister },
+    { "cact80211_rx",         (uint32_t)cact80211_rx },
+    { "msidev_alloc_vector",  (uint32_t)msidev_alloc_vector },
+    { "msidev_free_vector",   (uint32_t)msidev_free_vector },
+    { "msidev_register_handler", (uint32_t)msidev_register_handler },
+    { "msidev_unregister_handler", (uint32_t)msidev_unregister_handler },
+    { "msidev_register",      (uint32_t)msidev_register },
+    { "msidev_unregister",    (uint32_t)msidev_unregister },
+    { "pci_msix_support",     (uint32_t)pci_msix_support },
+    { "pci_msix_table_map",   (uint32_t)pci_msix_table_map },
+    { "pci_msix_pba_map",     (uint32_t)pci_msix_pba_map },
+    { "pci_msix_enable",      (uint32_t)pci_msix_enable },
+    { "pci_msi_support",      (uint32_t)pci_msi_support },
+    { "pci_msi_enable",       (uint32_t)pci_msi_enable },
+    { "pci_set_master", (uint32_t)pci_set_master },
+    { "pci_read_config_dword",            (uint32_t)pci_read_config_dword },
+    { "pci_read_config_long",  (uint32_t)pci_read_config_long },
+    { "pci_write_config_dword",           (uint32_t)pci_write_config_dword },
+    { "pci_write_config_long", (uint32_t)pci_write_config_long },
+    { "inb",   (uint32_t)inb },
+    { "outb",  (uint32_t)outb },
+    { "inl",   (uint32_t)inl },
+    { "outl",  (uint32_t)outl },
+    { "inw",   (uint32_t)inw },
+    { "outw",  (uint32_t)outw },
+    { "strcmp",         (uint32_t)strcmp },
+    { "strlen",         (uint32_t)strlen },
+    { "strncmp",        (uint32_t)strncmp },
+    { "strncpy",        (uint32_t)strncpy },
+    { "streq",          (uint32_t)streq },
+    { "strlcpy",        (uint32_t)strlcpy },
+    { "skb_alloc",      (uint32_t)skb_alloc },
+    { "skb_data",       (uint32_t)skb_data },
+    { "kfree_skb",       (uint32_t)kfree_skb },
+    { "skb_len",        (uint32_t)skb_len },
+    { "skb_push",       (uint32_t)skb_push },
+    { "skb_put",        (uint32_t)skb_put },
+    { "vmm_get_phys",   (uint32_t)vmm_get_phys },
+    { "vmm_map",        (uint32_t)vmm_map },
+
+    /* DRM/KMS core — the generic API a GPU module (e.g. virtio-gpu) drives.
+     * Everything behind these entry points is hardware-agnostic: the module
+     * builds KMS objects, GEM buffers and framebuffers, and implements the
+     * drm_driver_ops_t callbacks; ioctl decoding stays in the kernel. */
+    { "drm_dev_alloc",               (uint32_t)drm_dev_alloc },
+    { "drm_dev_free",                (uint32_t)drm_dev_free },
+    { "drm_dev_priv",                (uint32_t)drm_dev_priv },
+    { "drm_dev_ops",                 (uint32_t)drm_dev_ops },
+    { "drm_dev_register",            (uint32_t)drm_dev_register },
+    { "drm_dev_unregister",          (uint32_t)drm_dev_unregister },
+    { "drm_dev_create",              (uint32_t)drm_dev_create },
+    { "drm_mode_crtc_init",          (uint32_t)drm_mode_crtc_init },
+    { "drm_mode_encoder_init",       (uint32_t)drm_mode_encoder_init },
+    { "drm_mode_connector_init",     (uint32_t)drm_mode_connector_init },
+    { "drm_mode_plane_init",         (uint32_t)drm_mode_plane_init },
+    { "drm_crtc_find",               (uint32_t)drm_crtc_find },
+    { "drm_connector_find",          (uint32_t)drm_connector_find },
+    { "drm_encoder_find",            (uint32_t)drm_encoder_find },
+    { "drm_plane_find",              (uint32_t)drm_plane_find },
+    { "drm_connector_add_mode",      (uint32_t)drm_connector_add_mode },
+    { "drm_connector_set_edid",      (uint32_t)drm_connector_set_edid },
+    { "drm_connector_attach_encoder", (uint32_t)drm_connector_attach_encoder },
+    { "drm_encoder_attach_crtc",     (uint32_t)drm_encoder_attach_crtc },
+    { "drm_crtc_handle_vblank",      (uint32_t)drm_crtc_handle_vblank },
+    { "drm_gem_create",              (uint32_t)drm_gem_create },
+    { "drm_gem_vaddr",               (uint32_t)drm_gem_vaddr },
+    { "drm_gem_size",                (uint32_t)drm_gem_size },
+    { "drm_gem_page_count",          (uint32_t)drm_gem_page_count },
+    { "drm_gem_page_phys",           (uint32_t)drm_gem_page_phys },
+    { "drm_gem_ref",                 (uint32_t)drm_gem_ref },
+    { "drm_gem_unref",               (uint32_t)drm_gem_unref },
+    { "drm_gem_memfd",               (uint32_t)drm_gem_memfd },
+    { "drm_gem_map_offset",          (uint32_t)drm_gem_map_offset },
+    { "drm_gem_handle_create",       (uint32_t)drm_gem_handle_create },
+    { "drm_gem_handle_lookup",       (uint32_t)drm_gem_handle_lookup },
+    { "drm_gem_handle_close",        (uint32_t)drm_gem_handle_close },
+    { "drm_gem_prime_handle_to_fd",  (uint32_t)drm_gem_prime_handle_to_fd },
+    { "drm_gem_prime_fd_to_handle",  (uint32_t)drm_gem_prime_fd_to_handle },
+
+    /* Compiler runtime for 64-bit arithmetic in modules. */
+    { "__divdi3",                    (uint32_t)__divdi3 },
+    { "__moddi3",                    (uint32_t)__moddi3 },
+    { "__udivdi3",                   (uint32_t)__udivdi3 },
+
+    /* USB — a USB driver module (see Cact/drivers/usb/loader/usb_mod.c) calls
+     * usb_driver_register() with a static usb_driver_t and drives transfers
+     * through the usb_device_t's host-controller ops. */
+    { "usb_driver_register",   (uint32_t)usb_driver_register },
+    { "usb_driver_unregister", (uint32_t)usb_driver_unregister },
+    { "usb_get_descriptor",    (uint32_t)usb_get_descriptor },
+    { "usb_set_configuration", (uint32_t)usb_set_configuration },
+    { "usb_set_interface",     (uint32_t)usb_set_interface },
+
+    /* Firmware — modules stage blobs (rt2870.bin) out of cctkfs. */
+    { "request_firmware", (uint32_t)request_firmware },
+    { "release_firmware", (uint32_t)release_firmware },
+
+    /* Timing — modules busy-wait for firmware boot and device settle, read the
+     * monotonic clock, or block their thread for a number of scheduler ticks. */
+    { "ktime_busy_wait_us", (uint32_t)ktime_busy_wait_us },
+    { "ktime_get_usec",     (uint32_t)ktime_get_usec },
+    { "sched_sleep_ticks",  (uint32_t)sched_sleep_ticks },
+};
+
+uint32_t ksym_resolve(const char* name) {
+    if (!name) return 0;
+    for (unsigned i = 0; i < sizeof(ksym_table) / sizeof(ksym_table[0]); i++) {
+        if (streq((char*)name, (char*)ksym_table[i].name))
+            return ksym_table[i].addr;
+    }
+    return 0;
+}
+
+/*
+ * Module ABI fingerprint.  FNV-1a 32-bit over "CACT-MODVER-1\0" followed by
+ * every exported symbol name (sorted) and a NUL separator.  The entry order in
+ * ksym_table must not matter, hence the sort; adding, removing or renaming an
+ * export changes the value automatically.
+ *
+ * tools/mod_vermagic.py implements the same algorithm over the same names, and
+ * cact_check.sh asserts the two agree at boot.  Change one, change the other.
+ */
+#define KSYM_FNV_OFFSET 2166136261u
+#define KSYM_FNV_PRIME  16777619u
+
+static uint32_t ksym_fnv1a(uint32_t h, const char* s) {
+    while (*s) { h ^= (uint8_t)*s++; h *= KSYM_FNV_PRIME; }
+    h ^= 0u; h *= KSYM_FNV_PRIME;   /* NUL separator, matches the Python tool */
+    return h;
+}
+
+uint32_t ksym_vermagic(void) {
+    const unsigned n = sizeof(ksym_table) / sizeof(ksym_table[0]);
+    const char* names[sizeof(ksym_table) / sizeof(ksym_table[0])];
+    for (unsigned i = 0; i < n; i++) names[i] = ksym_table[i].name;
+    for (unsigned i = 1; i < n; i++) {          /* insertion sort by name */
+        const char* key = names[i];
+        unsigned    j   = i;
+        while (j > 0 && strcmp((char*)names[j - 1], (char*)key) > 0) {
+            names[j] = names[j - 1];
+            j--;
+        }
+        names[j] = key;
+    }
+
+    uint32_t h = KSYM_FNV_OFFSET;
+    h = ksym_fnv1a(h, "CACT-MODVER-1");
+    for (unsigned i = 0; i < n; i++) h = ksym_fnv1a(h, names[i]);
+    return h;
+}

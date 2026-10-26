@@ -1,0 +1,35 @@
+[package]
+name = "cact_net"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+cact_mm = { path = "../../kernel/memory/rust_mm" }
+cact_sync = { path = "../../kernel/sync" }
+sched   = { path = "../../kernel/proc/sched" }
+cact_shim = { path = "../../crypto/cact_shim" }
+cact_crypto = { path = "../../crypto" }
+rustls = { path = "../../crypto/vendor/rustls-0.23.40/rustls", default-features = false, features = ["custom-provider", "hashbrown"] }
+rustls-pki-types = { path = "../../crypto/vendor/rustls-pki-types", features = ["alloc"] }
+webpki-roots = { version = "1", default-features = false }
+smoltcp = { version = "0.12", default-features = false, features = [
+    "medium-ethernet",
+    "proto-ipv4",
+    "socket-tcp",
+    "socket-udp",
+    "socket-icmp",
+] }
+
+[patch.crates-io]
+rustls-pki-types = { path = "../../crypto/vendor/rustls-pki-types" }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true

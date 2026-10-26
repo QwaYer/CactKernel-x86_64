@@ -1,0 +1,163 @@
+use core::ffi::c_void;
+
+use crate::kernel_types::{MmapTable, ProcPageTracker, TaskFdTable, VfsNode};
+
+pub const NSIG: usize = 13;
+pub const TASK_SHM_MAX: usize = 16;
+
+/// Runnable lifecycle state stored in `TaskStruct.state` (u32 on the wire).
+#[repr(u32)]
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum TaskState {
+    Ready    = 0,
+    Running  = 1,
+    Sleeping = 2,
+    Zombie   = 3,
+    Waiting  = 4,
+    /// Held by a SIGSTOP (Ctrl-Z in the console); only SIGCONT releases it.
+    /// Distinct from `Sleeping` so `waitpid(WUNTRACED)` can report the stop.
+    Stopped  = 5,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TaskShmAttach {
+    pub shm_id:    u32,
+    pub shm_vaddr: u32,
+}
+
+/// Lightweight hardware/scheduler context (48 bytes), matches C `task_struct`.
+/// Process metadata (signals, fds, cwd, etc.) lives in `ProcMeta` on the heap.
+#[repr(C)]
+pub struct TaskStruct {
+    pub esp:            u32,              //  0
+    pub page_directory: *mut u32,         //  4
+    pub fpu_context_ptr: *mut c_void,     //  8
+    pub pid:            u32,              // 12
+    pub state:          TaskState,        // 16 (u32)
+    pub is_kernel:      u8,               // 20
+    pub _pad0:          [u8; 3],          // 21
+    pub next:           *mut TaskStruct,  // 24
+    pub queue_next:     *mut TaskStruct,  // 28
+    pub priority:       u32,              // 32
+    pub time_slice:     u32,              // 36
+    pub ticks_used:     u32,              // 40
+    pub proc:           *mut ProcMeta,    // 44
+}
+
+/// Refcounted state shared by every task of one thread group (a process).
+///
+/// A process is a thread group: its leader plus every thread created with
+/// `CACT_PROCCTL_THREAD_CREATE` share one `ProcShared`.  The address space, the
+/// open-file table and the mmap table are shared by pointer through each
+/// `ProcMeta`; the objects here are the ones that cannot be shared that way
+/// because they are value types, and they are released only when `refcount`
+/// drops to zero in `reap_task_free`.
+#[repr(C)]
+pub struct ProcShared {
+    pub refcount:    u32,
+    pub brk_start:   u32,
+    pub brk_current: u32,
+    pub tgid:        u32,
+    pub mm:          ProcPageTracker,
+}
+
+/// Heap-allocated process metadata, matches C `proc_metadata_t`.
+#[repr(C)]
+pub struct ProcMeta {
+    pub stack_base:         *mut c_void,
+    pub ustack_phys:        *mut c_void,
+    pub ustack_virt:        u32,
+    pub ustack_phys_extra:  [*mut c_void; 3],
+    pub pending_signals:    u32,
+    pub signal_mask:        u32,
+    pub saved_signal_mask:  u32,
+    pub in_sigsuspend:      u8,
+    pub _pad1:              [u8; 3],
+    pub signal_handlers:    [u32; NSIG],
+    pub sigreturn_trampoline: u32,
+    pub alarm_ticks:        u32,
+    pub itimer_value:       u32,
+    pub itimer_interval:    u32,
+    pub fds:                *mut TaskFdTable,
+    pub mm:                 ProcPageTracker,
+    pub mmap_table:         *mut MmapTable,
+    pub parent_pid:         u32,
+    pub exit_code:          i32,
+    pub wait_for_pid:       u32,
+    pub brk_start:          u32,
+    pub brk_current:        u32,
+    pub sleep_until:        u32,
+    pub cwd:                [u8; 256],
+    pub uid:                u32,
+    pub gid:                u32,
+    pub euid:               u32,
+    pub egid:               u32,
+    pub shm_attachments:    [TaskShmAttach; TASK_SHM_MAX],
+    pub wait_next:          *mut TaskStruct,
+    pub pgid:               u32,
+    pub sid:                u32,
+    pub umask:              u32,
+    pub root:               *mut VfsNode,
+    // Cached symbol table from the main executable (for crash traces)
+    pub exec_base:          u32,
+    pub exec_symtab:        *mut u8,
+    pub exec_strtab:        *mut u8,
+    pub exec_symtab_count:  i32,
+    // --- threads (appended after 592; existing offsets above are unchanged) ---
+    /// Thread-group id: the leader's pid.  Equals `pid` for a process leader.
+    pub tgid:               u32,
+    /// 1 for a thread created by `CACT_PROCCTL_THREAD_CREATE`, 0 for a leader.
+    pub is_thread:          u8,
+    pub _pad2:              [u8; 3],
+    /// Shared, refcounted thread-group state (null for a kernel task).
+    pub shared:             *mut ProcShared,
+    /// Userspace word the kernel clears (and futex-wakes) when this thread
+    /// exits — the join futex.  Zero for a process leader.
+    pub clr_tid:            u32,
+    /// 1 while the task is in a signal-interruptible block (a userspace futex
+    /// wait): a deliverable signal wakes it so it can return -EINTR.
+    pub intr_wait:          u8,
+    pub _pad3:              [u8; 3],
+    // --- sigaltstack (appended after 612; existing offsets above are unchanged) ---
+    /// Base of the alternate signal stack (0 = none).
+    pub altstack_sp:        u32,
+    /// Its size in bytes.
+    pub altstack_size:      u32,
+    /// CACT_SS_DISABLE while the alternate stack is switched off.
+    pub altstack_flags:     u32,
+    /// sa_flags recorded per signal (CACT_SA_ONSTACK, ...).
+    pub signal_flags:       [u32; NSIG],
+    // --- TLS (appended after 676; existing offsets above are unchanged) ---
+    /// The task's `%gs` base — its thread pointer in ring 3 (0 = none).
+    pub tls_base:           u32,
+    // --- signal dispositions (appended after 680) ---
+    /// The set each handler wants blocked while it runs (sa_mask).
+    pub signal_masks:       [u32; NSIG],
+    // --- signal sources (appended after 732) ---
+    /// What each pending signal came from (si_code), and the fault address.
+    pub signal_codes:       [u32; NSIG],
+    pub signal_addr:        u32,
+    // --- sigwait()/sigqueue() (appended after 788) ---
+    /// The set this task is parked on for sigwait(), 0 when it is not waiting.
+    pub sigwait_set:        u32,
+    /// The value the pending signal carries (POSIX's union sigval).
+    pub signal_value:       u32,
+}
+
+// SAFETY: `TaskStruct` is a plain `#[repr(C)]` record of integers and raw
+// pointers. Ownership moves between CPUs only while the scheduler lock is held,
+// so transferring it does not race with another CPU's access.
+unsafe impl Send for TaskStruct {}
+// SAFETY: `TaskStruct` fields other than `state` are only written by the task
+// running on its own CPU; `state` and the run-queue links are mutated only under
+// the scheduler lock, so shared references from several CPUs cannot race.
+unsafe impl Sync for TaskStruct {}
+// SAFETY: `ProcMeta` is heap data reachable only through its owning task;
+// ownership follows the task and every transfer happens under the scheduler
+// lock, so moving it between CPUs is safe.
+unsafe impl Send for ProcMeta {}
+// SAFETY: `ProcMeta` is read/written by its owning task (which runs on a single
+// CPU at a time) or while the scheduler lock is held, so shared references from
+// several CPUs cannot race.
+unsafe impl Sync for ProcMeta {}
