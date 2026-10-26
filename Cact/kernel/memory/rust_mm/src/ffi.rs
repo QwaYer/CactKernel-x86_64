@@ -429,6 +429,15 @@ pub struct Mb2MmapTable {
     pub count:   u32,
 }
 
+// The C side builds this table and the PMM reads it here.  A stride or offset
+// mismatch is silent — it once cost the kernel its whole memory map: C's entry
+// was `packed` (20 bytes against these 24), which pushed `count` past the
+// written range, so it read back as zero and the PMM fell back to guessing.  So
+// both sides assert the layout, and `multiboot2.h` asserts its half.
+const _: () = assert!(core::mem::size_of::<Mb2MmapFlat>() == 24);
+const _: () = assert!(core::mem::offset_of!(Mb2MmapFlat, ty) == 16);
+const _: () = assert!(core::mem::offset_of!(Mb2MmapTable, count) == MB2_MMAP_MAX_ENTRIES * 24);
+
 // SAFETY: Each function and static in this block is backed by a C definition
 // in the kernel.  All pointer parameters must be non-null and correctly
 // aligned.  `task_list_head` and `scheduler_lock` are

@@ -100,18 +100,31 @@ struct mb2_tag_string {
     char     string[];
 } __attribute__((packed));
 
-// Flat memory map entry for 32-bit kernel
+// Flat memory map entry, built here and read by the PMM's Rust side.
+//
+// Deliberately *not* packed: with `packed` an entry is 20 bytes while the Rust
+// mirror (`Mb2MmapFlat`, a plain `#[repr(C)]` struct) is 24, so the two arrays
+// stride differently and `count` — which C writes at the end of its table and
+// Rust reads at the end of its own — lands past the written data and reads back
+// as zero.  The PMM then saw an empty map and fell back to guessing where RAM
+// ends.  The asserts below pin the layout on both sides.
 typedef struct {
     uint64_t base;   // Base address (preserved from MB2, may be >4 GB on PAE systems)
     uint64_t len;    // Length in bytes (preserved from MB2)
     uint32_t type;   // Region type
-} __attribute__((packed)) mb2_mmap_flat_t;
+} mb2_mmap_flat_t;
+
+_Static_assert(sizeof(mb2_mmap_flat_t) == 24,
+               "mb2_mmap_flat_t must match Mb2MmapFlat in rust_mm/ffi.rs");
 
 // Flat MMAP table passed to physical memory manager
 typedef struct {
     mb2_mmap_flat_t entries[MB2_MMAP_MAX_ENTRIES];
     uint32_t        count;
 } mb2_mmap_table_t;
+
+_Static_assert(sizeof(mb2_mmap_table_t) == MB2_MMAP_MAX_ENTRIES * 24u + 8u,
+               "mb2_mmap_table_t must match Mb2MmapTable in rust_mm/ffi.rs");
 
 // Multiboot2 module tag (type 3) — one per `module2` line in grub.cfg.
 struct mb2_tag_module {
