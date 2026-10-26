@@ -1,4 +1,5 @@
-[bits 32]
+[bits 64]
+%include "context.inc"
 
 global timer_isr
 global xhci_isr
@@ -19,68 +20,50 @@ extern energy_ipi_wake_handle
 
 section .text
 
+; These vectors carry no frame the C side inspects — a driver that wants the
+; interrupted context publishes it itself (see msidev_dispatch) — so they only
+; have to keep the interrupted registers intact around the handler call.  The
+; kernel data segments they used to load do not exist as a concern in long
+; mode: DS/ES are ignored for data access.
+
+%macro IRQ_BEGIN 0
+    ISR_SAVE
+    mov rbp, rsp
+    and rsp, -16
+%endmacro
+
+%macro IRQ_END 0
+    mov rsp, rbp
+    ISR_RESTORE
+    iretq
+%endmacro
+
 timer_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-
+    IRQ_BEGIN
     call timer_tick
-
     call irq_apic_eoi
-
     call on_timer_tick
-
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 xhci_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call xhci_irq_handler
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 acpi_sci_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call acpi_sci_callback
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 ; ---------------------------------------------------------------------------
 ; Generic PCI INTx ISR (vectors 0xF0+). Just EOIs.
 ; ---------------------------------------------------------------------------
 pci_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 ; ---------------------------------------------------------------------------
 ; APIC spurious interrupt handler.  The spec says a spurious delivery sets no
@@ -90,46 +73,22 @@ pci_isr:
 ; the bit itself — see spurious_apic_handler().
 ; ---------------------------------------------------------------------------
 spurious_apic_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call spurious_apic_handler
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 ; ---------------------------------------------------------------------------
 ; Energy C-state controller IPIs (vectors 0xF8/0xF9): master -> worker halt /
 ; wakeup protocol. Dispatch handlers live in the Rust energy/cstate modules.
 ; ---------------------------------------------------------------------------
 ipi_halt_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call energy_ipi_halt_handle
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END
 
 ipi_wake_isr:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    IRQ_BEGIN
     call energy_ipi_wake_handle
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    iretd
+    IRQ_END

@@ -314,12 +314,11 @@ static void hid_post_sequence(hid_priv_t *priv, uint8_t kc, const char *seq) {
 /* PrintScreen fallback: when the report was drained from a task instead of
  * delivered by the xHCI interrupt there is no entry frame to report, so the
  * driver dumps its own register set — the same dump, with less useful context.
- * ESP is handed over separately because this frame was not pushed by a stub,
+ * RSP is handed over separately because this frame was not pushed by a stub,
  * and the selectors are moved as 16-bit values into a zeroed frame so their
  * upper halves stay clean the way the CPU pushes them. */
 static void hid_dump_registers(void) {
     struct context_frame cf;
-    uint32_t esp;
     uint64_t rflags;
     uint64_t here;
 
@@ -328,28 +327,31 @@ static void hid_dump_registers(void) {
     /* One statement per register: a single block with a dozen memory outputs
      * runs clang out of address registers.  Nothing can run between these
      * statements (no clobbers, no dependencies), so they read one register
-     * set.  pushfq/popq is balanced, so ESP is unchanged afterwards. */
-    __asm__ __volatile__("movl %%eax, %0" : "=m"(cf.eax));
-    __asm__ __volatile__("movl %%ebx, %0" : "=m"(cf.ebx));
-    __asm__ __volatile__("movl %%ecx, %0" : "=m"(cf.ecx));
-    __asm__ __volatile__("movl %%edx, %0" : "=m"(cf.edx));
-    __asm__ __volatile__("movl %%esi, %0" : "=m"(cf.esi));
-    __asm__ __volatile__("movl %%edi, %0" : "=m"(cf.edi));
-    __asm__ __volatile__("movl %%ebp, %0" : "=m"(cf.ebp));
-    __asm__ __volatile__("movl %%esp, %0" : "=m"(esp));
-    __asm__ __volatile__("movw %%cs, %0"    : "=m"(cf.cs));
-    __asm__ __volatile__("movw %%ds, %0"    : "=m"(cf.ds));
-    __asm__ __volatile__("movw %%es, %0"    : "=m"(cf.es));
+     * set.  pushfq/popq is balanced, so RSP is unchanged afterwards. */
+    __asm__ __volatile__("movq %%rax, %0" : "=m"(cf.rax));
+    __asm__ __volatile__("movq %%rbx, %0" : "=m"(cf.rbx));
+    __asm__ __volatile__("movq %%rcx, %0" : "=m"(cf.rcx));
+    __asm__ __volatile__("movq %%rdx, %0" : "=m"(cf.rdx));
+    __asm__ __volatile__("movq %%rsi, %0" : "=m"(cf.rsi));
+    __asm__ __volatile__("movq %%rdi, %0" : "=m"(cf.rdi));
+    __asm__ __volatile__("movq %%rbp, %0" : "=m"(cf.rbp));
+    __asm__ __volatile__("movq %%r8, %0"  : "=m"(cf.r8));
+    __asm__ __volatile__("movq %%r9, %0"  : "=m"(cf.r9));
+    __asm__ __volatile__("movq %%r10, %0" : "=m"(cf.r10));
+    __asm__ __volatile__("movq %%r11, %0" : "=m"(cf.r11));
+    __asm__ __volatile__("movq %%r12, %0" : "=m"(cf.r12));
+    __asm__ __volatile__("movq %%r13, %0" : "=m"(cf.r13));
+    __asm__ __volatile__("movq %%r14, %0" : "=m"(cf.r14));
+    __asm__ __volatile__("movq %%r15, %0" : "=m"(cf.r15));
+    __asm__ __volatile__("movq %%rsp, %0" : "=m"(cf.rsp));
+    __asm__ __volatile__("movw %%cs, %0"  : "=m"(cf.cs));
+    __asm__ __volatile__("movw %%ss, %0"  : "=m"(cf.ss));
     __asm__ __volatile__("pushfq\n\tpopq %0" : "=r"(rflags));
-    cf.eflags = (uint32_t)rflags;
-    /* The label's own address, taken RIP-relative: an absolute 32-bit
-     * reference to code cannot reach the higher half.  The frame field is
-     * still 32-bit wide until the context frame is re-laid-out (Phase 1,
-     * exception path). */
+    cf.rflags = rflags;
     __asm__ __volatile__("1: lea 1b(%%rip), %0" : "=r"(here));
-    cf.eip = (uint32_t)here;
+    cf.rip = here;
 
-    dump_registers("PrintScreen (own regs)", &cf, esp);
+    dump_registers("PrintScreen (own regs)", &cf, cf.rsp);
 }
 
 static void hid_process_keyboard(hid_priv_t *priv, hid_kbd_report_t *rep) {

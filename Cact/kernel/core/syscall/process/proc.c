@@ -20,16 +20,20 @@ int sys_getppid(void) {
 
 // fork() — create a child process that is a copy of the caller
 int sys_fork(struct syscall_frame* regs) {
-    // Copy the syscall frame into a context_frame for task_fork
-    struct context_frame cf;
-    cf.es        = regs->es;        cf.ds       = regs->ds;
-    cf.edi       = regs->edi;       cf.esi      = regs->esi;
-    cf.ebp       = regs->ebp;       cf.esp_dummy= regs->esp_dummy;
-    cf.ebx       = regs->ebx;       cf.edx      = regs->edx;
-    cf.ecx       = regs->ecx;       cf.eax      = regs->eax;
-    cf.eip       = regs->eip;       cf.cs       = regs->cs;
-    cf.eflags    = regs->eflags;
-    cf.useresp   = regs->useresp;   cf.ss       = regs->ss;
+    // Copy the syscall frame into a context_frame for task_fork.  The user ABI
+    // is still the 32-bit one (the 32-bit user world is rebuilt in Phase 6 of
+    // PORTING-x86_64.md), so each value moves into its 64-bit slot unchanged —
+    // and the registers the 32-bit ABI does not carry at all (r8-r15) come out
+    // zero in the child.  The syscall frame itself is re-laid-out with the
+    // SYSCALL entry in Phase 3.
+    struct context_frame cf = { 0 };
+    cf.rdi    = regs->edi;      cf.rsi      = regs->esi;
+    cf.rbp    = regs->ebp;      cf.rbx      = regs->ebx;
+    cf.rdx    = regs->edx;      cf.rcx      = regs->ecx;
+    cf.rax    = regs->eax;
+    cf.rip    = regs->eip;      cf.cs       = regs->cs;
+    cf.rflags = regs->eflags;
+    cf.rsp    = regs->useresp;  cf.ss       = regs->ss;
     struct task_struct* child = task_fork(&cf);
     if (!child) {
         return -1;
@@ -76,12 +80,12 @@ int sys_exec(struct syscall_frame* regs) {
         return -1;
     }
 
-    struct context_frame cf;
-    cf.eip     = regs->eip;
-    cf.cs      = regs->cs;
-    cf.eflags  = regs->eflags;
-    cf.useresp = regs->useresp;
-    cf.ss      = regs->ss;
+    struct context_frame cf = { 0 };
+    cf.rip    = regs->eip;
+    cf.cs     = regs->cs;
+    cf.rflags = regs->eflags;
+    cf.rsp    = regs->useresp;
+    cf.ss     = regs->ss;
     task_comm_set_path(current_task->pid, kpath);
     int ret = task_exec(kpath, argv, envp, &cf);   // never returns on success
     kfree(kpath);

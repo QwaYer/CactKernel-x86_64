@@ -9,25 +9,34 @@ pub use cact_sync::kernel_types::{
     MmapTable, ProcPageTracker, TaskFdTable, VfsNode,
 };
 
+/// Mirror of `struct context_frame` in task.h: what an entry stub leaves on the
+/// stack — the fifteen registers (ISR_SAVE in Cact/kernel/core/context.inc
+/// pushes them, so the order is fixed), int_no, err_code, and the five slots
+/// the CPU pushes itself.
 #[repr(C)]
 pub struct ContextFrame {
-    pub es:       u32,
-    pub ds:       u32,
-    pub edi:      u32,
-    pub esi:      u32,
-    pub ebp:      u32,
-    pub esp_dummy:u32,
-    pub ebx:      u32,
-    pub edx:      u32,
-    pub ecx:      u32,
-    pub eax:      u32,
-    pub int_no:   u32,
-    pub err_code: u32,
-    pub eip:      u32,
-    pub cs:       u32,
-    pub eflags:   u32,
-    pub useresp:  u32,
-    pub ss:       u32,
+    pub r15:      u64,
+    pub r14:      u64,
+    pub r13:      u64,
+    pub r12:      u64,
+    pub rbp:      u64,
+    pub rbx:      u64,
+    pub r11:      u64,
+    pub r10:      u64,
+    pub r9:       u64,
+    pub r8:       u64,
+    pub rax:      u64,
+    pub rcx:      u64,
+    pub rdx:      u64,
+    pub rsi:      u64,
+    pub rdi:      u64,
+    pub int_no:   u64,
+    pub err_code: u64,
+    pub rip:      u64,
+    pub cs:       u64,
+    pub rflags:   u64,
+    pub rsp:      u64,
+    pub ss:       u64,
 }
 
 #[repr(C)]

@@ -314,35 +314,38 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     }
 
     let stack_top = kstack as usize + KERNEL_STACK_SIZE;
-    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 20 words lie
+    // The child's first frame, in exactly the shape the entry stubs leave
+    // (fifteen registers, int_no, err_code, and the five slots the CPU pushes),
+    // so that whatever returns from it can use the same epilogue as a stub —
+    // pop the registers, drop int_no/err_code, iretq — straight into user mode.
+    // `rax` is zero because that is what fork() returns in the child.
+    //
+    // The switch path itself (task.asm) is still the 32-bit one and is ported in
+    // Phase 3 of PORTING-x86_64.md; this is the frame it will find.  The two
+    // container widths on the way there are 32-bit for now: `TaskStruct.esp`
+    // (a kernel stack pointer into low memory) and the user values, which come
+    // from the 32-bit user ABI.
+    const FRAME_WORDS: usize = 22;
+    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 22 words lie
     // inside it.
-    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 20 * 4) as *mut u32, 20) };
-    let mut sp = 20usize;
+    let frame = unsafe {
+        core::slice::from_raw_parts_mut((stack_top - FRAME_WORDS * 8) as *mut u64, FRAME_WORDS)
+    };
 
-    sp -= 1; frame[sp] = regs.ss;
-    sp -= 1; frame[sp] = regs.useresp;
-    sp -= 1; frame[sp] = regs.eflags;
-    sp -= 1; frame[sp] = regs.cs;
-    sp -= 1; frame[sp] = regs.eip;
-    sp -= 1; frame[sp] = 0;
-    sp -= 1; frame[sp] = regs.ecx;
-    sp -= 1; frame[sp] = regs.edx;
-    sp -= 1; frame[sp] = regs.ebx;
-    sp -= 1; frame[sp] = 0;
-    sp -= 1; frame[sp] = regs.ebp;
-    sp -= 1; frame[sp] = regs.esi;
-    sp -= 1; frame[sp] = regs.edi;
-    sp -= 1; frame[sp] = regs.ds;
-    sp -= 1; frame[sp] = regs.es;
+    frame[0]  = regs.r15; frame[1]  = regs.r14; frame[2]  = regs.r13; frame[3]  = regs.r12;
+    frame[4]  = regs.rbp; frame[5]  = regs.rbx;
+    frame[6]  = regs.r11; frame[7]  = regs.r10; frame[8]  = regs.r9;  frame[9]  = regs.r8;
+    frame[10] = 0;                                  // rax: fork() returns 0 in the child
+    frame[11] = regs.rcx; frame[12] = regs.rdx; frame[13] = regs.rsi; frame[14] = regs.rdi;
+    frame[15] = 0;                                  // int_no
+    frame[16] = 0;                                  // err_code
+    frame[17] = regs.rip;
+    frame[18] = regs.cs;
+    frame[19] = regs.rflags;
+    frame[20] = regs.rsp;
+    frame[21] = regs.ss;
 
-    let tramp = ffi::fork_task_trampoline as *const () as u32;
-    sp -= 1; frame[sp] = tramp;
-    sp -= 1; frame[sp] = 0;
-    sp -= 1; frame[sp] = 0;
-    sp -= 1; frame[sp] = 0;
-    sp -= 1; frame[sp] = 0;
-
-    child.esp = (stack_top - 20 * 4) as u32;
+    child.esp = (stack_top - FRAME_WORDS * 8) as u32;
 
     // SAFETY: `child` is a live task; installing its sigreturn trampoline is part of fork.
     unsafe { task_setup_sigreturn(child as *mut TaskStruct) };

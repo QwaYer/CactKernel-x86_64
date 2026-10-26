@@ -1,4 +1,5 @@
-[bits 32]
+[bits 64]
+%include "context.inc"
 
 global isr0
 global isr1
@@ -38,185 +39,84 @@ extern page_fault_handler
 
 section .text
 
-isr0:
-    push dword 0
-    push dword 0
+; The exceptions in the CPU's "pushes an error code" group leave it on the
+; stack; the rest get a zero in its place so that every frame has the same
+; shape.  The vector is pushed after it, which puts int_no below err_code in
+; `struct context_frame` — the order ISR_SAVE expects.
+%macro ISR_NOERR 1
+global isr%1
+isr%1:
+    push qword 0
+    push qword %1
     jmp isr_common_stub
+%endmacro
 
-isr1:
-    push dword 0
-    push dword 1
+%macro ISR_ERR 1
+global isr%1
+isr%1:
+    push qword %1
     jmp isr_common_stub
+%endmacro
 
-isr2:
-    push dword 0
-    push dword 2
-    jmp isr_common_stub
+ISR_NOERR 0
+ISR_NOERR 1
+ISR_NOERR 2
+ISR_NOERR 3
+ISR_NOERR 4
+ISR_NOERR 5
+ISR_NOERR 6
+ISR_ERR   8
+ISR_NOERR 9
+ISR_ERR   10
+ISR_ERR   11
+ISR_ERR   12
+ISR_ERR   13
+ISR_NOERR 15
+ISR_NOERR 16
+ISR_ERR   17
+ISR_NOERR 18
+ISR_NOERR 19
+ISR_NOERR 20
+ISR_ERR   21
+ISR_NOERR 22
+ISR_NOERR 23
+ISR_NOERR 24
+ISR_NOERR 25
+ISR_NOERR 26
+ISR_NOERR 27
+ISR_NOERR 28
+ISR_ERR   29
+ISR_ERR   30
+ISR_NOERR 31
 
-isr3:
-    push dword 0
-    push dword 3
-    jmp isr_common_stub
-
-isr4:
-    push dword 0
-    push dword 4
-    jmp isr_common_stub
-
-isr5:
-    push dword 0
-    push dword 5
-    jmp isr_common_stub
-
-isr6:
-    push dword 0
-    push dword 6
-    jmp isr_common_stub
-
-isr8:
-    push dword 8
-    jmp isr_common_stub
-
-isr9:
-    push dword 0
-    push dword 9
-    jmp isr_common_stub
-
-isr10:
-    push dword 10
-    jmp isr_common_stub
-
-isr11:
-    push dword 11
-    jmp isr_common_stub
-
-isr12:
-    push dword 12
-    jmp isr_common_stub
-
-isr13:
-    push dword 13
-    jmp isr_common_stub
-
+; #PF has a handler of its own (it resolves the fault instead of reporting it).
 isr14:
-    push dword 14
-    jmp  isr_pf_stub
+    push qword 14
+    jmp isr_pf_stub
 
-isr15:
-    push dword 0
-    push dword 15
-    jmp isr_common_stub
-
-isr16:
-    push dword 0
-    push dword 16
-    jmp isr_common_stub
-
-isr17:
-    push dword 17
-    jmp isr_common_stub
-
-isr18:
-    push dword 0
-    push dword 18
-    jmp isr_common_stub
-
-isr19:
-    push dword 0
-    push dword 19
-    jmp isr_common_stub
-
-isr20:
-    push dword 0
-    push dword 20
-    jmp isr_common_stub
-
-isr21:
-    push dword 21
-    jmp isr_common_stub
-
-isr22:
-    push dword 0
-    push dword 22
-    jmp isr_common_stub
-
-isr23:
-    push dword 0
-    push dword 23
-    jmp isr_common_stub
-
-isr24:
-    push dword 0
-    push dword 24
-    jmp isr_common_stub
-
-isr25:
-    push dword 0
-    push dword 25
-    jmp isr_common_stub
-
-isr26:
-    push dword 0
-    push dword 26
-    jmp isr_common_stub
-
-isr27:
-    push dword 0
-    push dword 27
-    jmp isr_common_stub
-
-isr28:
-    push dword 0
-    push dword 28
-    jmp isr_common_stub
-
-isr29:
-    push dword 29
-    jmp isr_common_stub
-
-isr30:
-    push dword 30
-    jmp isr_common_stub
-
-isr31:
-    push dword 0
-    push dword 31
-    jmp isr_common_stub
-
+; Save the registers, hand the frame over, put everything back and return with
+; iretq.  rbp is the frame pointer here: its interrupted value was pushed by
+; ISR_SAVE, so it is free, and `and rsp, -16` makes the stack 16-byte aligned
+; at the call as the SysV ABI requires — an interrupt can arrive with rsp at
+; any alignment.
 isr_pf_stub:
-    pusha
-    push ds
-    push es
-
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-
-    push esp
+    ISR_SAVE
+    mov rbp, rsp
+    and rsp, -16
+    mov rdi, rbp
     call page_fault_handler
-    add esp, 4
-
-    pop es
-    pop ds
-    popa
-    add esp, 8
-    iretd
+    mov rsp, rbp
+    ISR_RESTORE
+    add rsp, 16                 ; drop the vector and the error code
+    iretq
 
 isr_common_stub:
-    pusha
-    push ds
-    push es
-
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
-
-    push esp
+    ISR_SAVE
+    mov rbp, rsp
+    and rsp, -16
+    mov rdi, rbp
     call exception_handler
-    add esp, 4
-
-    pop es
-    pop ds
-    popa
-    add esp, 8
-    iretd
+    mov rsp, rbp
+    ISR_RESTORE
+    add rsp, 16
+    iretq

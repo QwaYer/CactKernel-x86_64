@@ -133,15 +133,28 @@ typedef enum {
     TASK_STOPPED
 } task_state;
 
+/* Interrupt/exception frame, exactly as an entry stub leaves it on the stack:
+ * what the CPU pushed itself (rip, cs, rflags and, across a privilege change,
+ * rsp and ss — plus the error code on the exceptions that have one), then the
+ * vector the stub pushed, then the fifteen general-purpose registers.
+ *
+ * The field order is fixed by Cact/kernel/core/context.inc, which pushes them:
+ * long mode has no pusha, so the registers go up one at a time and the last
+ * push has to be the first field here.  There is no es/ds — long mode ignores
+ * those segments for data access, so nothing needs to restore them. */
 struct context_frame {
-    uint32_t es;
-    uint32_t ds;
-    uint32_t edi, esi, ebp, esp_dummy, ebx, edx, ecx, eax;
-    uint32_t int_no;
-    uint32_t err_code;
-    uint32_t eip, cs, eflags;
-    uint32_t useresp, ss;
+    uint64_t r15, r14, r13, r12;
+    uint64_t rbp, rbx;
+    uint64_t r11, r10, r9, r8;
+    uint64_t rax, rcx, rdx, rsi, rdi;
+    uint64_t int_no;
+    uint64_t err_code;
+    uint64_t rip, cs, rflags;
+    uint64_t rsp, ss;
 };
+
+/* Fifteen registers plus int_no, err_code and the five the CPU pushes. */
+typedef char _context_frame_size_check[sizeof(struct context_frame) == 22 * 8 ? 1 : -1];
 
 typedef uint32_t uid_t;
 typedef uint32_t gid_t;

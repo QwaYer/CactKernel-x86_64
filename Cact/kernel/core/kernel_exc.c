@@ -19,20 +19,20 @@
 
 // printk_color_level() emits its string verbatim, so the "0x" prefix has to be
 // part of the formatted value exactly once.
-static void put_hex(uint32_t v, uint32_t color) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "0x%x", (unsigned)v);
+static void put_hex(uint64_t v, uint32_t color) {
+    char buf[24];
+    snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v);
     printk_color_level(KLOG_LEVEL_CRIT, buf, color);
 }
 
-static void put_label_hex(char* label, uint32_t v, uint32_t color) {
+static void put_label_hex(char* label, uint64_t v, uint32_t color) {
     printk_color_level(KLOG_LEVEL_CRIT, label, color);
     put_hex(v, color);
 }
 
 // User space is [USER_SPACE_START, KERNEL_BASE); everything else is kernel:
 // low identity-mapped RAM, the kernel image, and the kalloc()'d kernel stacks.
-static int in_kernel_space(uint32_t addr) {
+static int in_kernel_space(uintptr_t addr) {
     return addr < USER_SPACE_START || addr >= KERNEL_BASE;
 }
 
@@ -49,16 +49,19 @@ static int peek_user_u32(uint32_t* pd, uint32_t addr, uint32_t* out) {
     return 0;
 }
 
-static void print_trace_frame(int idx, uint32_t ret_eip) {
-    char buf[16];
+static void print_trace_frame(int idx, uintptr_t ret_ip) {
+    char buf[24];
     printk_color_level(KLOG_LEVEL_CRIT, "  [", COLOR_LIGHT_BROWN);
     snprintf(buf, sizeof(buf), "%d", idx);
     printk_color_level(KLOG_LEVEL_CRIT, buf, COLOR_LIGHT_BROWN);
     printk_color_level(KLOG_LEVEL_CRIT, "] ", COLOR_LIGHT_BROWN);
-    put_hex(ret_eip, COLOR_LIGHT_BROWN);
+    put_hex(ret_ip, COLOR_LIGHT_BROWN);
 
+    /* The symbol table still holds 32-bit addresses (the ELF loaders are
+     * ported in Phase 5/6 of PORTING-x86_64.md), so the name lookup truncates
+     * for now — the raw address above is always printed in full. */
     uint32_t sym_off;
-    const char* sym = sym_resolve_addr(ret_eip, &sym_off);
+    const char* sym = sym_resolve_addr((uint32_t)ret_ip, &sym_off);
     if (sym) {
         printk_color_level(KLOG_LEVEL_CRIT, " (", COLOR_DARK_GREY);
         printk((char*)sym);
@@ -70,62 +73,76 @@ static void print_trace_frame(int idx, uint32_t ret_eip) {
     printk_color_level(KLOG_LEVEL_CRIT, "\n", COLOR_LIGHT_BROWN);
 }
 
-// Register block, segment selectors and call trace — the part of a dump that
-// says *where the CPU was*.  Shared with the console's PrintScreen dump, so the
-// stack pointer to report is always passed in: an exception stub leaves the
-// faulting ESP at a fixed offset from the frame, while a frame built by hand in
-// the keyboard driver carries it separately.
-static void print_register_block(struct context_frame *regs, uint32_t esp, int priv_change) {
-    put_label_hex(" EIP: ", regs->eip, COLOR_LIGHT_RED);
-    put_label_hex("  CS: ", regs->cs, COLOR_LIGHT_RED);
-    put_label_hex(" EFLAGS: ", regs->eflags, COLOR_LIGHT_RED);
+// Register block and call trace — the part of a dump that says *where the CPU
+// was*.  Shared with the console's PrintScreen dump, so the stack pointer to
+// report is always passed in: an exception stub leaves the faulting RSP at a
+// fixed offset from the frame, while a frame built by hand in the keyboard
+// driver carries it separately.  Long mode has no es/ds worth reporting (the
+// segments are ignored for data access), so the selectors that matter are the
+// ones in the frame's tail: CS, SS and the interrupted stack pointer.
+static void print_register_block(struct context_frame *regs, uintptr_t esp, int priv_change) {
+    put_label_hex(" RIP: ", regs->rip, COLOR_LIGHT_RED);
+    put_label_hex("  CS: ", regs->cs & 0xFFFFu, COLOR_LIGHT_RED);
+    put_label_hex(" RFLAGS: ", regs->rflags, COLOR_LIGHT_RED);
     printk("\n");
 
-    put_label_hex("EAX: ", regs->eax, COLOR_LIGHT_GREEN);
-    put_label_hex(" EBX: ", regs->ebx, COLOR_LIGHT_GREEN);
-    put_label_hex(" ECX: ", regs->ecx, COLOR_LIGHT_GREEN);
-    put_label_hex(" EDX: ", regs->edx, COLOR_LIGHT_GREEN);
+    put_label_hex("RAX: ", regs->rax, COLOR_LIGHT_GREEN);
+    put_label_hex(" RBX: ", regs->rbx, COLOR_LIGHT_GREEN);
+    put_label_hex(" RCX: ", regs->rcx, COLOR_LIGHT_GREEN);
+    put_label_hex(" RDX: ", regs->rdx, COLOR_LIGHT_GREEN);
     printk("\n");
 
-    put_label_hex("ESI: ", regs->esi, COLOR_LIGHT_GREEN);
-    put_label_hex(" EDI: ", regs->edi, COLOR_LIGHT_GREEN);
-    put_label_hex(" EBP: ", regs->ebp, COLOR_LIGHT_GREEN);
-    put_label_hex(" ESP: ", esp, COLOR_LIGHT_GREEN);
+    put_label_hex("RSI: ", regs->rsi, COLOR_LIGHT_GREEN);
+    put_label_hex(" RDI: ", regs->rdi, COLOR_LIGHT_GREEN);
+    put_label_hex(" RBP: ", regs->rbp, COLOR_LIGHT_GREEN);
+    put_label_hex(" RSP: ", esp, COLOR_LIGHT_GREEN);
     printk("\n");
 
-    // Segment selectors: only the low 16 bits are the selector, the upper half
-    // of a `push ds` (and of some saved frames) is architecturally undefined.
-    put_label_hex(" DS: ", regs->ds & 0xFFFFu, COLOR_LIGHT_GREEN);
-    put_label_hex(" ES: ", regs->es & 0xFFFFu, COLOR_LIGHT_GREEN);
+    put_label_hex("R8 : ", regs->r8, COLOR_LIGHT_GREEN);
+    put_label_hex(" R9: ", regs->r9, COLOR_LIGHT_GREEN);
+    put_label_hex(" R10: ", regs->r10, COLOR_LIGHT_GREEN);
+    put_label_hex(" R11: ", regs->r11, COLOR_LIGHT_GREEN);
+    printk("\n");
+
+    put_label_hex("R12: ", regs->r12, COLOR_LIGHT_GREEN);
+    put_label_hex(" R13: ", regs->r13, COLOR_LIGHT_GREEN);
+    put_label_hex(" R14: ", regs->r14, COLOR_LIGHT_GREEN);
+    put_label_hex(" R15: ", regs->r15, COLOR_LIGHT_GREEN);
+    printk("\n");
+
     if (priv_change) {
         put_label_hex(" SS: ", regs->ss & 0xFFFFu, COLOR_LIGHT_GREEN);
-        put_label_hex(" UESP: ", regs->useresp, COLOR_LIGHT_GREEN);
+        put_label_hex(" URSP: ", regs->rsp, COLOR_LIGHT_GREEN);
     } else {
         printk_color_level(KLOG_LEVEL_CRIT, " SS: <kernel>", COLOR_LIGHT_GREEN);
     }
     printk("\n");
 }
 
-static void print_call_trace(struct context_frame *regs, uint32_t esp, int priv_change) {
-    // Stack trace — walk the EBP chain.  A ring-0 fault runs on a kernel stack
-    // (kalloc page, low memory), a ring-3 fault on the user stack; the two need
-    // different address tests and the user one must go through the page tables.
+static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv_change) {
+    // Stack trace — walk the frame-pointer chain.  A ring-0 fault runs on a
+    // kernel stack (kalloc page, low memory), a ring-3 fault on the user stack;
+    // the two need different address tests and the user one must go through the
+    // page tables.  The user walk still reads 4-byte slots: that frame is the
+    // 32-bit user ABI's until the user side is rebuilt (Phase 6 of
+    // PORTING-x86_64.md), while the kernel walk is already 64-bit.
     printk_color_level(KLOG_LEVEL_CRIT, "Call trace:\n", COLOR_LIGHT_BROWN);
     int frames = 0;
-    uint32_t ebp = regs->ebp;
+    uintptr_t rbp = regs->rbp;
 
-    if (in_kernel_space(ebp) && ebp >= 0x1000u) {
-        while (frames < TRACE_FRAMES_MAX && (ebp & 3u) == 0) {
-            uint32_t ret_eip  = ((uint32_t*)ebp)[1];
-            uint32_t next_ebp = ((uint32_t*)ebp)[0];
-            if (!in_kernel_space(ret_eip)) break;
-            print_trace_frame(frames, ret_eip);
+    if (in_kernel_space(rbp) && rbp >= 0x1000u) {
+        while (frames < TRACE_FRAMES_MAX && (rbp & 7u) == 0) {
+            uintptr_t ret_rip  = ((uintptr_t*)rbp)[1];
+            uintptr_t next_rbp = ((uintptr_t*)rbp)[0];
+            if (!in_kernel_space(ret_rip)) break;
+            print_trace_frame(frames, ret_rip);
             frames++;
-            if (next_ebp <= ebp) break;
-            ebp = next_ebp;
+            if (next_rbp <= rbp) break;
+            rbp = next_rbp;
         }
     } else {
         uint32_t* pd = current_task ? current_task->page_directory : 0;
+        uint32_t ebp = (uint32_t)rbp;
         while (frames < TRACE_FRAMES_MAX && (ebp & 3u) == 0) {
             uint32_t ret_eip, next_ebp;
             if (peek_user_u32(pd, ebp,     &next_ebp) != 0) break;
@@ -139,51 +156,42 @@ static void print_call_trace(struct context_frame *regs, uint32_t esp, int priv_
 
     if (frames == 0) {
         printk_color_level(KLOG_LEVEL_CRIT, "  (no trace)\n", COLOR_DARK_GREY);
-        // EBP was unusable — show the raw words at the stack pointer, which is
+        // RBP was unusable — show the raw words at the stack pointer, which is
         // where a corrupted return address / pointer ends up.
         printk_color_level(KLOG_LEVEL_CRIT, "Stack: ", COLOR_DARK_GREY);
         if (priv_change) {
             uint32_t* pd = current_task ? current_task->page_directory : 0;
             for (int i = 0; i < 12; i++) {
                 uint32_t v;
-                if (peek_user_u32(pd, regs->useresp + (uint32_t)i * 4u, &v) != 0) {
+                if (peek_user_u32(pd, (uint32_t)(regs->rsp + (uint64_t)i * 4u), &v) != 0) {
                     printk(" ??");
                 } else {
                     printk(" "); put_hex(v, COLOR_DARK_GREY);
                 }
             }
         } else {
-            uint32_t* sp = (uint32_t*)esp;
+            uintptr_t* sp = (uintptr_t*)esp;
             for (int i = 0; i < 12; i++) { printk(" "); put_hex(sp[i], COLOR_DARK_GREY); }
         }
         printk_color_level(KLOG_LEVEL_CRIT, "\n", COLOR_DARK_GREY);
     }
 }
 
-// The instruction bytes around EIP — the faulting instruction, or where a wild
+// The instruction bytes around RIP — the faulting instruction, or where a wild
 // jump landed.
-static void print_code_bytes(uint32_t eip) {
-    char buf[32];
+//
+// Re-reading them goes through the page tables, which are still the 32-bit
+// two-level ones here: walking a four-level mapping with PD_INDEX/PT_INDEX
+// would dereference whatever the PML4 entry happens to be — a nested fault
+// inside the fault handler.  The walk comes back with the memory layer in
+// Phase 2 of PORTING-x86_64.md; until then the dump says so instead of
+// guessing.
+static void print_code_bytes(uintptr_t rip) {
     printk_color_level(KLOG_LEVEL_CRIT, "Code: ", COLOR_LIGHT_BROWN);
-    uint32_t* pd = in_kernel_space(eip) ? get_current_pd()
-                  : (current_task ? current_task->page_directory : 0);
-    if (!pd) { printk("??\n"); return; }
-    for (int i = -4; i < 8; i++) {
-        uint32_t addr = eip + (uint32_t)i;
-        if (addr < 0x1000 || addr >= KERNEL_BASE) { printk("?? "); continue; }
-        uint32_t pdi = PD_INDEX(addr);
-        uint32_t pti = PT_INDEX(addr);
-        if (!(pd[pdi] & PAGE_PRESENT)) { printk("?? "); continue; }
-        uint32_t* pt = (uint32_t*)(pd[pdi] & ~0xFFFu);
-        if (!(pt[pti] & PAGE_PRESENT)) { printk("?? "); continue; }
-        uint32_t phys = (pt[pti] & ~0xFFFu) + (addr & 0xFFFu);
-        uint8_t byte = *(volatile uint8_t*)(uintptr_t)phys;
-        snprintf(buf, sizeof(buf), "0x%x", (unsigned)byte);
-        if (i == 0) printk_color_level(KLOG_LEVEL_CRIT, "<", COLOR_LIGHT_GREEN);
-        printk(buf);
-        if (i == 0) printk_color_level(KLOG_LEVEL_CRIT, ">", COLOR_LIGHT_GREEN);
-        printk(" ");
-    }
+    put_hex(rip, COLOR_LIGHT_BROWN);
+    printk_color_level(KLOG_LEVEL_CRIT,
+                       " (bytes not shown: page-table walk is 32-bit)",
+                       COLOR_DARK_GREY);
     printk("\n");
 }
 
@@ -191,7 +199,7 @@ static void print_code_bytes(uint32_t eip) {
 // console's PrintScreen key asks for (Linux's Show_Registers).  The frame comes
 // from the caller, so there is no exception number or error code to report and
 // the header names the caller instead.
-void dump_registers(const char *tag, struct context_frame *regs, uint32_t esp) {
+void dump_registers(const char *tag, struct context_frame *regs, uintptr_t esp) {
     printk_color_level(KLOG_LEVEL_CRIT, "\n=== ", COLOR_LIGHT_BROWN);
     printk((char*)tag);
     printk_color_level(KLOG_LEVEL_CRIT, " ===\n", COLOR_LIGHT_BROWN);
@@ -199,7 +207,7 @@ void dump_registers(const char *tag, struct context_frame *regs, uint32_t esp) {
     int priv_change = (regs->cs & 3u) != 0;
     print_register_block(regs, esp, priv_change);
     print_call_trace(regs, esp, priv_change);
-    print_code_bytes(regs->eip);
+    print_code_bytes(regs->rip);
 }
 
 // CPU exception handler — signals for user tasks, panic for kernel
@@ -216,7 +224,7 @@ void dump_context_frame(struct context_frame* regs, uint32_t fault_addr, uint32_
     // Only a ring3 -> ring0 delivery makes the CPU push SS:ESP, so the frame is
     // 8 bytes larger and regs->useresp/ss are meaningful only in that case.
     int priv_change = (regs->cs & 3u) != 0;
-    uint32_t fault_esp = context_frame_esp(regs);
+    uintptr_t fault_esp = context_frame_esp(regs);
 
     printk_color_level(KLOG_LEVEL_CRIT, "\n=== ", COLOR_LIGHT_RED);
     if (signal && is_user_task) {
@@ -257,7 +265,7 @@ void dump_context_frame(struct context_frame* regs, uint32_t fault_addr, uint32_
 
     print_register_block(regs, fault_esp, priv_change);
     print_call_trace(regs, fault_esp, priv_change);
-    print_code_bytes(regs->eip);
+    print_code_bytes(regs->rip);
 }
 
 // CPU exception handler — signals for user tasks, panic for kernel
@@ -299,13 +307,15 @@ void irq_apic_eoi(void) {
     apic_eoi();
 }
 
-/* ESP the CPU pushed for the frame at `regs`.  The stub pushes the whole frame
- * *below* the interrupted ESP, so the interrupted ESP itself is regs +
- * sizeof(context_frame), minus the 8 bytes the CPU only pushes across a
- * privilege change.  Only meaningful for a frame a stub pushed — a frame built
- * by hand carries its ESP separately (see dump_registers). */
-uint32_t context_frame_esp(struct context_frame *regs) {
-    return (uint32_t)regs + (((regs->cs & 3u) != 0) ? 68u : 60u);
+/* RSP the CPU pushed for the frame at `regs`.  The stub pushes the whole frame
+ * *below* the interrupted RSP, so that RSP is the end of the frame — except
+ * that the CPU pushes rsp and ss only across a privilege change, so a ring-0
+ * delivery has two 8-byte slots fewer.  Only meaningful for a frame a stub
+ * pushed: a frame built by hand carries its RSP separately (see
+ * dump_registers). */
+uintptr_t context_frame_esp(struct context_frame *regs) {
+    uintptr_t end = (uintptr_t)regs + sizeof(struct context_frame);
+    return ((regs->cs & 3u) != 0) ? end : end - 2 * sizeof(uint64_t);
 }
 
 /* ── The frame of the interrupt being handled ─────────────────────────────

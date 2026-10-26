@@ -109,7 +109,7 @@ pub(crate) fn pte_get(pd: *mut u32, vaddr: u32) -> *mut u32 {
     unsafe { pt.add(pt_index(vaddr) as usize) }
 }
 
-fn kill_current(fault_addr: u32, _err: u32, _eip: u32, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
+fn kill_current(fault_addr: u32, _err: u32, _rip: u32, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
     cr3.dismiss();
 
     // SAFETY: regs is provided by the interrupt frame.
@@ -176,9 +176,11 @@ pub extern "C" fn page_fault_init() {
 pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
     let fault_addr = read_cr2_val();
     // SAFETY: regs is provided by the interrupt frame.
-    let err = unsafe { (*regs).err_code };
+    // The error code itself is 32 bits wide (bits above 15 are reserved zero);
+    // only the word that carries it in the frame is 64-bit.
+    let err = unsafe { (*regs).err_code } as u32;
     // SAFETY: `regs` is the interrupt frame handed to the #PF handler.
-    let eip = unsafe { (*regs).eip };
+    let eip = unsafe { (*regs).rip } as u32;
 
     // SAFETY: `G_STATS.total_faults` bumped from the #PF handler; interrupts are
     // disabled on this CPU, and a cross-CPU lost count is only cosmetic.

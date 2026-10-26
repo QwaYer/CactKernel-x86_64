@@ -1,4 +1,5 @@
-[bits 32]
+[bits 64]
+%include "context.inc"
 
 ; ---------------------------------------------------------------------------
 ; Device interrupt stubs (vectors 0x30–0xEF). Each pushes an error-code slot
@@ -7,7 +8,7 @@
 ;
 ; The error-code slot is a zero: device interrupts have none, but pushing it
 ; makes the frame the stubs leave on the stack exactly a `struct context_frame`
-; (es, ds, pusha, int_no, err_code, eip, cs, eflags[, useresp, ss]), so the
+; (the CPU's own pushes, then int_no/err_code, then the registers), so the
 ; dispatcher can publish the interrupted context as-is — see get_irq_regs().
 ; ---------------------------------------------------------------------------
 extern msidev_dispatch
@@ -18,8 +19,8 @@ section .text
 %macro msidev_entry 1
 global msidev_stub_%1
 msidev_stub_%1:
-    push dword 0
-    push dword %1
+    push qword 0
+    push qword %1
     jmp msidev_common_dispatch
 %endmacro
 
@@ -31,26 +32,21 @@ msidev_entry msidev_vec
 
 global msidev_common_dispatch
 msidev_common_dispatch:
-    pusha
-    push ds
-    push es
-    mov ax, 0x10
-    mov ds, ax
-    mov es, ax
+    ISR_SAVE
+    mov rbp, rsp
+    and rsp, -16
 
-    mov eax, esp            ; the entry frame is a struct context_frame
-    mov esi, [eax + 40]     ; ... whose int_no is the vector the stub pushed
-    push eax                ; msidev_dispatch(vector, frame)
-    push esi
+    ; The frame is `rbp`; the vector the stub pushed is int_no, which sits
+    ; directly below the fifteen saved registers (15 * 8).
+    mov edi, [rbp + 120]
+    mov rsi, rbp
     call msidev_dispatch
-    add esp, 8
-
     call irq_apic_eoi
-    pop es
-    pop ds
-    popa
-    add esp, 8              ; drop the vector and the error-code slot
-    iretd
+
+    mov rsp, rbp
+    ISR_RESTORE
+    add rsp, 16                 ; drop the vector and the error-code slot
+    iretq
 
 section .rodata
 global msidev_stub_table
