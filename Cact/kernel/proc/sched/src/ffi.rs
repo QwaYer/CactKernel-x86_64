@@ -112,9 +112,9 @@ unsafe extern "C" {
     pub fn apic_x2apic_mode() -> bool;
     pub fn apic_send_ipi(dest_lapic: u32, vector: u32) -> i32;
 
-    pub fn gdt_flush(gdt_ptr: u32);
-    /// Rewrite the boot GDT's per-task TLS descriptor base.
-    pub fn gdt_write_tls(base: u32);
+    pub fn gdt_flush(gdt_ptr: u64);
+    /// Program the per-task `%gs` base (IA32_GS_BASE) on the calling core.
+    pub fn gdt_write_tls(base: u64);
     /// Load `sel` into `%gs` on the calling core.
     pub fn gdt_load_gs(sel: u16);
     pub fn idt_reload();

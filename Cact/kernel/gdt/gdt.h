@@ -8,55 +8,65 @@ struct gdt_entry {
     uint16_t limit_low;     // Bits 0-15 of segment limit
     uint16_t base_low;      // Bits 0-15 of base address
     uint8_t  base_middle;   // Bits 16-23 of base address
-    uint8_t  access;        // Access flags (P, DPL, Type)
+    uint8_t  access;        // Access flags (P, DPL, S, Type)
     uint8_t  granularity;   // Limit high (4 bits) + G, DB, L flags
     uint8_t  base_high;     // Bits 24-31 of base address
 } __attribute__((packed));
 
-// GDTR structure (48-bit pseudo-descriptor)
+// GDTR structure — 80 bits in long mode: limit plus a full 64-bit base
 struct gdt_ptr {
     uint16_t limit;         // Size of GDT - 1
-    uint32_t base;          // Linear address of GDT
+    uint64_t base;          // Linear address of GDT
 } __attribute__((packed));
 
-// TSS (Task State Segment) for hardware task switching / ring0 stack
+// 64-bit Task State Segment.  Long mode has no hardware task switching left to
+// save registers for, so the whole register image is gone and what remains is
+// the stack the CPU uses on a privilege change (rsp0) and the seven IST stacks.
+// No ss0 either: the stack segment for a ring-3 -> ring-0 transition is fixed
+// (null selector, base 0) and cannot be configured.  The I/O permission bitmap
+// is unused, so iomap_base points past the limit.
 struct tss_entry_struct {
-    uint32_t prev_tss;      // Previous TSS (for hardware task switching)
-    uint32_t esp0;          // Stack pointer for ring0
-    uint32_t ss0;           // Stack segment for ring0
-    uint32_t esp1, ss1;     // Ring1 stack (unused)
-    uint32_t esp2, ss2;     // Ring2 stack (unused)
-    uint32_t cr3;           // Page directory base (unused)
-    uint32_t eip, eflags, eax, ecx, edx, ebx, esp, ebp, esi, edi;  // Saved registers
-    uint32_t es, cs, ss, ds, fs, gs;  // Saved segment selectors
-    uint32_t ldt;           // LDT selector (unused)
-    uint16_t trap;          // Debug trap flag
-    uint16_t iomap_base;    // I/O permission bitmap base offset
+    uint32_t reserved0;
+    uint64_t rsp0;          // Stack for interrupts while the CPU is in ring 3
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist[7];        // IST1..IST7
+    uint64_t reserved2;
+    uint16_t reserved3;
+    uint16_t iomap_base;
 } __attribute__((packed));
+
+/* IST indices: the exceptions that cannot run on whatever stack is current.
+ * A #DF is usually "the stack is broken", so it must have one of its own. */
+#define IST_DOUBLE_FAULT 1
+#define IST_NMI          2
 
 // GDT initialization
 void init_gdt();
-void set_gdt_gate(int num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran);
-void write_tss(int num, uint16_t ss0, uint32_t esp0);
+void set_gdt_gate(int num, uint64_t base, uint32_t limit, uint8_t access, uint8_t gran);
+void write_tss(int num, uint64_t rsp0);
+void tss_set_ist(int index, uint64_t rsp);
 
-// Per-task TLS descriptor.  Its index must be the same in the boot GDT (gdt.c)
-// and in every per-CPU GDT (smp.rs), because a thread migrates between cores
-// and %gs has to name the same selector everywhere: indices 5..68 there are the
-// 64 per-CPU TSS descriptors, so the TLS slot is the one after them.  Keep
-// TLS_SLOT in step with Cact/kernel/proc/sched/src/smp.rs (a static assert in
-// that file pins the selector value).
-#define GDT_TLS_SLOT   (5 + 64)                  /* TSS_SLOT + MAX_CPUS */
-#define GDT_TLS_SEL    ((uint16_t)(GDT_TLS_SLOT * 8 + 3))  /* RPL 3: ring 3 may load it */
-#define GDT_ENTRIES    (GDT_TLS_SLOT + 1)
+/* Per-task TLS.  In long mode a segment's base lives in an MSR (IA32_GS_BASE),
+ * not in the descriptor, so gdt_write_tls() programs the MSR and gdt_load_gs()
+ * only loads a selector.  The descriptor keeps its slot so the selector value
+ * stays valid; TLS itself moves to %fs in Phase 3 of PORTING-x86_64.md, when
+ * %gs becomes per-CPU for swapgs. */
+#define GDT_TSS_SLOT    5
+#define GDT_TSS_SLOTS   2       /* a 64-bit TSS descriptor is 16 bytes */
+#define GDT_TLS_SLOT    (GDT_TSS_SLOT + GDT_TSS_SLOTS * 64)   /* TSS_SLOT + 2 * MAX_CPUS */
+#define GDT_TLS_SEL     ((uint16_t)(GDT_TLS_SLOT * 8 + 3))    /* RPL 3: ring 3 may load it */
+#define GDT_ENTRIES     (GDT_TLS_SLOT + 1)
 
-/* Rewrite the TLS descriptor's base (the boot GDT; APs use their own copy). */
-void gdt_write_tls(uint32_t base);
+/* Rewrite the per-task %gs base (the boot GDT; APs program their own MSR). */
+void gdt_write_tls(uint64_t base);
 /* Load a data selector into %gs. */
 extern void gdt_load_gs(uint16_t sel);
 
 // External assembly functions
 extern struct tss_entry_struct tss_entry;
-extern void gdt_flush(uint32_t);  // Load GDTR and far jump
+extern void gdt_flush(uint64_t);  // Load GDTR and reload CS/SS
 extern void tss_flush(void);      // Load Task Register (LTR)
 
-#endif 
+#endif

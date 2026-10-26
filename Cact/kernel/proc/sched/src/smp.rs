@@ -21,16 +21,20 @@ use crate::sync::{irq_spinlock_acquire, irq_spinlock_release};
 
 const MAX_CPUS: usize = 64;
 const TSS_SLOT: usize = 5;
+/// Slots one TSS descriptor occupies.  In long mode it is a 16-byte system
+/// descriptor (bits 63..32 of the base have no room in the first half), so the
+/// per-CPU descriptors sit two slots apart.
+const TSS_SLOTS: usize = 2;
 
 /// Index of the per-task TLS descriptor.  It must be the same in the boot GDT
-/// (the C `gdt.c`, whose `GDT_TLS_SLOT` is `TSS_SLOT + MAX_CPUS`) and in every
-/// per-CPU GDT: a thread migrates between cores and its `%gs` names one
-/// selector, so the descriptor has to mean the same thing everywhere.  Both
-/// sides assert the resulting selector value.
-const TLS_SLOT: usize = TSS_SLOT + MAX_CPUS;
+/// (the C `gdt.c`, whose `GDT_TLS_SLOT` is `TSS_SLOT + TSS_SLOTS * MAX_CPUS`)
+/// and in every per-CPU GDT: a thread migrates between cores and its `%gs`
+/// names one selector, so the descriptor has to mean the same thing everywhere.
+/// Both sides assert the resulting selector value.
+const TLS_SLOT: usize = TSS_SLOT + TSS_SLOTS * MAX_CPUS;
 /// `%gs` selector for that descriptor (RPL 3 so ring 3 may load it as well).
 pub const TLS_SEL: u16 = (TLS_SLOT as u16) * 8 + 3;
-const _: () = assert!(TLS_SEL == 0x22B, "TLS selector must match GDT_TLS_SEL in gdt.h");
+const _: () = assert!(TLS_SEL == 0x42B, "TLS selector must match GDT_TLS_SEL in gdt.h");
 
 // Copy destination + SIPI vector of the trampoline.
 const TRAMP_ADDR: u32 = 0x8000;
@@ -89,38 +93,23 @@ struct GdtEntry {
 #[derive(Copy, Clone)]
 struct GdtPtr {
     limit: u16,
-    base: u32,
+    base: u64,
 }
 
+/// Mirror of `struct tss_entry_struct` in gdt.h: the 64-bit TSS, which keeps
+/// only the stacks (no saved register image, no ss0 — the ring-transition stack
+/// segment is fixed in long mode).
 #[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct Tss {
-    prev_tss: u32,
-    esp0: u32,
-    ss0: u32,
-    esp1: u32,
-    ss1: u32,
-    esp2: u32,
-    ss2: u32,
-    cr3: u32,
-    eip: u32,
-    eflags: u32,
-    eax: u32,
-    ecx: u32,
-    edx: u32,
-    ebx: u32,
-    esp: u32,
-    ebp: u32,
-    esi: u32,
-    edi: u32,
-    es: u32,
-    cs: u32,
-    ss: u32,
-    ds: u32,
-    fs: u32,
-    gs: u32,
-    ldt: u32,
-    trap: u16,
+    reserved0: u32,
+    rsp0: u64,
+    rsp1: u64,
+    rsp2: u64,
+    reserved1: u64,
+    ist: [u64; 7],
+    reserved2: u64,
+    reserved3: u16,
     iomap_base: u16,
 }
 
@@ -147,32 +136,14 @@ impl SmpCpu {
             }; TLS_SLOT + 1],
             gp: GdtPtr { limit: 0, base: 0 },
             tss: Tss {
-                prev_tss: 0,
-                esp0: 0,
-                ss0: 0,
-                esp1: 0,
-                ss1: 0,
-                esp2: 0,
-                ss2: 0,
-                cr3: 0,
-                eip: 0,
-                eflags: 0,
-                eax: 0,
-                ecx: 0,
-                edx: 0,
-                ebx: 0,
-                esp: 0,
-                ebp: 0,
-                esi: 0,
-                edi: 0,
-                es: 0,
-                cs: 0,
-                ss: 0,
-                ds: 0,
-                fs: 0,
-                gs: 0,
-                ldt: 0,
-                trap: 0,
+                reserved0: 0,
+                rsp0: 0,
+                rsp1: 0,
+                rsp2: 0,
+                reserved1: 0,
+                ist: [0; 7],
+                reserved2: 0,
+                reserved3: 0,
                 iomap_base: 0,
             },
             idle_stack: [0; IDLE_STACK_SIZE],
@@ -259,13 +230,24 @@ fn write_volatile<T: Copy>(addr: *mut T, val: T) {
 // Per-CPU GDT/TSS environment
 // ---------------------------------------------------------------------------
 
-fn set_gdt(entry: &mut GdtEntry, base: u32, limit: u32, access: u8, gran: u8) {
+fn set_gdt(entry: &mut GdtEntry, base: u64, limit: u32, access: u8, gran: u8) {
     entry.base_low = (base & 0xFFFF) as u16;
     entry.base_middle = ((base >> 16) & 0xFF) as u8;
     entry.base_high = ((base >> 24) & 0xFF) as u8;
     entry.limit_low = (limit & 0xFFFF) as u16;
     entry.granularity = (((limit >> 16) & 0x0F) as u8) | (gran & 0xF0);
     entry.access = access;
+}
+
+/// Write the 16-byte TSS descriptor at `slot`: the access byte of a system
+/// descriptor of type 9 (available 64-bit TSS), and a second slot carrying bits
+/// 63..32 of the base, which a segment descriptor has no room for.
+fn set_tss_descriptor(slot: &mut GdtEntry, base: u64, limit: u32) {
+    set_gdt(slot, base, limit, 0x89, 0x00);
+    // SAFETY: the caller passes the first of the two consecutive slots of a
+    // per-CPU TSS, both inside `gdt`.
+    let hi = unsafe { &mut *((slot as *mut GdtEntry).add(1)) };
+    set_gdt(hi, base >> 32, 0, 0, 0);
 }
 
 /// (Re)write `cpu`'s TSS descriptor in its per-CPU GDT.
@@ -276,13 +258,11 @@ fn set_gdt(entry: &mut GdtEntry, base: u32, limit: u32, access: u8, gran: u8) {
 /// descriptor rebuilt first — otherwise `smp_ap_entry`'s `ltr` faults before the
 /// AP has an IDT, which becomes a triple fault and resets the machine.
 fn install_tss_descriptor(p: &mut SmpCpu, cpu: usize) {
-    let tss_base = (&raw mut p.tss) as u32;
-    set_gdt(
-        &mut p.gdt[TSS_SLOT + cpu],
+    let tss_base = (&raw mut p.tss) as u64;
+    set_tss_descriptor(
+        &mut p.gdt[TSS_SLOT + TSS_SLOTS * cpu],
         tss_base,
         core::mem::size_of::<Tss>() as u32 - 1,
-        0xE9,
-        0x00,
     );
 }
 
@@ -307,26 +287,29 @@ fn build_cpu_env(cpu: usize, lapic_id: u32) {
         });
     }
 
-    // Fixed slots 0..4 mirror the boot GDT (user selectors included).
+    // Fixed slots 0..4 mirror the boot GDT (user selectors included).  Code
+    // segments are L=1/D=0 (a 64-bit code segment); G=1 keeps the limit wide.
     set_gdt(&mut p.gdt[0], 0, 0, 0, 0);
-    set_gdt(&mut p.gdt[1], 0, 0xFFFF_FFFF, 0x9A, 0xCF);
-    set_gdt(&mut p.gdt[2], 0, 0xFFFF_FFFF, 0x92, 0xCF);
-    set_gdt(&mut p.gdt[3], 0, 0xFFFF_FFFF, 0xFA, 0xCF);
-    set_gdt(&mut p.gdt[4], 0, 0xFFFF_FFFF, 0xF2, 0xCF);
+    set_gdt(&mut p.gdt[1], 0, 0xFFFFF, 0x9A, 0xAF);
+    set_gdt(&mut p.gdt[2], 0, 0xFFFFF, 0x92, 0xCF);
+    set_gdt(&mut p.gdt[3], 0, 0xFFFFF, 0xFA, 0xAF);
+    set_gdt(&mut p.gdt[4], 0, 0xFFFFF, 0xF2, 0xCF);
 
-    // Per-CPU TSS at slot TSS_SLOT + cpu (str() identifies the CPU).
+    // Per-CPU TSS at slot TSS_SLOT + TSS_SLOTS * cpu (str() identifies the CPU).
     install_tss_descriptor(p, cpu);
 
     // Per-task TLS descriptor, at the same index in every GDT.  Its base is
-    // rewritten per switch by `set_tls_base`; zero means "no TLS for this task".
-    set_gdt(&mut p.gdt[TLS_SLOT], 0, 0xFFFF_FFFF, 0xF2, 0xCF);
+    // programmed through IA32_GS_BASE per switch (`gdt_write_tls`), not through
+    // the descriptor, which long mode ignores for that purpose.
+    set_gdt(&mut p.gdt[TLS_SLOT], 0, 0xFFFFF, 0xF2, 0xCF);
 
-    p.tss.ss0 = 0x10;
-    p.tss.esp0 = stack_top(cpu);
+    // `stack_top` is still 32-bit because the trampoline's info block has a
+    // 32-bit slot for it; Phase 4 of PORTING-x86_64.md widens both.
+    p.tss.rsp0 = stack_top(cpu) as u64;
     p.tss.iomap_base = core::mem::size_of::<Tss>() as u16;
 
     p.gp.limit = (count * core::mem::size_of::<GdtEntry>()) as u16 - 1;
-    p.gp.base = (&raw mut p.gdt) as u32;
+    p.gp.base = (&raw mut p.gdt) as u64;
     p.lapic_id = lapic_id;
     write_volatile(&raw mut p.online, 0);
 }
@@ -364,14 +347,15 @@ pub extern "C" fn smp_ap_entry() -> ! {
     }
 
     let p = cpu_ptr(cpu);
-    let sel = ((TSS_SLOT + cpu) << 3) as u16;
+    let sel = ((TSS_SLOT + TSS_SLOTS * cpu) << 3) as u16;
     // SAFETY: the AP runs on its own `idle_stack` and `cpu < MAX_CPUS` (checked above), so `p`
     // is this CPU's own live `CPU_TABLE` entry, exclusively reborrowed before it is brought up.
     let p = unsafe { &mut *p };
 
     // SAFETY: loading the per-CPU GDT just built for this CPU is the documented AP bring-up step.
-    unsafe { ffi::gdt_flush((&raw const p.gp) as u32) };
-    // SAFETY: `sel` is this CPU's TSS selector (`TSS_SLOT + cpu`) and that TSS is initialised.
+    unsafe { ffi::gdt_flush((&raw const p.gp) as u64) };
+    // SAFETY: `sel` is this CPU's TSS selector (`TSS_SLOT + TSS_SLOTS * cpu`) and that TSS is
+    // initialised.
     unsafe { core::arch::asm!("ltr {0:x}", in(reg) sel, options(nomem, nostack)) };
     // SAFETY: the shared kernel IDT is already built and loaded on the BSP; reloading it makes
     // this AP use it too.
@@ -732,46 +716,42 @@ pub fn smp_cpu_online_sipi(cpu: u32) -> i32 {
 /// `tss_entry` (owned by the scheduler); each AP's TSS lives in `CPU_TABLE`.
 /// Called by the scheduler per context switch so ring3→ring0 transitions
 /// (interrupts, faults) land on the running task's kernel stack on that core.
+///
+/// The parameter stays 32-bit because the kernel stacks are still heap
+/// addresses from a 32-bit-era allocator; Phase 3 of PORTING-x86_64.md widens
+/// the whole task-stack path.
 pub fn set_tss_esp0(cpu: usize, esp0: u32) {
     if cpu == 0 || cpu >= MAX_CPUS {
         return;
     }
     let p = cpu_ptr(cpu);
     // SAFETY: `cpu` is bounds-checked against `MAX_CPUS` above, so `p` addresses a live
-    // `CPU_TABLE` entry and the `tss.esp0` store is in bounds.
-    unsafe { (*p).tss.esp0 = esp0 };
+    // `CPU_TABLE` entry and the `tss.rsp0` store is in bounds.
+    unsafe { (*p).tss.rsp0 = esp0 as u64 };
 }
 
-/// Point the running core's TLS descriptor at `base` and reload `%gs` for it.
+/// Point the running core's thread pointer at `base` — the `%gs` base the task
+/// about to run should see.
 ///
 /// Called by the scheduler for the incoming task (and by `sched_set_tls` when a
-/// task changes its own base), always on the core that will run that task: the
-/// descriptor lives in that core's GDT — the C boot GDT on the BSP, the
-/// per-CPU `SmpCpu.gdt` on an AP — so only that core may write it.  `base == 0`
-/// means "this task has no TLS", and `%gs` is left as the kernel data segment
-/// so a stray `%gs` use cannot reach the base of a stale thread pointer.
+/// task changes its own base), always on the core that will run that task.  In
+/// long mode that base is not a descriptor field but the per-core IA32_GS_BASE
+/// MSR, so there is nothing per-CPU to look up — the MSR of whichever core runs
+/// this is the one to write.  `base == 0` means "this task has no TLS", and
+/// `%gs` is left on the kernel data segment so a stray `%gs` use cannot reach
+/// the base of a stale thread pointer.
 pub fn set_tls_base(cpu: usize, base: u32) {
+    let _ = cpu;
     if base == 0 {
         // SAFETY: loads the kernel data selector; the kernel never dereferences `%gs`.
         unsafe { crate::ffi::gdt_load_gs(0x10) };
         return;
     }
 
-    if cpu == 0 {
-        // SAFETY: the BSP's descriptor is the C boot GDT entry; the scheduler owns it.
-        unsafe { crate::ffi::gdt_write_tls(base) };
-    } else if cpu < MAX_CPUS {
-        let p = cpu_ptr(cpu);
-        // SAFETY: `cpu` is bounds-checked against `MAX_CPUS`, so `p` addresses a live
-        // `CPU_TABLE` entry and the descriptor store is in bounds.
-        unsafe { set_gdt(&mut (*p).gdt[TLS_SLOT], base, 0xFFFF_FFFF, 0xF2, 0xCF) };
-    } else {
-        return;
-    }
-
-    // SAFETY: the descriptor for TLS_SEL is valid on this core (just written, or
-    // written at bring-up), and `mov gs, ax` cannot fault on a present segment.
-    unsafe { crate::ffi::gdt_load_gs(TLS_SEL) };
+    // SAFETY: programs IA32_GS_BASE on the calling core.  %gs is deliberately not
+    // reloaded afterwards: a selector load would take the base from the
+    // descriptor again, and the descriptor's base is zero.
+    unsafe { crate::ffi::gdt_write_tls(base as u64) };
 }
 
 /// 0 until the boot core has finished bringing the system up.  While it is 0 the
@@ -797,7 +777,7 @@ pub fn boot_complete() -> bool {
 }
 
 /// Current CPU index derived from the loaded TSS selector
-/// (slot = TSS_SLOT + cpu).
+/// (slot = TSS_SLOT + TSS_SLOTS * cpu, and each descriptor spans two slots).
 #[no_mangle]
 pub extern "C" fn smp_self_cpu() -> i32 {
     let sel: u16;
@@ -807,5 +787,5 @@ pub extern "C" fn smp_self_cpu() -> i32 {
     unsafe {
         core::arch::asm!("str {0:x}", out(reg) sel, options(nomem, nostack));
     }
-    (((sel as usize) >> 3) as i32) - TSS_SLOT as i32
+    ((((sel as usize) >> 3) - TSS_SLOT) / TSS_SLOTS) as i32
 }
