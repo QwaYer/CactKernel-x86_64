@@ -14,9 +14,13 @@ load_page_directory:
     ret
 
 ; void enable_paging(void)
+;
+; `bts` rather than `or rax, 0x80000000`: the immediate form of OR sign-extends
+; its 32-bit operand in long mode, which would set every bit above 31 as well,
+; and writing a reserved CR0 bit set raises #GP.
 enable_paging:
     mov rax, cr0
-    or rax, 0x80000000
+    bts rax, 31
     mov cr0, rax
     ret
 
