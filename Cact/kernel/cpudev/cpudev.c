@@ -30,7 +30,13 @@ static char           g_brand[49]          = {0};
 // Return-path selector for sysenter_entry: 1 = SYSEXIT, 0 = IRET.
 // Read by interrupt.asm on every syscall return so the two paths can be
 // compared at runtime.
-uint8_t g_syscall_use_sysexit = 1;
+//
+// It sits in the low boot section because the syscall entry that reads it is
+// still 32-bit code (syscall_entries.asm), and a 32-bit absolute reference
+// cannot reach the higher half.  The entry itself is what Phase 3 of
+// PORTING-x86_64.md replaces (SYSCALL/SYSRET and a 64-bit syscall_frame); when
+// it is, this moves back next to the rest of the kernel's data.
+uint8_t g_syscall_use_sysexit __attribute__((section(".boot.data"))) = 1;
 
 static inline void cpuid_raw(uint32_t leaf, uint32_t *eax, uint32_t *ebx,
                               uint32_t *ecx, uint32_t *edx) {
@@ -80,7 +86,9 @@ void syscall_set_esp0(uint32_t esp) {
  * of reading the single global TSS.  The scheduler updates the calling CPU's
  * slot on every context switch, next to the TSS and SYSENTER_ESP updates. */
 #define SYSCALL_ESP0_MAX 64
-uint32_t syscall_esp0[SYSCALL_ESP0_MAX];
+/* Low boot section for the same reason as g_syscall_use_sysexit above: the
+ * 32-bit syscall entry indexes it with a 32-bit absolute reference. */
+uint32_t syscall_esp0[SYSCALL_ESP0_MAX] __attribute__((section(".boot.data")));
 
 void syscall_set_cpu_esp0(uint32_t cpu, uint32_t esp0) {
     if (cpu < SYSCALL_ESP0_MAX)

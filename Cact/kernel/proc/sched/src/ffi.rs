@@ -108,7 +108,7 @@ unsafe extern "C" {
 
     pub fn apic_lapic_id() -> u32;
 
-    pub fn set_idt_gate(n: i32, handler: u32);
+    pub fn set_idt_gate(n: i32, handler: u64);
     pub fn apic_x2apic_mode() -> bool;
     pub fn apic_send_ipi(dest_lapic: u32, vector: u32) -> i32;
 

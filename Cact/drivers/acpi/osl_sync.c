@@ -127,7 +127,7 @@ ACPI_STATUS AcpiOsInstallInterruptHandler(
     }
 
     acpi_sci_callback = (void (*)(void))ServiceRoutine;
-    set_idt_gate(0x20 + InterruptNumber, (uint32_t)acpi_sci_isr);
+    set_idt_gate(0x20 + InterruptNumber, (uint64_t)(uintptr_t)acpi_sci_isr);
     return AE_OK;
 }
 

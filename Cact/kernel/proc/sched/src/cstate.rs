@@ -301,8 +301,8 @@ pub extern "C" fn energy_ipi_init() -> i32 {
     if IPI_INIT_DONE.swap(true, core::sync::atomic::Ordering::SeqCst) {
         return 0;
     }
-    let halt = (ipi_halt_isr as unsafe extern "C" fn()) as usize as u32;
-    let wake = (ipi_wake_isr as unsafe extern "C" fn()) as usize as u32;
+    let halt = ipi_halt_isr as unsafe extern "C" fn() as usize as u64;
+    let wake = ipi_wake_isr as unsafe extern "C" fn() as usize as u64;
     // SAFETY: `IPI_INIT_DONE` guarantees this runs once, during boot after the IDT is loaded;
     // `IPI_HALT_VECTOR` is a valid IDT index and `halt` is the matching ISR stub.
     unsafe { ffi::set_idt_gate(IPI_HALT_VECTOR as i32, halt) };

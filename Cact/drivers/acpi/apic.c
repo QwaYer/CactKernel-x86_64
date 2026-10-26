@@ -457,10 +457,10 @@ int apic_init(void)
      * redirected the old 0x20 timer gate to the SCI stub, leaving the
      * scheduler with no ticks at all.
      */
-    if (idt_gate_handler(LAPIC_TIMER_VECTOR) != (uint32_t)timer_isr)
+    if (idt_gate_handler(LAPIC_TIMER_VECTOR) != (uint64_t)(uintptr_t)timer_isr)
         pr_warn("%s: timer vector 0x%x was not the LAPIC ISR — restoring\n",
                 "apic", (unsigned)LAPIC_TIMER_VECTOR);
-    set_idt_gate(LAPIC_TIMER_VECTOR, (uint32_t)timer_isr);
+    set_idt_gate(LAPIC_TIMER_VECTOR, (uint64_t)(uintptr_t)timer_isr);
 
     uint32_t per_ms = lapic_timer_ticks_per_ms();
     if (per_ms == 0)
@@ -573,7 +573,7 @@ void apic_dump_state(const char *tag)
     uint32_t init = apic_lapic_read(LAPIC_TIMER_INITCNT);
     uint32_t cur  = apic_lapic_read(LAPIC_TIMER_CURCNT);
     uint32_t tdcr = apic_lapic_read(LAPIC_TIMER_DIV);
-    uint32_t gate = idt_gate_handler(LAPIC_TIMER_VECTOR);
+    uint64_t gate = idt_gate_handler(LAPIC_TIMER_VECTOR);
 
     /* Sample the counter twice: a single reading (or two dumps 2 s apart)
      * cannot tell "counting" from "frozen", because the counter wraps once per

@@ -57,6 +57,6 @@ global msidev_stub_table
 msidev_stub_table:
 %assign msidev_j 0x30
 %rep 192
-    dd msidev_stub_%+msidev_j
+    dq msidev_stub_%+msidev_j
 %assign msidev_j msidev_j+1
 %endrep

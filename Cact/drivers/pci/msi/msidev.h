@@ -50,6 +50,6 @@ void msidev_unregister(int vector);
 int  msidev_find_cap(pci_device_t *dev, uint8_t cap_id);
 void msidev_ensure_enabled(pci_device_t *dev);
 
-extern uint32_t msidev_stub_table[];
+extern uintptr_t msidev_stub_table[];
 
 #endif

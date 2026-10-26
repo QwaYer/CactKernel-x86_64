@@ -321,6 +321,7 @@ static void hid_dump_registers(void) {
     struct context_frame cf;
     uint32_t esp;
     uint64_t rflags;
+    uint64_t here;
 
     memset(&cf, 0, sizeof(cf));
 
@@ -341,7 +342,12 @@ static void hid_dump_registers(void) {
     __asm__ __volatile__("movw %%es, %0"    : "=m"(cf.es));
     __asm__ __volatile__("pushfq\n\tpopq %0" : "=r"(rflags));
     cf.eflags = (uint32_t)rflags;
-    __asm__ __volatile__("1: movl $1b, %0"   : "=m"(cf.eip));
+    /* The label's own address, taken RIP-relative: an absolute 32-bit
+     * reference to code cannot reach the higher half.  The frame field is
+     * still 32-bit wide until the context frame is re-laid-out (Phase 1,
+     * exception path). */
+    __asm__ __volatile__("1: lea 1b(%%rip), %0" : "=r"(here));
+    cf.eip = (uint32_t)here;
 
     dump_registers("PrintScreen (own regs)", &cf, esp);
 }
