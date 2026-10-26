@@ -1,7 +1,7 @@
 # The SMP trampoline is assembled as a flat binary and embedded in the link.
 #
 # The Makefile embedded it with
-#     ld -m elf_i386 -r -b binary build/trampoline.bin
+#     ld -m elf_x86_64 -r -b binary build/trampoline.bin
 # which derives symbol names from the path given on the command line, and
 # sched/src/smp.rs declares them as _binary_build_trampoline_bin_{start,end}.
 # objcopy names symbols after the path it is handed, which here is the source
@@ -16,7 +16,7 @@ trampoline_bin = custom_target('trampoline-bin',
 trampoline_blob = custom_target('trampoline-blob',
   input: trampoline_bin,
   output: 'trampoline-blob.o',
-  command: [objcopy, '-I', 'binary', '-O', 'elf32-i386', '-B', 'i386',
+  command: [objcopy, '-I', 'binary', '-O', 'elf64-x86-64', '-B', 'i386:x86-64',
             '@INPUT@', '@OUTPUT@'])
 
 kernel_objects += custom_target('trampoline-obj',

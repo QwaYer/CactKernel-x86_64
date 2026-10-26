@@ -2,7 +2,7 @@
 # Cact Kernel — Meson build system (aggregating root)
 # ==============================================================================
 #
-#   meson setup build-meson --cross-file cross/i686-cact-clang.ini
+#   meson setup build-meson --cross-file cross/x86_64-cact-clang.ini
 #   ninja -C build-meson                 # kernel.bin + cact.iso  (make all)
 #   ninja -C build-meson iso-full        # cact-full.iso         (make iso-full)
 #
@@ -11,7 +11,7 @@
 # Every source directory has its own meson.build and produces its own static
 # library or object file.  This file only sets up the toolchain, the shared
 # flags and the final link, then visits the directories in dependency-free
-# order.  Sources are compiled by clang (32-bit, freestanding) and linked by
+# order.  Sources are compiled by clang (x86-64, freestanding) and linked by
 # lld/ld against linker.ld.
 #
 # The per-directory C archives are linked with --whole-archive because the
@@ -58,11 +58,11 @@ cact_version = fs.exists('VERSION') ? fs.read('VERSION').strip() : 'unknown'
 
 # Module ABI fingerprint (vermagic), computed by the same tool the signer uses.
 # Surfaced as SemVer build metadata so a release is uniquely identified by
-# (version, arch, ABI): e.g. 2.0.0+abi.0x9217b2c9.i686.  See ROADMAP.md.
+# (version, arch, ABI): e.g. 3.0.0+abi.0x9217b2c9.x86_64.  See ROADMAP.md.
 _vmagic = run_command(python3, src_root / 'tools' / 'modsign.py', 'vermagic',
                       check: false)
 cact_vermagic     = _vmagic.returncode() == 0 ? _vmagic.stdout().strip() : 'unknown'
-cact_version_meta = cact_version + '+abi.' + cact_vermagic + '.i686'
+cact_version_meta = cact_version + '+abi.' + cact_vermagic + '.x86_64'
 
 cact_commit = 'no-git'
 if git.found()
@@ -171,14 +171,18 @@ kernel_c_args = [
   '-fno-pie',
   '-fno-stack-protector',
   '-nostdlib',
-  # Kernel code runs before (and without) CR4.OSFXSR being set — the FPU/SSE
-  # state belongs to user processes — and the i686-cact Rust target is built
-  # with the same -mmx,-sse.  clang otherwise copies structs with SSE2 (a
-  # movsd in multiboot2_parse is enough) and dies with #UD -> #DF before the
-  # IDT exists.  GCC happens not to emit SSE there, but the constraint is real.
-  '-mno-mmx',
-  '-mno-sse',
-  '-mno-sse2',
+  # The kernel is linked into the top 2 GiB (linker.ld), so absolute references
+  # to its data and functions have to fit in a sign-extended 32-bit immediate —
+  # which is exactly what the kernel code model tells the compiler to assume.
+  '-mcmodel=kernel',
+  # Interrupt handlers run on the stack of whatever they interrupted, so the
+  # 128-byte red zone below %rsp is not the kernel's to use.
+  '-mno-red-zone',
+  # SSE2 is deliberately *not* disabled here, unlike in the i686 build.  The
+  # x86-64 SysV ABI requires it (struct copies, float returns), so the old
+  # "no SSE before the IDT exists" invariant cannot be kept; instead the
+  # long-mode bootstrap sets CR4.OSFXSR|OSXMMEXCPT before the first C
+  # statement.  See PORTING-x86_64.md, decision 3.
   '-DCACT_ACPI_FREESTANDING',
   '-DCACT_VERSION=' + cact_version,
   '-DCACT_VERSION_META=' + cact_version_meta,
@@ -306,7 +310,7 @@ endif
 kernel_bin = custom_target('kernel-bin',
   output: 'kernel.bin',
   input: kernel_objects,
-  command: [ld, '-m', 'elf_i386', '-T', src_root / 'linker.ld',
+  command: [ld, '-m', 'elf_x86_64', '-T', src_root / 'linker.ld',
             '-z', 'noexecstack', '-o', '@OUTPUT@'] +
            kernel_objects +
            ['--whole-archive'] + kernel_libs + ['--no-whole-archive'] +

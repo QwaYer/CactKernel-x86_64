@@ -6,7 +6,7 @@
 # Usage:
 #   cact_rust_build.sh <crate-dir> <lib-name> <nightly|stable> <output> [cargo args...]
 #
-# The crate's .cargo/config.toml selects the i686-cact target; the -Z flags the
+# The crate's .cargo/config.toml selects the x86_64-cact target; the -Z flags the
 # Makefile used to pass per crate arrive through the trailing arguments (they are
 # not all expressible in .cargo/config.toml, e.g. rust_net needs alloc in
 # build-std).  CARGO_TARGET_DIR is honoured the same way the Makefile honoured
@@ -33,4 +33,4 @@ case "$toolchain" in
 esac
 
 target_dir=${CARGO_TARGET_DIR:-target}
-cp "$target_dir/i686-cact/release/$lib_name" "$output"
+cp "$target_dir/x86_64-cact/release/$lib_name" "$output"

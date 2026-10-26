@@ -1,7 +1,7 @@
 kernel_objects += custom_target('asm-io',
   input: 'io.asm',
   output: 'io.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_libs += static_library('cact_input',
   files(

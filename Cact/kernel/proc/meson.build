@@ -3,4 +3,4 @@
 kernel_objects += custom_target('asm-task',
   input: 'task.asm',
   output: 'task_asm.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])

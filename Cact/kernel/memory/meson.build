@@ -1,7 +1,7 @@
 kernel_objects += custom_target('asm-mm',
   input: 'mm.asm',
   output: 'mm.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_libs += static_library('cact_memory',
   files('pat.c'),

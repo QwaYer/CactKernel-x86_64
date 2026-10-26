@@ -1,17 +1,16 @@
 [build]
-target = "i686-cact.json"
+target = "x86_64-cact.json"
 
-[target.i686-cact]
-# heapless (via smoltcp) uses AtomicU64; enable 64-bit CAS on x86.
-#
+[target.x86_64-cact]
 # The force-soft cfgs pin the symmetric primitives (chacha20, poly1305, aes) to
-# their software backends.  Their cpufeatures dispatch can pick AVX2, which the
-# kernel cannot run: fpu_hd.c enables only CR4.OSFXSR/OSXMMEXCPT, never
-# CR4.OSXSAVE, and kernel code is otherwise built with -mno-sse on purpose (see
-# kernel_c_args).  sha2 is pinned through its `force-soft` feature in
-# Cact/crypto/Cargo.toml, the way hmac_ffi already does it.
+# their software backends.  Their cpufeatures dispatch reads CPUID at runtime
+# and would pick AVX2 on a modern CPU, which the kernel cannot run: it enables
+# CR4.OSFXSR/OSXMMEXCPT (so SSE2 is fine and the target spec allows it) but
+# never CR4.OSXSAVE, so no YMM state is saved and XSAVE-based code faults.
+# sha2 is pinned through its `force-soft` feature in Cact/crypto/Cargo.toml,
+# the way hmac_ffi already does it.
 rustflags = [
-  "-C", "target-cpu=pentium4",
+  "-C", "target-cpu=x86-64",
   "--cfg", "chacha20_force_soft",
   "--cfg", "poly1305_force_soft",
   "--cfg", "aes_force_soft",

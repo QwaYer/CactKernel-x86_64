@@ -1,27 +1,27 @@
 kernel_objects += custom_target('asm-kernel-entry',
   input: 'kernel.asm',
   output: 'kernel_entry.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-exception-stubs',
   input: 'exception_stubs.asm',
   output: 'exception_stubs.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-device-isrs',
   input: 'device_isrs.asm',
   output: 'device_isrs.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-msidev-stubs',
   input: 'msidev_stubs.asm',
   output: 'msidev_stubs.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-syscall-entries',
   input: 'syscall_entries.asm',
   output: 'syscall_entries.o',
-  command: [nasm, '-f', 'elf32', '@INPUT@', '-o', '@OUTPUT@'])
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_libs += static_library('cact_core',
   files(
