@@ -190,15 +190,20 @@ void set_irq_regs(struct context_frame* regs);
 void irq_apic_eoi(void);
 
 // Read CR2 (page fault linear address)
+//
+// CR2/CR3 are 64-bit registers in long mode and only the 64-bit form is
+// encodable there, so both accessors move the value through a pointer-sized
+// temporary.  The 32-bit shape of the memory API (and of get_current_pd's
+// pointee) is what Phase 2 of PORTING-x86_64.md re-types.
 static inline uint32_t read_cr2(void) {
-    uint32_t val;
+    void* val;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(val));
-    return val;
+    return (uint32_t)(uintptr_t)val;
 }
 
 // Get current page directory pointer (CR3)
 static inline uint32_t* get_current_pd(void) {
-    uint32_t val;
+    void* val;
     __asm__ __volatile__("mov %%cr3, %0" : "=r"(val));
     return (uint32_t*)val;
 }

@@ -6,8 +6,8 @@
 
 #define ACPI_CACHE_LINE_SIZE  64
 
-#define acpi_restore_flags(flags)      __asm__ __volatile__("pushfl ; pop %0" : "=rm"(flags) :: "memory")
-#define acpi_save_flags(flags)         __asm__ __volatile__("pushfl ; pop %0" : "=rm"(flags) :: "memory")
+#define acpi_restore_flags(flags)      __asm__ __volatile__("pushfq ; pop %0" : "=rm"(flags) :: "memory")
+#define acpi_save_flags(flags)         __asm__ __volatile__("pushfq ; pop %0" : "=rm"(flags) :: "memory")
 #define acpi_disable_int()             __asm__ __volatile__("cli" ::: "memory")
 #define acpi_enable_int()              __asm__ __volatile__("sti" ::: "memory")
 

@@ -27,17 +27,17 @@ int fpu_global_init(void) {
     // Clear CR0.EM and set CR0.MP so the x87 lands on #NM (driven by TS) and
     // is never trapped in software emulation.
     __asm__ __volatile__(
-        "mov %%cr0, %%eax\n\t"
-        "and $~0x4, %%eax\n\t"   /* clear EM */
-        "or  $0x2, %%eax\n\t"    /* set MP  */
-        "mov %%eax, %%cr0\n\t"
-        :: : "eax", "memory");
+        "mov %%cr0, %%rax\n\t"
+        "and $~0x4, %%rax\n\t"   /* clear EM */
+        "or  $0x2, %%rax\n\t"    /* set MP  */
+        "mov %%rax, %%cr0\n\t"
+        :: : "rax", "memory");
 
     __asm__ __volatile__(
-        "mov %%cr4, %%eax\n\t"
-        "or  $0x600, %%eax\n\t"  /* OSFXSR | OSXMMEXCPT */
-        "mov %%eax, %%cr4\n\t"
-        :: : "eax", "memory");
+        "mov %%cr4, %%rax\n\t"
+        "or  $0x600, %%rax\n\t"  /* OSFXSR | OSXMMEXCPT */
+        "mov %%rax, %%cr4\n\t"
+        :: : "rax", "memory");
 
     __asm__ __volatile__("fninit");
     return 0;

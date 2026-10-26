@@ -320,13 +320,14 @@ static void hid_post_sequence(hid_priv_t *priv, uint8_t kc, const char *seq) {
 static void hid_dump_registers(void) {
     struct context_frame cf;
     uint32_t esp;
+    uint64_t rflags;
 
     memset(&cf, 0, sizeof(cf));
 
     /* One statement per register: a single block with a dozen memory outputs
      * runs clang out of address registers.  Nothing can run between these
      * statements (no clobbers, no dependencies), so they read one register
-     * set.  pushfl/popl is balanced, so ESP is unchanged afterwards. */
+     * set.  pushfq/popq is balanced, so ESP is unchanged afterwards. */
     __asm__ __volatile__("movl %%eax, %0" : "=m"(cf.eax));
     __asm__ __volatile__("movl %%ebx, %0" : "=m"(cf.ebx));
     __asm__ __volatile__("movl %%ecx, %0" : "=m"(cf.ecx));
@@ -338,7 +339,8 @@ static void hid_dump_registers(void) {
     __asm__ __volatile__("movw %%cs, %0"    : "=m"(cf.cs));
     __asm__ __volatile__("movw %%ds, %0"    : "=m"(cf.ds));
     __asm__ __volatile__("movw %%es, %0"    : "=m"(cf.es));
-    __asm__ __volatile__("pushfl\n\tpopl %0" : "=m"(cf.eflags));
+    __asm__ __volatile__("pushfq\n\tpopq %0" : "=r"(rflags));
+    cf.eflags = (uint32_t)rflags;
     __asm__ __volatile__("1: movl $1b, %0"   : "=m"(cf.eip));
 
     dump_registers("PrintScreen (own regs)", &cf, esp);

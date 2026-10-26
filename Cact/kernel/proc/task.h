@@ -253,11 +253,19 @@ typedef struct proc_metadata {
 } proc_metadata_t;
 
 /* The two tail fields the Rust mirrors and the libc agree on; a drift here used
- * to be found by the Rust asserts at boot, and is now a build error instead. */
+ * to be found by the Rust asserts at boot, and is now a build error instead.
+ *
+ * The absolute offsets (i686: 788/792/796) do not survive the move to 64-bit
+ * pointers and are re-pinned, together with the rest of the layout, in Phase 3
+ * of PORTING-x86_64.md.  What is checked here meanwhile is the part that does
+ * not depend on the address size: that these really are the last two fields,
+ * adjacent and ending the struct, which is what makes "appended, existing
+ * offsets unchanged" checkable from the C side. */
 typedef char _proc_metadata_tail_check[
-    (__builtin_offsetof(proc_metadata_t, sigwait_set)   == 788 &&
-     __builtin_offsetof(proc_metadata_t, signal_value)  == 792 &&
-     sizeof(proc_metadata_t)                            == 796) ? 1 : -1];
+    (__builtin_offsetof(proc_metadata_t, signal_value) ==
+         __builtin_offsetof(proc_metadata_t, sigwait_set) + 4 &&
+     __builtin_offsetof(proc_metadata_t, signal_value) + 4 ==
+         sizeof(proc_metadata_t)) ? 1 : -1];
 
 struct task_struct {
     uint32_t esp;

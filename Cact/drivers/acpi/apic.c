@@ -562,8 +562,8 @@ void apic_dump_state(const char *tag)
         return;
     }
 
-    uint32_t flags;
-    __asm__ __volatile__("pushfl; popl %0" : "=r"(flags));
+    uint64_t flags;
+    __asm__ __volatile__("pushfq; popq %0" : "=r"(flags));
 
     uint64_t base = rdmsr(IA32_APIC_BASE);
     uint32_t tpr  = apic_lapic_read(LAPIC_TPR);
@@ -642,8 +642,8 @@ void apic_probe(const char *tag, unsigned ms, unsigned ticks)
         return;
     }
 
-    uint32_t flags;
-    __asm__ __volatile__("pushfl; popl %0" : "=r"(flags));
+    uint64_t flags;
+    __asm__ __volatile__("pushfq; popq %0" : "=r"(flags));
 
     uint32_t tpr = apic_lapic_read(LAPIC_TPR);
     uint32_t ppr = apic_lapic_read(LAPIC_PPR);
