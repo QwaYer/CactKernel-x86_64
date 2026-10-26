@@ -184,6 +184,15 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     init_gdt();                     // Global Descriptor Table
     pr_info("%s: loaded\n", "gdt");
 
+    /* Exception gates go in before anything that can fault: from here on a
+     * #PF/#GP prints a dump instead of triple-faulting, which is what makes the
+     * memory bring-up below debuggable (PORTING-x86_64.md, Phase 1).  Neither
+     * the table nor the #PF statistics need the heap, so both can be installed
+     * this early; the gates point at the same handlers they always did. */
+    page_fault_init();              // Page fault handler state
+    init_idt();                     // Interrupt Descriptor Table
+    pr_info("%s: 256-vector table loaded (memory managers still down)\n", "idt");
+
     // CPU feature detection — before IDT / APIC / PAT so the rest of
     // the kernel can query cpu_vendor(), cpu_has_sep(), etc.
     cpudev_init();
@@ -221,12 +230,6 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     pr_info("%s: enabled\n", "paging");
     slab_init();                    // Slab allocator for kernel objects
     pr_info("%s: kernel object caches ready\n", "slab");
-    page_fault_init();              // Page fault handler
-    pr_info("%s: #PF handler installed\n", "pagefault");
-
-    // Interrupts
-    init_idt();                     // Interrupt Descriptor Table
-    pr_info("%s: 256-vector table loaded\n", "idt");
 
     // Program fast-syscall MSRs now that GDT and IDT are ready.
     // IA32_SYSENTER_ESP is updated per-task by the scheduler on every switch.
