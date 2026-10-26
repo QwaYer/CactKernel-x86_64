@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_inc};
-use crate::vmm::paging::{vmm_map, PD_KERNEL_ENTRIES};
+use crate::vmm::paging::{vmm_map, walk};
 use crate::fault::page_fault::vmm_map_zero;
 use crate::process::memfd::{memfd_get_page, memfd_grow_to, memfd_map_dec, memfd_map_inc};
 
@@ -39,49 +39,11 @@ fn fd_to_node(fd: i32) -> *mut VfsNode {
     unsafe { (*fds).fd_table[fd as usize] }
 }
 
-#[derive(Copy, Clone)]
-pub(crate) enum EnsurePteTable {
-    Absent,
-    Oom,
-    /// PCI hole / MMIO PDEs must stay shared with the kernel template — never COW.
-    KernelMmio,
-}
-
-/// Before changing PTEs in `pd`, the page table for `pdi` must be private
-/// (`PDE_PRIVATE`). Otherwise `do_munmap` / `mmap_table_free` / etc. would
-/// mutate or `kfree` the global kernel page tables copied into every process.
-pub(crate) unsafe fn ensure_pde_private(
-    pd: *mut u32,
-    pdi: usize,
-) -> Result<*mut u32, EnsurePteTable> {
-    if pdi >= PD_KERNEL_ENTRIES {
-        return Err(EnsurePteTable::KernelMmio);
-    }
-    // SAFETY: the caller guarantees `pd` points to a valid page directory and
-    // `pdi < PD_KERNEL_ENTRIES`, so this PD entry pointer is in bounds.
-    let pde_ptr = unsafe { pd.add(pdi) };
-    // SAFETY: `pde_ptr` points at one PD entry, which this call owns (the caller
-    // serialises page-table changes); no call in between touches this entry.
-    let pde = unsafe { &mut *pde_ptr };
-    if *pde & PAGE_PRESENT == 0 {
-        return Err(EnsurePteTable::Absent);
-    }
-    if *pde & PDE_PRIVATE != 0 {
-        return Ok((*pde & !0xFFF) as *mut u32);
-    }
-    let shared = (*pde & !0xFFF) as *const u32;
-    let priv_pt = kalloc() as *mut u32;
-    if priv_pt.is_null() {
-        return Err(EnsurePteTable::Oom);
-    }
-    // SAFETY: `shared` is a live 1024-entry page table (the PDE is present) and
-    // `priv_pt` is a fresh 4 KiB kalloc block, so the copy stays in bounds.
-    unsafe { core::ptr::copy_nonoverlapping(shared, priv_pt, 1024); }
-    let old_flags = *pde & 0xFFF;
-    *pde = (priv_pt as u32 & !0xFFF)
-        | (old_flags | PAGE_USER | PAGE_RW | PDE_PRIVATE);
-    Ok(priv_pt)
-}
+// Making a page table private before writing to it — copying the kernel's shared
+// entry into a per-process one — used to be a helper of its own here.  It is now
+// part of `crate::vmm::paging::walk(pd, va, true, true)`, which copies a shared
+// page directory (and, further down, splits a 2 MiB page) on the way to the
+// entry a caller wants to change.
 
 fn prot_to_page_flags(prot: i32, user: bool) -> i32 {
     let mut f = PAGE_PRESENT as i32;
@@ -145,20 +107,21 @@ fn alloc_region_slot(tbl: *mut MmapTable) -> *mut MmapRegion {
 
 /// Present physical frame backing `va` in `pd`, or 0 if absent.
 fn pte_phys(pd: *mut u32, va: u32) -> u32 {
-    // SAFETY: `pd` is valid and `pd_index(va) < 1024`, so this PD entry pointer is
-    // in bounds.
-    let pde_entry = unsafe { pd.add(pd_index(va) as usize) };
-    // SAFETY: `pde_entry` points at one initialised PD entry.
-    let pde = unsafe { *pde_entry };
-    if pde & PAGE_PRESENT == 0 {
+    // SAFETY: `pd` is a live page map and the walk only reads it (`create`
+    // false), so nothing is allocated or mutated.
+    let w = unsafe { walk(pd, va, false, false) };
+    if !w.pd_entry.is_null() {
+        // SAFETY: `w.pd_entry` is an in-bounds PD entry.
+        let pde = unsafe { *w.pd_entry };
+        if pde & PAGE_PRESENT != 0 && pde & PAGE_PS != 0 {
+            return large_page_phys(pde, va) & !0xFFF;
+        }
+    }
+    if w.pte_entry.is_null() {
         return 0;
     }
-    let pt = (pde & !0xFFF) as *const u32;
-    // SAFETY: `pt` is the live page table named by the present PDE and
-    // `pt_index(va) < 1024`, so this entry pointer is in bounds.
-    let pte_entry = unsafe { pt.add(pt_index(va) as usize) };
-    // SAFETY: `pte_entry` points at one initialised PTE.
-    let pte = unsafe { *pte_entry };
+    // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+    let pte = unsafe { *w.pte_entry };
     if pte & PAGE_PRESENT == 0 {
         return 0;
     }
@@ -167,26 +130,19 @@ fn pte_phys(pd: *mut u32, va: u32) -> u32 {
 
 /// Drop the PTE for a user virtual address, releasing its frame reference.
 fn clear_user_pte(pd: *mut u32, va: u32) {
-    // SAFETY: `pd` is valid and `pd_index(va) < 1024`, so this PD entry pointer is
-    // in bounds.
-    let pde_entry = unsafe { pd.add(pd_index(va) as usize) };
-    // SAFETY: `pde_entry` points at one initialised PD entry.
-    let pde = unsafe { *pde_entry };
-    if pde & PAGE_PRESENT == 0 {
+    // SAFETY: `pd` is a live page map and the walk only reads it.
+    let w = unsafe { walk(pd, va, false, false) };
+    if w.pte_entry.is_null() {
         return;
     }
-    let pt = (pde & !0xFFF) as *mut u32;
-    // SAFETY: `pt` is the live page table named by the present PDE and
-    // `pt_index(va) < 1024`, so this entry pointer is in bounds.
-    let pte_entry = unsafe { pt.add(pt_index(va) as usize) };
-    // SAFETY: `pte_entry` points at one initialised PTE.
-    let pte = unsafe { *pte_entry };
+    // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+    let pte = unsafe { *w.pte_entry };
     if pte & PAGE_PRESENT != 0 && pte & PAGE_USER != 0 {
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
         unsafe { free_page((pte & !0xFFF) as *mut u8) };
     }
-    // SAFETY: `pte_entry` points at one PTE, which this unmap clears.
-    unsafe { *pte_entry = 0 };
+    // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
+    unsafe { *w.pte_entry = 0 };
     flush_tlb(va);
 }
 
@@ -483,28 +439,14 @@ pub unsafe extern "C" fn do_munmap(
     let pages = length / PAGE_SIZE;
     for i in 0..pages {
         let va = addr + i * PAGE_SIZE;
-        let pdi = pd_index(va) as usize;
-        // SAFETY: `pdi = pd_index(va) < 1024` and `pd` is a valid page directory, so
-        // this PDE entry pointer is in bounds.
-        let pde_entry = unsafe { pd.add(pdi) };
-        // SAFETY: `pde_entry` points at one initialised PD entry.
-        let pde_val = unsafe { *pde_entry };
-        if pde_val & PAGE_PRESENT == 0 {
+
+        // SAFETY: `pd` is the caller's live page map and the walk only reads it.
+        let w = unsafe { walk(pd, va, false, false) };
+        if w.pte_entry.is_null() {
             continue;
         }
-        // SAFETY: `pd` is a valid page directory and `pdi < PD_KERNEL_ENTRIES` for the
-        // range under consideration; the helper may COW the shared kernel table into
-        // a private one.
-        let pt = match unsafe { ensure_pde_private(pd, pdi) } {
-            Ok(p) => p,
-            Err(EnsurePteTable::Absent) | Err(EnsurePteTable::KernelMmio) => continue,
-            Err(EnsurePteTable::Oom) => return -1,
-        };
-        // SAFETY: `pt` is the private page table returned by `ensure_pde_private` and
-        // `pt_index(va) < 1024`, so this entry pointer is in bounds.
-        let pte_entry = unsafe { pt.add(pt_index(va) as usize) };
-        // SAFETY: `pte_entry` points at one initialised PTE.
-        let pte = unsafe { *pte_entry };
+        // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+        let pte = unsafe { *w.pte_entry };
 
         // Only release frames that were allocated for user mappings. Supervisor
         // identity PTEs (present, no PAGE_USER) must not be passed to free_page.
@@ -512,8 +454,8 @@ pub unsafe extern "C" fn do_munmap(
             // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
             unsafe { free_page((pte & !0xFFF) as *mut u8) };
         }
-        // SAFETY: `pte_entry` points at one PTE, which this unmap clears.
-        unsafe { *pte_entry = 0 };
+        // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
+        unsafe { *w.pte_entry = 0 };
         flush_tlb(va);
     }
 
@@ -591,25 +533,14 @@ pub unsafe extern "C" fn do_mprotect(
 
     for i in 0..pages {
         let va = addr + i * PAGE_SIZE;
-        let pdi = pd_index(va) as usize;
-        // SAFETY: `pdi = pd_index(va) < 1024`; `pd` is a valid page directory, so
-        // this PDE entry pointer is in bounds.
-        let pde_entry = unsafe { pd.add(pdi) };
-        // SAFETY: `pde_entry` points at one initialised PD entry.
-        let pde_val = unsafe { *pde_entry };
-        if pde_val & PAGE_PRESENT == 0 {
-            continue;
+
+        // SAFETY: `pd` is the caller's live page map; the walk creates the
+        // private tables this entry needs.
+        let w = unsafe { walk(pd, va, true, true) };
+        if w.pte_entry.is_null() {
+            return -1;
         }
-        // SAFETY: `pd` is valid and `pdi` is inside the user range handled by
-        // `ensure_pde_private`.
-        let pt = match unsafe { ensure_pde_private(pd, pdi) } {
-            Ok(p) => p,
-            Err(EnsurePteTable::Absent) | Err(EnsurePteTable::KernelMmio) => continue,
-            Err(EnsurePteTable::Oom) => return -1,
-        };
-        // SAFETY: `pt` is the private page table from `ensure_pde_private` and
-        // `pt_index(va) < 1024`, so this entry pointer is in bounds.
-        let pte_entry = unsafe { pt.add(pt_index(va) as usize) };
+        let pte_entry = w.pte_entry;
         // SAFETY: `pte_entry` points at one initialised PTE.
         let pte = unsafe { *pte_entry };
         if pte & PAGE_PRESENT == 0 {
@@ -648,28 +579,14 @@ pub unsafe extern "C" fn mmap_handle_fault(
     }
 
     let page_va = fault_addr & !0xFFF;
-    let pdi = pd_index(page_va) as usize;
-    let pti = pt_index(page_va) as usize;
 
-    // SAFETY: `pdi = pd_index(page_va) < 1024`; `pd` is a valid page directory, so
-    // this PDE entry pointer is in bounds.
-    let pde_entry = unsafe { pd.add(pdi) };
-    // SAFETY: `pde_entry` points at one initialised PD entry.
-    let pde_val = unsafe { *pde_entry };
-    if pde_val & PAGE_PRESENT == 0 {
+    // SAFETY: `pd` is the caller's live page map; the walk creates the private
+    // tables the demand mapping needs.
+    let w = unsafe { walk(pd, page_va, true, true) };
+    if w.pte_entry.is_null() {
         return -1;
     }
-    // SAFETY: `pd` is valid and `pdi` is in the user range `ensure_pde_private`
-    // handles.
-    let pt = match unsafe { ensure_pde_private(pd, pdi) } {
-        Ok(p) => p,
-        Err(EnsurePteTable::Absent) | Err(EnsurePteTable::KernelMmio) => return -1,
-        Err(EnsurePteTable::Oom) => return -1,
-    };
-
-    // SAFETY: `pt` is the private page table from `ensure_pde_private` and
-    // `pti < 1024`, so this entry pointer is in bounds.
-    let pte_entry = unsafe { pt.add(pti) };
+    let pte_entry = w.pte_entry;
     // SAFETY: `pte_entry` points at one initialised PTE.
     let pte = unsafe { *pte_entry };
     if pte & PAGE_PRESENT != 0 {

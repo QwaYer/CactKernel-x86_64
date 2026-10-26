@@ -85,23 +85,16 @@ int pat_enable_wc_for_framebuffer(uint32_t fb_phys,
 
     uint32_t end = fb_phys + fb_size;
 
-    /* Walk the kernel PD (identity-mapped). Process PDs in the upper half
-     * share these same page tables, so a single pass suffices. */
+    /* Set WC on the framebuffer's pages through the kernel's own map.  In long
+     * mode that map is four-level and its RAM/MMIO window is mapped with 2 MiB
+     * pages, so the cache bits live in the page-directory entry rather than a
+     * PTE; vmm_set_kernel_cache() walks to whichever of the two describes the
+     * address.  The upper half of every process map shares these tables, so one
+     * pass suffices. */
     for (uint32_t va = fb_phys; va < end; va += PAGE_SIZE) {
-        uint32_t pdi = (va >> 22) & 0x3FF;
-        uint32_t pti = (va >> 12) & 0x3FF;
-        uint32_t pde = page_directory[pdi];
-        if (!(pde & PAGE_PRESENT))
-            continue;
-
-        uint32_t* pt = (uint32_t*)(pde & ~0xFFFu);
-        if (!(pt[pti] & PAGE_PRESENT))
-            continue;
-
-        /* Set PAT bit, clear PCD|PWT → (PAT=1, PCD=0, PWT=0) selects
-         * PAT entry 4 = Write-Combining (WC). */
-        pt[pti] |=  PAGE_PAT;
-        pt[pti] &= ~(uint32_t)(PAGE_PCD | PAGE_PWT);
+        /* PAT set, PCD|PWT clear → (PAT=1, PCD=0, PWT=0) selects PAT entry 4 =
+         * Write-Combining (WC). */
+        vmm_set_kernel_cache(va, PAGE_PAT, PAGE_PCD | PAGE_PWT);
         cpu_invlpg(va);
     }
 

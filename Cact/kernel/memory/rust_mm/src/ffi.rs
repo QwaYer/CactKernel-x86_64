@@ -217,14 +217,63 @@ pub const TASK_STOPPED: u32 = 5;
 pub const PROC_INITIAL_PAGES: u32 = 256;
 pub const PROC_GROW_STEP: u32 = 256;
 
+/// ---------------------------------------------------------------------------
+/// Four-level paging (long mode)
+/// ---------------------------------------------------------------------------
+///
+/// A virtual address names its entry at each level with nine bits, from the
+/// PML4 down: PML4 (`vaddr[47:39]`) → PDPT (`[38:30]`) → PD (`[29:21]`) → PT
+/// (`[20:12]`), and the twelve bits left over are the offset inside the page.
+/// The kernel's 32-bit address layout keeps every address below 4 GiB, so the
+/// whole of it lives under PML4[0] — but each level still has to be walked, and
+/// a PD or PDPT entry may name a *large* page instead of the next table
+/// (`PAGE_PS`), which is how the kernel maps its own half.
+///
+/// The walk itself lives in `crate::vmm::paging::walk`, which creates the
+/// missing tables on demand and splits a large page when a caller needs a
+/// 4 KiB mapping inside one.
+
+#[inline(always)]
+pub fn pml4_index(vaddr: u32) -> u32 {
+    // Every virtual address this kernel uses is below 4 GiB, so the PML4 index
+    // is always zero; the shift goes through u64 so that the arithmetic says so
+    // rather than overflowing.
+    ((vaddr as u64 >> 39) & 0x1FF) as u32
+}
+
+#[inline(always)]
+pub fn pdpt_index(vaddr: u32) -> u32 {
+    (vaddr >> 30) & 0x1FF
+}
+
 #[inline(always)]
 pub fn pd_index(vaddr: u32) -> u32 {
-    (vaddr >> 22) & 0x3FF
+    (vaddr >> 21) & 0x1FF
 }
 
 #[inline(always)]
 pub fn pt_index(vaddr: u32) -> u32 {
-    (vaddr >> 12) & 0x3FF
+    (vaddr >> 12) & 0x1FF
+}
+
+/// Bit 7 of a PD or PDPT entry: the entry maps a *large* page (2 MiB at the PD
+/// level, 1 GiB at the PDPT level) instead of pointing at the next table.  In a
+/// PTE the same bit is PAT, which is why the kernel's large pages carry no PAT
+/// bit.
+pub const PAGE_PS: u32 = 0x080;
+
+/// Physical address a 2 MiB large-paged PD entry maps `vaddr` to.
+#[inline(always)]
+pub fn large_page_phys(entry: u32, vaddr: u32) -> u32 {
+    (entry & !(LARGE_PAGE_SIZE - 1)) | (vaddr & (LARGE_PAGE_SIZE - 1))
+}
+
+/// Size of the kernel's large pages, and of one page-directory entry's span.
+pub const LARGE_PAGE_SIZE: u32 = 0x20_0000;
+
+#[inline(always)]
+pub fn page_offset(vaddr: u32) -> u32 {
+    vaddr & 0xFFF
 }
 
 #[repr(C)]

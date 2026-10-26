@@ -2,10 +2,10 @@
 //! COW/private-PDE machinery stays together with its two main users.
 
 use crate::ffi::*;
-use crate::pmm::{kalloc, page_ref_inc};
+use crate::pmm::page_ref_inc;
 use crate::process::memfd::memfd_map_inc;
 use crate::safe::flush_tlb_all;
-use crate::vmm::mmap::{do_munmap, ensure_pde_private, EnsurePteTable};
+use crate::vmm::mmap::do_munmap;
 
 /// # Safety
 ///
@@ -51,140 +51,74 @@ pub unsafe extern "C" fn mmap_table_clone(
         let pages = sr.length / PAGE_SIZE;
 
         if sr.flags & MAP_SHARED as u32 != 0 {
-            // SAFETY: `src_pd`/`dst_pd` are the caller's valid, distinct page
-            // directories (1024 `u32` entries, one page each), so these slices
-            // span exactly one directory each; `pd_index` masks to 10 bits, so
-            // every index below is in bounds.
-            let src_pd = unsafe { core::slice::from_raw_parts(src_pd, 1024) };
-            // SAFETY: as above, for the child directory, which this branch writes.
-            let dst_pd = unsafe { core::slice::from_raw_parts_mut(dst_pd, 1024) };
             // A memfd-backed region stays alive for the child as well.
             if sr.shobj > 0 {
                 memfd_map_inc(sr.shobj);
             }
             for p in 0..pages {
                 let va = sr.base + p * PAGE_SIZE;
-                let pdi = pd_index(va) as usize;
-                let pti = pt_index(va) as usize;
 
-                if src_pd[pdi] & PAGE_PRESENT == 0 {
+                // SAFETY: `src_pd` is the caller's live page map and the walk
+                // only reads it, so nothing is allocated or mutated.
+                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va, false, false) };
+                if src_w.pte_entry.is_null() {
                     continue;
                 }
-                let src_pt = (src_pd[pdi] & !0xFFF) as *const u32;
-                // SAFETY: `src_pt` addresses the live source page table and
-                // `pti < 1024`, so this entry pointer is in bounds.
-                let src_entry = unsafe { src_pt.add(pti) };
-                // SAFETY: `src_entry` points at one initialised `u32` entry.
-                let pte = unsafe { *src_entry };
+                // SAFETY: `src_w.pte_entry` is an in-bounds page-table entry.
+                let pte = unsafe { *src_w.pte_entry };
                 if pte == 0 {
                     continue;
                 }
 
-                if dst_pd[pdi] & PAGE_PRESENT == 0 {
-                    let new_pt = kalloc() as *mut u32;
-                    if new_pt.is_null() {
-                        continue;
-                    }
-                    // SAFETY: `new_pt` is the fresh `kalloc` page just checked
-                    // non-null; zeroing `PAGE_SIZE` bytes covers exactly that page.
-                    unsafe { core::ptr::write_bytes(new_pt as *mut u8, 0, PAGE_SIZE as usize) };
-                    dst_pd[pdi] =
-                        (new_pt as u32 & !0xFFF) | PAGE_PRESENT | PAGE_RW | PAGE_USER | PDE_PRIVATE;
-                } else if matches!(
-                    // SAFETY: `dst_pd` is a valid page directory and `pdi` came
-                    // from `pd_index`, so this entry is in bounds.
-                    unsafe { ensure_pde_private(dst_pd.as_mut_ptr(), pdi) },
-                    Err(EnsurePteTable::Oom) | Err(EnsurePteTable::KernelMmio)
-                ) {
+                // SAFETY: `dst_pd` is the child's live page map; the walk creates
+                // the private tables this shared page needs.
+                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va, true, true) };
+                if dst_w.pte_entry.is_null() {
                     continue;
                 }
-                let dst_pt = (dst_pd[pdi] & !0xFFF) as *mut u32;
-                // SAFETY: `dst_pt` addresses the live destination page table and
-                // `pti < 1024`, so this entry pointer is in bounds.
-                let dst_entry = unsafe { dst_pt.add(pti) };
-                // SAFETY: `dst_entry` points at one `u32` entry, and `pte` was
-                // read from the matching source entry.
-                unsafe { *dst_entry = pte };
+                // SAFETY: `dst_w.pte_entry` points at one PTE, which receives the
+                // mapping shared with the parent.
+                unsafe { *dst_w.pte_entry = pte };
 
                 if pte & PAGE_PRESENT != 0 {
                     page_ref_inc((pte & !0xFFF) as *const u8);
                 }
             }
         } else {
-            // SAFETY: `src_pd`/`dst_pd` are the caller's valid, distinct page
-            // directories (1024 `u32` entries, one page each), so these slices
-            // span exactly one directory each; `pd_index` masks to 10 bits, so
-            // every index below is in bounds.
-            let src_pd = unsafe { core::slice::from_raw_parts_mut(src_pd, 1024) };
-            // SAFETY: as above, for the child directory.
-            let dst_pd = unsafe { core::slice::from_raw_parts_mut(dst_pd, 1024) };
             for p in 0..pages {
                 let va = sr.base + p * PAGE_SIZE;
-                let pdi = pd_index(va) as usize;
-                let pti = pt_index(va) as usize;
 
-                if src_pd[pdi] & PAGE_PRESENT == 0 {
+                // SAFETY: `src_pd` is the caller's live page map and the walk
+                // only reads it.
+                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va, false, false) };
+                if src_w.pte_entry.is_null() {
                     continue;
                 }
-                let src_pt_before = (src_pd[pdi] & !0xFFF) as *const u32;
-                // SAFETY: `src_pt_before` addresses the live source page table
-                // and `pti < 1024`, so this entry pointer is in bounds.
-                let src_before_entry = unsafe { src_pt_before.add(pti) };
-                // SAFETY: `src_before_entry` points at one initialised `u32`.
-                let pte = unsafe { *src_before_entry };
+                // SAFETY: `src_w.pte_entry` is an in-bounds page-table entry.
+                let pte = unsafe { *src_w.pte_entry };
 
-                if dst_pd[pdi] & PAGE_PRESENT == 0 {
-                    let new_pt = kalloc() as *mut u32;
-                    if new_pt.is_null() {
-                        continue;
-                    }
-                    // SAFETY: `new_pt` is the fresh `kalloc` page just checked
-                    // non-null; zeroing `PAGE_SIZE` bytes covers exactly that page.
-                    unsafe { core::ptr::write_bytes(new_pt as *mut u8, 0, PAGE_SIZE as usize) };
-                    dst_pd[pdi] =
-                        (new_pt as u32 & !0xFFF) | PAGE_PRESENT | PAGE_RW | PAGE_USER | PDE_PRIVATE;
-                } else if matches!(
-                    // SAFETY: `dst_pd` is a valid page directory and `pdi` came
-                    // from `pd_index`, so this entry is in bounds.
-                    unsafe { ensure_pde_private(dst_pd.as_mut_ptr(), pdi) },
-                    Err(EnsurePteTable::Oom) | Err(EnsurePteTable::KernelMmio)
-                ) {
+                // SAFETY: `dst_pd` is the child's live page map; the walk creates
+                // the private tables this page needs.
+                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va, true, true) };
+                if dst_w.pte_entry.is_null() {
                     continue;
                 }
-                let dst_pt = (dst_pd[pdi] & !0xFFF) as *mut u32;
 
                 if pte & PAGE_PRESENT == 0 {
-                    // SAFETY: `dst_pt` addresses the live destination page table
-                    // and `pti < 1024`, so this entry pointer is in bounds.
-                    let dst_entry = unsafe { dst_pt.add(pti) };
-                    // SAFETY: `dst_entry` points at one `u32` entry.
-                    unsafe { *dst_entry = pte };
+                    // Demand/swapped PTEs have no frame: copy the marker across.
+                    // SAFETY: `dst_w.pte_entry` points at one PTE.
+                    unsafe { *dst_w.pte_entry = pte };
                     continue;
                 }
 
-                if matches!(
-                    // SAFETY: `src_pd` is a valid page directory and `pdi` came
-                    // from `pd_index`, so this entry is in bounds.
-                    unsafe { ensure_pde_private(src_pd.as_mut_ptr(), pdi) },
-                    Err(EnsurePteTable::Oom) | Err(EnsurePteTable::KernelMmio)
-                ) {
-                    continue;
-                }
-                let src_pt = (src_pd[pdi] & !0xFFF) as *mut u32;
-
+                // User page: both maps point at the frame, read-only and marked
+                // COW, with one more reference on it.
                 let cow_pte = (pte & !PAGE_RW) | PAGE_COW;
-                // SAFETY: `src_pt` addresses the live source page table and
-                // `pti < 1024`, so this entry pointer is in bounds.
-                let src_entry = unsafe { src_pt.add(pti) };
-                // SAFETY: `dst_pt` addresses the live destination page table and
-                // `pti < 1024`, so this entry pointer is in bounds.
-                let dst_entry = unsafe { dst_pt.add(pti) };
-                // SAFETY: `src_entry` points at one `u32` entry, which receives
-                // the COW-marked PTE.
-                unsafe { *src_entry = cow_pte };
-                // SAFETY: `dst_entry` points at one `u32` entry, which receives
-                // the same COW-marked PTE.
-                unsafe { *dst_entry = cow_pte };
+                // SAFETY: both entry pointers are in bounds and hold one PTE each.
+                unsafe {
+                    *src_w.pte_entry = cow_pte;
+                    *dst_w.pte_entry = cow_pte;
+                }
 
                 page_ref_inc((pte & !0xFFF) as *const u8);
             }

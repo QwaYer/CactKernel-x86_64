@@ -435,22 +435,16 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u32, fault_addr: u32) -> i32
     }
 
     let page_va = fault_addr & !0xFFF;
-    let pdi = pd_index(page_va) as usize;
-    let pti = pt_index(page_va) as usize;
 
-    // SAFETY: `pd` is valid and `pdi` came from `pd_index`, so this PD entry
-    // pointer is in bounds.
-    let pde_entry = unsafe { pd.add(pdi) };
-    // SAFETY: `pde_entry` points at one initialised PD entry.
-    let pde = unsafe { *pde_entry };
-    if pde & PAGE_PRESENT == 0 {
+    // SAFETY: `pd` is a live page map and the walk only reads it (`create`
+    // false), so nothing is allocated or mutated.
+    let w = unsafe { crate::vmm::paging::walk(pd, page_va, false, false) };
+    if w.pte_entry.is_null() {
         return -1;
     }
-
-    let pt = (pde & !0xFFF) as *mut AtomicU32;
-    // SAFETY: `pt` is the live page table named by the present PDE and `pti` came
-    // from `pt_index`, so this entry pointer is in bounds.
-    let pte_entry = unsafe { pt.add(pti) };
+    // The page table exists, so the walk found one: the entry the swap markers
+    // live in.
+    let pte_entry = w.pte_entry as *mut AtomicU32;
     // SAFETY: `pte_entry` points at one live atomic PTE; an acquire load is a
     // single atomic access.
     let pte = unsafe { (*pte_entry).load(Ordering::Acquire) };
@@ -481,12 +475,14 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u32, fault_addr: u32) -> i32
     }
 
     let old_flags = pte & (PAGE_RW | PAGE_USER);
-    // SAFETY: `pt` is the live page table named by the present PDE and `pti` came
-    // from `pt_index`, so this entry pointer is in bounds.
-    let restore_entry = unsafe { pt.add(pti) };
-    // SAFETY: `restore_entry` points at one live atomic PTE; the store publishes
-    // the restored mapping.
-    unsafe { (*restore_entry).store((phys as u32 & !0xFFF) | old_flags | PAGE_PRESENT, Ordering::Release) };
+    // SAFETY: `pte_entry` points at one live atomic PTE; the store publishes the
+    // restored mapping.
+    unsafe {
+        (*pte_entry).store(
+            (phys as u32 & !0xFFF) | old_flags | PAGE_PRESENT,
+            Ordering::Release,
+        )
+    };
     flush_tlb(page_va);
     0
 }

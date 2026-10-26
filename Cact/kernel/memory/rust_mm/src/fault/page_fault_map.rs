@@ -3,7 +3,7 @@
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_get_locked, PAGE_LOCK};
 use crate::vmm::paging::vmm_map;
-use crate::fault::page_fault::{ensure_private_pt, pte_get};
+use crate::fault::page_fault::{ensure_private_pte, pte_get};
 use crate::safe::{zero_page, flush_tlb, lock_acquire, lock_release};
 
 /// # Safety
@@ -30,18 +30,13 @@ pub unsafe extern "C" fn vmm_map_demand(
 
     let mut va = start;
     while va < end {
-        let pdi = pd_index(va) as usize;
-
-        // SAFETY: `pd` is the caller's valid page directory and `pdi` came from
-        // `pd_index`, so the entry is in bounds; the caller serialises changes.
-        let pt = unsafe { ensure_private_pt(pd, pdi, flags) };
-        if pt.is_null() {
+        // SAFETY: `pd` is the caller's live page map; the walk creates the
+        // private tables this entry needs.
+        let entry = unsafe { ensure_private_pte(pd, va, flags) };
+        if entry.is_null() {
             return -1;
         }
-        // SAFETY: `pt` is the live 1024-entry page table just returned and `va`
-        // was produced by the same indexing, so this entry pointer is in bounds.
-        let entry = unsafe { pt.add(pt_index(va) as usize) };
-        // SAFETY: `entry` points at one PTE.
+        // SAFETY: `entry` is an in-bounds page-table entry.
         unsafe { *entry = PAGE_DEMAND | (flags & PAGE_USER) };
         va += PAGE_SIZE;
     }
@@ -75,18 +70,13 @@ pub unsafe extern "C" fn vmm_map_zero(
 
     let mut va = start;
     while va < end {
-        let pdi = pd_index(va) as usize;
-
-        // SAFETY: `pd` is the caller's valid page directory and `pdi` came from
-        // `pd_index`, so the entry is in bounds; the caller serialises changes.
-        let pt = unsafe { ensure_private_pt(pd, pdi, flags) };
-        if pt.is_null() {
+        // SAFETY: `pd` is the caller's live page map; the walk creates the
+        // private tables this entry needs.
+        let entry = unsafe { ensure_private_pte(pd, va, flags) };
+        if entry.is_null() {
             return -1;
         }
-        // SAFETY: `pt` is the live 1024-entry page table just returned and `va`
-        // was produced by the same indexing, so this entry pointer is in bounds.
-        let entry = unsafe { pt.add(pt_index(va) as usize) };
-        // SAFETY: `entry` points at one PTE.
+        // SAFETY: `entry` is an in-bounds page-table entry.
         unsafe { *entry = PAGE_DEMAND | PAGE_ZERO | (flags & PAGE_USER) };
         va += PAGE_SIZE;
     }

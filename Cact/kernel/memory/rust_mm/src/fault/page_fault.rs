@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_get_locked, PAGE_LOCK};
-use crate::vmm::paging::{get_kernel_pd, vmm_map, PD_KERNEL_ENTRIES};
+use crate::vmm::paging::{get_kernel_pd, vmm_map};
 use crate::fault::swap::{swap_pte_is_swapped, swap_handle_fault};
 use crate::fault::oom::oom_kill;
 use crate::safe::{KStatic, zero_page, flush_tlb, kprint_str, read_cr2_val, current_page_dir};
@@ -19,8 +19,11 @@ impl Cr3Guard {
         let saved: u64;
         // SAFETY: reading CR3 is side-effect-free.
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) saved, options(nomem, nostack)) };
-        let k = get_kernel_pd() as u64;
-        // SAFETY: kernel PD is identity-mapped and valid.
+        // CR3 takes the physical address of the page map, and the kernel's map
+        // lives in its image in the higher half — hence the translation.
+        let k = crate::vmm::paging::v2p(get_kernel_pd()) as u64;
+        // SAFETY: the kernel page map covers the kernel image and all of RAM;
+        // loading it in is what makes the map current.
         unsafe { core::arch::asm!("mov cr3, {}", in(reg) k, options(nomem, nostack)) };
         Self { saved, restore: true }
     }
@@ -40,41 +43,35 @@ impl Drop for Cr3Guard {
     }
 }
 
-pub(crate) unsafe fn ensure_private_pt(pd: *mut u32, pdi: usize, extra_flags: u32) -> *mut u32 {
-    if pdi >= PD_KERNEL_ENTRIES {
+/// Walk to the page-table entry for a user address, creating the tables it
+/// needs (a split included) as tables private to this address space.
+///
+/// # Safety
+///
+/// `pd` must point at a live page map that the caller owns and may mutate, and
+/// the caller must serialise page-table changes.
+pub(crate) unsafe fn ensure_private_pte(pd: *mut u32, va: u32, extra_flags: u32) -> *mut u32 {
+    if pd.is_null() || va >= USER_STACK_TOP {
         return core::ptr::null_mut();
     }
-    // SAFETY: the caller guarantees `pd` points to a valid page directory and
-    // `pdi < PD_KERNEL_ENTRIES`, so this PD entry pointer is in bounds.
-    let pde_ptr = unsafe { pd.add(pdi) };
-    // SAFETY: `pde_ptr` points at one PD entry, which this call owns (the caller
-    // serialises page-table changes); the borrow is consumed by the updates below
-    // and no call in between touches this entry.
-    let pde = unsafe { &mut *pde_ptr };
-
-    if *pde & PAGE_PRESENT == 0 {
-        let pt = kalloc() as *mut u32;
-        if pt.is_null() { return core::ptr::null_mut(); }
-        zero_page(pt as *mut u8);
-        *pde = (pt as u32 & !0xFFF) | PAGE_PRESENT | PAGE_RW | (extra_flags & PAGE_USER) | PDE_PRIVATE;
-        return pt;
+    // SAFETY: the caller guarantees `pd` is a live page map it owns; `create`
+    // makes the walk allocate the missing levels and split a large page, marked
+    // private because this is the caller's own address space.
+    let w = unsafe { crate::vmm::paging::walk(pd, va, true, true) };
+    if w.pte_entry.is_null() {
+        return core::ptr::null_mut();
     }
-
-    if *pde & PDE_PRIVATE == 0 {
-        // Shared kernel page table — COW it.
-        let shared = (*pde & !0xFFF) as *const u32;
-        let priv_pt = kalloc() as *mut u32;
-        if priv_pt.is_null() { return core::ptr::null_mut(); }
-        // SAFETY: `shared` is a live 1024-entry page table (the PDE is present)
-        // and `priv_pt` is a fresh 4 KiB kalloc block, so the copy is in bounds.
-        unsafe { core::ptr::copy_nonoverlapping(shared, priv_pt, 1024); }
-        let old_flags = *pde & 0xFFF;
-        *pde = (priv_pt as u32 & !0xFFF)
-            | (old_flags | (extra_flags & PAGE_USER) | PDE_PRIVATE);
-        return priv_pt;
+    // The user bit has to reach the levels above the page table as well, or the
+    // CPU would fault on a ring-3 access with #PF err=0x07.
+    if !w.pd_entry.is_null() {
+        // SAFETY: `w.pd_entry` is an in-bounds PD entry.
+        unsafe { *w.pd_entry |= extra_flags & (PAGE_USER | PAGE_RW) };
     }
-
-    (*pde & !0xFFF) as *mut u32
+    if !w.pdpt_entry.is_null() {
+        // SAFETY: `w.pdpt_entry` is an in-bounds PDPT entry.
+        unsafe { *w.pdpt_entry |= extra_flags & (PAGE_USER | PAGE_RW) };
+    }
+    w.pte_entry
 }
 
 static G_STATS: KStatic<PfStats> = KStatic::new(PfStats {
@@ -96,17 +93,9 @@ pub(crate) fn pte_get(pd: *mut u32, vaddr: u32) -> *mut u32 {
     if pd.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: `pd` is valid and `pd_index` masks to 10 bits, so this PD entry
-    // pointer is in bounds.
-    let pde_entry = unsafe { pd.add(pd_index(vaddr) as usize) };
-    // SAFETY: `pde_entry` points at one initialised PD entry.
-    let pde = unsafe { *pde_entry };
-    if pde & PAGE_PRESENT == 0 {
-        return core::ptr::null_mut();
-    }
-    let pt = (pde & !0xFFF) as *mut u32;
-    // SAFETY: pt is valid.
-    unsafe { pt.add(pt_index(vaddr) as usize) }
+    // SAFETY: `pd` is a live page map and the walk only reads it (`create`
+    // false), so nothing is allocated or mutated.
+    unsafe { crate::vmm::paging::walk(pd, vaddr, false, false).pte_entry }
 }
 
 fn kill_current(fault_addr: u32, _err: u32, _rip: u32, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
