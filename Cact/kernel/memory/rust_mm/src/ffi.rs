@@ -477,16 +477,18 @@ unsafe extern "C" {
 /// Read CR2 (page-fault address).
 #[inline(always)]
 pub fn read_cr2() -> u32 {
-    let val: u32;
+    // CR2 is 64-bit in long mode, and the 64-bit move is the only form the
+    // mode encodes; the outward width follows the memory layer (Phase 2).
+    let val: u64;
     // SAFETY: reading CR2 is side-effect-free.
     unsafe { core::arch::asm!("mov {}, cr2", out(reg) val, options(nomem, nostack)) };
-    val
+    val as u32
 }
 
 /// Read CR3 (current page directory).
 #[inline(always)]
 pub fn get_current_pd() -> *mut u32 {
-    let val: u32;
+    let val: u64;
     // SAFETY: reading CR3 is side-effect-free.
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) val, options(nomem, nostack)) };
     val as *mut u32
@@ -496,7 +498,7 @@ pub fn get_current_pd() -> *mut u32 {
 #[inline(always)]
 pub fn tlb_flush(vaddr: u32) {
     // SAFETY: INVLPG is safe for any address.
-    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack)) };
+    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr as u64, options(nostack)) };
 }
 
 /// Flush the entire TLB by reloading CR3.
@@ -505,9 +507,9 @@ pub fn tlb_flush_all() {
     // SAFETY: reloading CR3 with the current value only flushes the TLB.
     unsafe {
         core::arch::asm!(
-            "mov eax, cr3",
-            "mov cr3, eax",
-            out("eax") _,
+            "mov rax, cr3",
+            "mov cr3, rax",
+            out("rax") _,
             options(nostack)
         );
     }

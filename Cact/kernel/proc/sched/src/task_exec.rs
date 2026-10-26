@@ -470,7 +470,7 @@ pub unsafe extern "C" fn task_exec(
     unsafe {
         core::arch::asm!(
             "invlpg [{}]",
-            in(reg) entry as u32,
+            in(reg) entry as u64,
             options(nostack),
         );
     }
@@ -491,11 +491,12 @@ pub unsafe extern "C" fn task_exec(
 
     // SAFETY: the final exec commit: `new_pd` is the just-loaded address space, `sp_u` a
     // stack pointer inside its mapped user stack and `entry_u` a present user-mapped entry
-    // point; `cr3`/segment reload and `iretd` leave kernel mode permanently (`noreturn`).
+    // point; `cr3`/segment reload and `iretq` leave kernel mode permanently (`noreturn`).
+    // IRETQ pops RIP, CS, RFLAGS, RSP, SS — the reverse of the pushes below, each pushed as
+    // a full 64-bit slot because long mode has no 32-bit push.
     unsafe {
         core::arch::asm!(
-            "mov eax, {pd:e}",
-            "mov cr3, eax",
+            "mov cr3, {pd}",
             "xor ebx, ebx",
             "mov eax, 0x23",
             "mov ds, ax",
@@ -503,14 +504,14 @@ pub unsafe extern "C" fn task_exec(
             "mov fs, ax",
             "mov gs, ax",
             "push 0x23",
-            "push ecx",
+            "push {sp}",
             "push 0x202",
             "push 0x1B",
-            "push edx",
-            "iretd",
-            pd = in(reg) pd_val,
-            in("ecx") sp_u,
-            in("edx") entry_u,
+            "push {entry}",
+            "iretq",
+            pd    = in(reg) pd_val as u64,
+            sp    = in(reg) sp_u as u64,
+            entry = in(reg) entry_u as u64,
             options(noreturn),
         );
     }

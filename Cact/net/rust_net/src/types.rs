@@ -130,7 +130,7 @@ pub struct NetDriver {
 pub use cact_sync::{semaphore_t as Semaphore, spinlock_t as Spinlock};
 
 // The shared layout must stay the size the C side expects.
-const _: () = assert!(core::mem::size_of::<Semaphore>() == 268);
+const _: () = assert!(core::mem::size_of::<Semaphore>() == 528);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -223,9 +223,9 @@ pub struct VfsOps {
 
 // Slot positions are fixed by C's vfs_ops_t; rust_drm/src/vfs.rs asserts the
 // same numbers for its own mirror.
-const _: () = assert!(core::mem::size_of::<VfsOps>() == 100);
-const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 68);
-const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 92);
+const _: () = assert!(core::mem::size_of::<VfsOps>() == 200);
+const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 184);
 
 #[repr(C)]
 pub struct VfsNode {
@@ -246,11 +246,11 @@ pub struct VfsNode {
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 168);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
 const _: () = assert!(core::mem::offset_of!(VfsNode, type_) == 128);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 156);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 164);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
 
 // ── Layout guards for the remaining C mirrors ─────────────────────────────
 // Every struct below is declared twice — once in C (`ksock_t`, `tcp_socket_t`,
@@ -264,14 +264,14 @@ const _: () = assert!(core::mem::offset_of!(Ksock, proto_idx) == 8);
 const _: () = assert!(core::mem::offset_of!(Ksock, so_error) == 20);
 const _: () = assert!(core::mem::offset_of!(Ksock, nonblock) == 24);
 
-const _: () = assert!(core::mem::size_of::<TcpSocket>() == 4156);
+const _: () = assert!(core::mem::size_of::<TcpSocket>() == 4168);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, state) == 4);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, local_ip) == 8);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, remote_ip) == 16);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, rx_buf) == 44);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, rx_head) == 4140);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, on_data) == 4144);
-const _: () = assert!(core::mem::offset_of!(TcpSocket, listen_parent) == 4152);
+const _: () = assert!(core::mem::offset_of!(TcpSocket, listen_parent) == 4160);
 
 const _: () = assert!(core::mem::size_of::<UdpSock>() == 4116);
 const _: () = assert!(core::mem::offset_of!(UdpSock, local_port) == 2);
@@ -279,14 +279,14 @@ const _: () = assert!(core::mem::offset_of!(UdpSock, local_ip) == 4);
 const _: () = assert!(core::mem::offset_of!(UdpSock, rx_buf) == 8);
 const _: () = assert!(core::mem::offset_of!(UdpSock, last_src_ip) == 4108);
 
-const _: () = assert!(core::mem::size_of::<NetDriver>() == 24);
+const _: () = assert!(core::mem::size_of::<NetDriver>() == 40);
 const _: () = assert!(core::mem::offset_of!(NetDriver, send) == 8);
-const _: () = assert!(core::mem::offset_of!(NetDriver, name) == 20);
+const _: () = assert!(core::mem::offset_of!(NetDriver, name) == 32);
 
-const _: () = assert!(core::mem::size_of::<Skb>() == 2076);
+const _: () = assert!(core::mem::size_of::<Skb>() == 2104);
 const _: () = assert!(core::mem::offset_of!(Skb, total_len) == 2048);
-const _: () = assert!(core::mem::offset_of!(Skb, eth) == 2052);
-const _: () = assert!(core::mem::offset_of!(Skb, tcp) == 2072);
+const _: () = assert!(core::mem::offset_of!(Skb, eth) == 2056);
+const _: () = assert!(core::mem::offset_of!(Skb, tcp) == 2096);
 
 #[repr(C)]
 pub struct SockAddrIn {
@@ -313,3 +313,6 @@ pub const TCP_TIME_WAIT: u32 = 10;
 const _: () = assert!(TCP_CLOSE_WAIT == smoltcp::socket::tcp::State::CloseWait as u32);
 const _: () = assert!(TCP_TIME_WAIT == smoltcp::socket::tcp::State::TimeWait as u32);
 const _: () = assert!(TCP_ESTABLISHED == smoltcp::socket::tcp::State::Established as u32);
+
+
+

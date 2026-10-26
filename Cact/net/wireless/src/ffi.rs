@@ -28,7 +28,7 @@ pub struct DevfsDriver {
     pub readdir: Option<extern "C" fn(*mut c_void, u32) -> *mut c_void>,
 }
 
-const _: () = assert!(core::mem::size_of::<DevfsDriver>() == 28);
+const _: () = assert!(core::mem::size_of::<DevfsDriver>() == 56);
 
 extern "C" {
     pub fn register_chrdev(
@@ -41,4 +41,6 @@ extern "C" {
 
 /// `DEVFS_F_CHAR` (devfs.h).
 pub const DEVFS_F_CHAR: u32 = 0x04;
+
+
 

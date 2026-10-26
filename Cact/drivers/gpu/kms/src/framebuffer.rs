@@ -32,11 +32,11 @@ pub struct Framebuffer {
     pub offset: u32,
 }
 
-const _: () = assert!(core::mem::size_of::<Framebuffer>() == 40);
-const _: () = assert!(core::mem::offset_of!(Framebuffer, width) == 8);
-const _: () = assert!(core::mem::offset_of!(Framebuffer, format) == 20);
-const _: () = assert!(core::mem::offset_of!(Framebuffer, obj) == 32);
-const _: () = assert!(core::mem::offset_of!(Framebuffer, offset) == 36);
+const _: () = assert!(core::mem::size_of::<Framebuffer>() == 56);
+const _: () = assert!(core::mem::offset_of!(Framebuffer, width) == 12);
+const _: () = assert!(core::mem::offset_of!(Framebuffer, format) == 24);
+const _: () = assert!(core::mem::offset_of!(Framebuffer, obj) == 40);
+const _: () = assert!(core::mem::offset_of!(Framebuffer, offset) == 48);
 
 /* ── uapi structs ───────────────────────────────────────────────────────── */
 
@@ -93,12 +93,12 @@ const _: () = assert!(core::mem::offset_of!(ModeFbCmd, pitch) == 12);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd, depth) == 20);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd, handle) == 24);
 
-const _: () = assert!(core::mem::size_of::<ModeFbCmd2>() == 100);
+const _: () = assert!(core::mem::size_of::<ModeFbCmd2>() == 104);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, pixel_format) == 12);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, handles) == 20);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, pitches) == 36);
 const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, offsets) == 52);
-const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, modifier) == 68);
+const _: () = assert!(core::mem::offset_of!(ModeFbCmd2, modifier) == 72);
 
 const _: () = assert!(core::mem::size_of::<ModeFbDirtyCmd>() == 24);
 const _: () = assert!(core::mem::size_of::<ClipRect>() == 8);
@@ -574,3 +574,4 @@ pub extern "C" fn mode_dirtyfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 
     drm_driver_dirty(dev, fb, clips.as_ptr(), n as u32)
 }
+

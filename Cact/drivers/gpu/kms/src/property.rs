@@ -92,9 +92,9 @@ const _: () = assert!(core::mem::offset_of!(ModeGetProperty, count_values) == 56
 const _: () = assert!(core::mem::offset_of!(ModeGetProperty, count_enum_blobs) == 60);
 const _: () = assert!(core::mem::size_of::<ModePropertyEnum>() == 40);
 const _: () = assert!(core::mem::offset_of!(ModePropertyEnum, name) == 8);
-const _: () = assert!(core::mem::size_of::<ModeObjGetProperties>() == 28);
+const _: () = assert!(core::mem::size_of::<ModeObjGetProperties>() == 32);
 const _: () = assert!(core::mem::offset_of!(ModeObjGetProperties, count_props) == 16);
-const _: () = assert!(core::mem::size_of::<ModeObjSetProperty>() == 20);
+const _: () = assert!(core::mem::size_of::<ModeObjSetProperty>() == 24);
 
 /* uapi values (uapi/drm_mode.h). */
 const DRM_MODE_PROP_IMMUTABLE: u32 = 1 << 2;
@@ -972,3 +972,4 @@ pub(crate) fn drm_prop_name_and_type(dev: *mut DrmDevice, prop_id: u32) -> ([u8;
     let ptype = unsafe { (*p).ptype };
     (name, ptype)
 }
+

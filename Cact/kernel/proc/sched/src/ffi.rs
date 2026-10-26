@@ -227,11 +227,12 @@ pub unsafe fn sti() {
 /// The caller must be in kernel mode with a valid kernel stack.
 #[inline(always)]
 pub unsafe fn read_eflags() -> u32 {
-    // SAFETY: `pushfd; pop` is stack-balanced and only reports the current EFLAGS value.
+    // SAFETY: `pushfq; pop` is stack-balanced and only reports the current RFLAGS
+    // value (the 64-bit form is the only one long mode encodes).
     unsafe {
-        let flags: u32;
-        core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, nostack));
-        flags
+        let flags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, nostack));
+        flags as u32
     }
 }
 

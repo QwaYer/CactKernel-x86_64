@@ -44,10 +44,10 @@ pub struct Cact80211Hw {
 const _: () = assert!(core::mem::size_of::<Cact80211Conf>() == 12);
 const _: () = assert!(core::mem::offset_of!(Cact80211Conf, bssid) == 2);
 const _: () = assert!(core::mem::offset_of!(Cact80211Conf, basic_rates) == 8);
-const _: () = assert!(core::mem::size_of::<Cact80211Ops>() == 12);
-const _: () = assert!(core::mem::size_of::<Cact80211Hw>() == 20);
-const _: () = assert!(core::mem::offset_of!(Cact80211Hw, mac) == 8);
-const _: () = assert!(core::mem::offset_of!(Cact80211Hw, name) == 16);
+const _: () = assert!(core::mem::size_of::<Cact80211Ops>() == 24);
+const _: () = assert!(core::mem::size_of::<Cact80211Hw>() == 32);
+const _: () = assert!(core::mem::offset_of!(Cact80211Hw, mac) == 16);
+const _: () = assert!(core::mem::offset_of!(Cact80211Hw, name) == 24);
 
 /// Transmit one raw 802.11 MPDU (no FCS) on the given queue class.
 ///
@@ -140,3 +140,5 @@ pub unsafe extern "C" fn cact80211_rx(hw: *mut Cact80211Hw, frame: *const u8, le
     let f = unsafe { core::slice::from_raw_parts(frame, len as usize) };
     crate::dev::rx_frame(hw, f);
 }
+
+

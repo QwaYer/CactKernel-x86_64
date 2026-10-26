@@ -116,10 +116,10 @@ pub struct VfsOps {
     pub rename2:        Option<unsafe extern "C" fn(*mut VfsNode, *const c_char, *mut VfsNode, *const c_char) -> i32>, // 25
 }
 
-const _: () = assert!(core::mem::size_of::<VfsOps>() == 104);
-const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 68);
-const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 92);
-const _: () = assert!(core::mem::offset_of!(VfsOps, rename2) == 100);
+const _: () = assert!(core::mem::size_of::<VfsOps>() == 208);
+const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 184);
+const _: () = assert!(core::mem::offset_of!(VfsOps, rename2) == 200);
 
 /// Generic VFS node (`vfs_node_t`, 168 bytes).
 #[repr(C)]
@@ -137,11 +137,11 @@ pub struct VfsNode {
     pub priv_:    *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 168);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
 const _: () = assert!(core::mem::offset_of!(VfsNode, type_) == 128);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 156);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 164);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
 
 /// Pool entry for a synthetic symlink (`vfs_symlink_entry_t` in vfs_internal.h).
 /// The embedded node is first so a `*mut VfsNode` can be recovered as the
@@ -153,7 +153,7 @@ pub struct VfsSymlinkEntry {
     pub in_use: i32,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsSymlinkEntry>() == 684);
+const _: () = assert!(core::mem::size_of::<VfsSymlinkEntry>() == 704);
 
 /// File description (`file_t`, 24 bytes): the intermediate between the fd table
 /// and a node.  `dup()` shares one `file_t`, so `offset`/`flags` are shared.
@@ -167,8 +167,8 @@ pub struct File {
     pub priv_:    *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<File>() == 24);
-const _: () = assert!(core::mem::offset_of!(File, priv_) == 20);
+const _: () = assert!(core::mem::size_of::<File>() == 32);
+const _: () = assert!(core::mem::offset_of!(File, priv_) == 24);
 
 /// Per-open node operations (`vfs_file_ops_t`, 24 bytes).  A node with these
 /// keeps per-`open()` state in `file_t.priv`, shared by `dup()`d descriptors.
@@ -182,7 +182,7 @@ pub struct VfsFileOps {
     pub release: Option<unsafe extern "C" fn(*mut VfsNode, *mut File)>,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsFileOps>() == 24);
+const _: () = assert!(core::mem::size_of::<VfsFileOps>() == 48);
 
 /// Mount-table entry: a filesystem instance mounted at `host/<name>`.
 #[repr(C)]
@@ -194,3 +194,4 @@ pub struct VfsMount {
     /// Filesystem type name ("tmpfs", "devfs", …) for /proc/mounts; may be "".
     pub fstype: [c_char; 32],
 }
+

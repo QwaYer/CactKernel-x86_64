@@ -67,12 +67,12 @@ pub struct Crtc {
     pub vblank_last_usec: u32,
 }
 
-const _: () = assert!(core::mem::offset_of!(Crtc, name) == 12);
-const _: () = assert!(core::mem::offset_of!(Crtc, fb) == 44);
-const _: () = assert!(core::mem::offset_of!(Crtc, mode) == 48);
-const _: () = assert!(core::mem::offset_of!(Crtc, enabled) == 112);
-const _: () = assert!(core::mem::offset_of!(Crtc, vblank_count) == 124);
-const _: () = assert!(core::mem::offset_of!(Crtc, connector) == 132);
+const _: () = assert!(core::mem::offset_of!(Crtc, name) == 16);
+const _: () = assert!(core::mem::offset_of!(Crtc, fb) == 48);
+const _: () = assert!(core::mem::offset_of!(Crtc, mode) == 56);
+const _: () = assert!(core::mem::offset_of!(Crtc, enabled) == 120);
+const _: () = assert!(core::mem::offset_of!(Crtc, vblank_count) == 132);
+const _: () = assert!(core::mem::offset_of!(Crtc, connector) == 144);
 
 /* ── encoder ─────────────────────────────────────────────────────────────── */
 
@@ -88,10 +88,10 @@ pub struct Encoder {
     pub crtc: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<Encoder>() == 28);
-const _: () = assert!(core::mem::offset_of!(Encoder, encoder_type) == 12);
-const _: () = assert!(core::mem::offset_of!(Encoder, possible_crtcs) == 16);
-const _: () = assert!(core::mem::offset_of!(Encoder, crtc) == 24);
+const _: () = assert!(core::mem::size_of::<Encoder>() == 40);
+const _: () = assert!(core::mem::offset_of!(Encoder, encoder_type) == 16);
+const _: () = assert!(core::mem::offset_of!(Encoder, possible_crtcs) == 20);
+const _: () = assert!(core::mem::offset_of!(Encoder, crtc) == 32);
 
 /// Copy a C string into a fixed-size name field, always NUL-terminated
 /// (`strlcpy(dst, src, N)`).
@@ -297,12 +297,12 @@ pub struct Connector {
     pub edid: Vec<u8>,
 }
 
-const _: () = assert!(core::mem::offset_of!(Connector, status) == 20);
-const _: () = assert!(core::mem::offset_of!(Connector, mm_width) == 24);
-const _: () = assert!(core::mem::offset_of!(Connector, count_modes) == 32);
-const _: () = assert!(core::mem::offset_of!(Connector, edid_len) == 36);
-const _: () = assert!(core::mem::offset_of!(Connector, encoder) == 40);
-const _: () = assert!(core::mem::offset_of!(Connector, dpms) == 44);
+const _: () = assert!(core::mem::offset_of!(Connector, status) == 24);
+const _: () = assert!(core::mem::offset_of!(Connector, mm_width) == 28);
+const _: () = assert!(core::mem::offset_of!(Connector, count_modes) == 36);
+const _: () = assert!(core::mem::offset_of!(Connector, edid_len) == 40);
+const _: () = assert!(core::mem::offset_of!(Connector, encoder) == 48);
+const _: () = assert!(core::mem::offset_of!(Connector, dpms) == 56);
 
 /* ── plane ───────────────────────────────────────────────────────────────── */
 
@@ -333,10 +333,10 @@ pub struct Plane {
     pub src_h: u32,
 }
 
-const _: () = assert!(core::mem::offset_of!(Plane, plane_type) == 12);
-const _: () = assert!(core::mem::offset_of!(Plane, possible_crtcs) == 16);
-const _: () = assert!(core::mem::offset_of!(Plane, format_count) == 20);
-const _: () = assert!(core::mem::offset_of!(Plane, format_type) == 24);
+const _: () = assert!(core::mem::offset_of!(Plane, plane_type) == 16);
+const _: () = assert!(core::mem::offset_of!(Plane, possible_crtcs) == 20);
+const _: () = assert!(core::mem::offset_of!(Plane, format_count) == 24);
+const _: () = assert!(core::mem::offset_of!(Plane, format_type) == 28);
 
 /* uapi values the object model needs (drm_drv.h / uapi/drm_mode.h). */
 const DRM_MODE_UNKNOWNCONNECTION: u32 = 3;
@@ -884,3 +884,4 @@ unsafe fn clear_plane(plane: *mut Plane) {
     plane.src_w = 0;
     plane.src_h = 0;
 }
+

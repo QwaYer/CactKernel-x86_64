@@ -226,13 +226,14 @@ fn delay_ms(ms: u32) {
 }
 
 fn read_cr3() -> u32 {
-    let cr3: u32;
+    let cr3: u64;
     // SAFETY: `mov ..., cr3` only copies the current page-directory base into an output register;
-    // `nomem`/`nostack` declare that it reads and writes no memory.
+    // `nomem`/`nostack` declare that it reads and writes no memory.  The 64-bit register is the
+    // only form long mode encodes; the outward width follows the memory layer (Phase 2).
     unsafe {
         core::arch::asm!("mov {0}, cr3", out(reg) cr3, options(nomem, nostack));
     }
-    cr3
+    cr3 as u32
 }
 
 fn stack_top(cpu: usize) -> u32 {
@@ -799,11 +800,12 @@ pub fn boot_complete() -> bool {
 /// (slot = TSS_SLOT + cpu).
 #[no_mangle]
 pub extern "C" fn smp_self_cpu() -> i32 {
-    let sel: u32;
+    let sel: u16;
     // SAFETY: `str` only copies the current task-register selector into an output register; it
-    // reads and writes no memory and does not touch the stack.
+    // reads and writes no memory and does not touch the stack.  %str is 16 bits wide, and the
+    // `:x` modifier asks the assembler for the 16-bit form.
     unsafe {
-        core::arch::asm!("str {0}", out(reg) sel, options(nomem, nostack));
+        core::arch::asm!("str {0:x}", out(reg) sel, options(nomem, nostack));
     }
     (((sel as usize) >> 3) as i32) - TSS_SLOT as i32
 }

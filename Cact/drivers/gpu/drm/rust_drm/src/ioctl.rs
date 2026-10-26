@@ -111,7 +111,7 @@ struct WaitVblank {
     tval_usec: i32, // reply.tval_usec
 }
 
-const _: () = assert!(core::mem::size_of::<DrmVersion>() == 36);
+const _: () = assert!(core::mem::size_of::<DrmVersion>() == 56);
 const _: () = assert!(core::mem::offset_of!(DrmVersion, name) == 16);
 const _: () = assert!(core::mem::size_of::<DrmGetCap>() == 16);
 const _: () = assert!(core::mem::size_of::<DrmSetClientCap>() == 16);
@@ -695,3 +695,4 @@ pub extern "C" fn drm_legacy_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void
 extern "C" {
     fn ktime_get_usec() -> u64;
 }
+

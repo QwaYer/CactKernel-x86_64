@@ -68,10 +68,10 @@ pub struct GemObject {
     pub map_offset: u32,
 }
 
-const _: () = assert!(core::mem::size_of::<GemObject>() == 40);
-const _: () = assert!(core::mem::offset_of!(GemObject, memfd) == 12);
-const _: () = assert!(core::mem::offset_of!(GemObject, is_dumb) == 32);
-const _: () = assert!(core::mem::offset_of!(GemObject, map_offset) == 36);
+const _: () = assert!(core::mem::size_of::<GemObject>() == 48);
+const _: () = assert!(core::mem::offset_of!(GemObject, memfd) == 16);
+const _: () = assert!(core::mem::offset_of!(GemObject, is_dumb) == 36);
+const _: () = assert!(core::mem::offset_of!(GemObject, map_offset) == 40);
 
 /* ── events (uapi/drm.h) ────────────────────────────────────────────────── */
 
@@ -175,13 +175,13 @@ pub struct DriverOps {
     pub cursor_move: Option<extern "C" fn(*mut c_void, i32, i32) -> c_int>,
 }
 
-const _: () = assert!(core::mem::size_of::<DriverOps>() == 80);
-const _: () = assert!(core::mem::offset_of!(DriverOps, load) == 24);
-const _: () = assert!(core::mem::offset_of!(DriverOps, set_config) == 36);
-const _: () = assert!(core::mem::offset_of!(DriverOps, gem_create) == 56);
-const _: () = assert!(core::mem::offset_of!(DriverOps, ioctl) == 68);
-const _: () = assert!(core::mem::offset_of!(DriverOps, cursor_set) == 72);
-const _: () = assert!(core::mem::offset_of!(DriverOps, cursor_move) == 76);
+const _: () = assert!(core::mem::size_of::<DriverOps>() == 144);
+const _: () = assert!(core::mem::offset_of!(DriverOps, load) == 32);
+const _: () = assert!(core::mem::offset_of!(DriverOps, set_config) == 56);
+const _: () = assert!(core::mem::offset_of!(DriverOps, gem_create) == 96);
+const _: () = assert!(core::mem::offset_of!(DriverOps, ioctl) == 120);
+const _: () = assert!(core::mem::offset_of!(DriverOps, cursor_set) == 128);
+const _: () = assert!(core::mem::offset_of!(DriverOps, cursor_move) == 136);
 
 /* ── the non-atomic modeset request (drm_drv.h) ─────────────────────────── */
 
@@ -198,10 +198,10 @@ pub struct ModeSet {
     pub num_connectors: i32,
 }
 
-const _: () = assert!(core::mem::offset_of!(ModeSet, crtc) == 4);
-const _: () = assert!(core::mem::offset_of!(ModeSet, mode) == 8);
-const _: () = assert!(core::mem::offset_of!(ModeSet, connectors) == 80);
-const _: () = assert!(core::mem::offset_of!(ModeSet, num_connectors) == 84);
+const _: () = assert!(core::mem::offset_of!(ModeSet, crtc) == 8);
+const _: () = assert!(core::mem::offset_of!(ModeSet, mode) == 16);
+const _: () = assert!(core::mem::offset_of!(ModeSet, connectors) == 88);
+const _: () = assert!(core::mem::offset_of!(ModeSet, num_connectors) == 96);
 
 /* ── file ───────────────────────────────────────────────────────────────── */
 
@@ -462,3 +462,4 @@ impl DrmDevice {
         }
     }
 }
+

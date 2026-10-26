@@ -10,16 +10,16 @@ use crate::safe::{KStatic, zero_page, flush_tlb, kprint_str, read_cr2_val, curre
 /// Switch to the kernel page directory for the rest of this fault handler so PTE
 /// walks cannot recurse with user `CR3` when the faulting `pd` omits its own tables.
 struct Cr3Guard {
-    saved: u32,
+    saved: u64,
     restore: bool,
 }
 
 impl Cr3Guard {
     fn install_kernel_pd() -> Self {
-        let saved: u32;
+        let saved: u64;
         // SAFETY: reading CR3 is side-effect-free.
         unsafe { core::arch::asm!("mov {}, cr3", out(reg) saved, options(nomem, nostack)) };
-        let k = get_kernel_pd() as u32;
+        let k = get_kernel_pd() as u64;
         // SAFETY: kernel PD is identity-mapped and valid.
         unsafe { core::arch::asm!("mov cr3, {}", in(reg) k, options(nomem, nostack)) };
         Self { saved, restore: true }

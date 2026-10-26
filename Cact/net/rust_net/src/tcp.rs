@@ -16,19 +16,19 @@ fn ipv4_u32(a: Ipv4Addr) -> u32 {
 }
 
 pub(crate) fn tcp_lock() {
-    let flags: u32;
-    // SAFETY: this runs on the current CPU.  `pushfd`/`pop` capture EFLAGS into
+    let flags: u64;
+    // SAFETY: this runs on the current CPU.  `pushfq`/`pop` capture RFLAGS into
     // `flags` and the `nomem, preserves_flags` options assert that the asm reads
     // and writes no memory, so only the named register is affected.
     unsafe {
-        core::arch::asm!("pushfd; pop {flags}", flags = out(reg) flags, options(nomem, preserves_flags));
+        core::arch::asm!("pushfq; pop {flags}", flags = out(reg) flags, options(nomem, preserves_flags));
     }
     // SAFETY: `cli` masks maskable interrupts on this CPU; it reads and writes no
     // memory and changes no architectural state but the interrupt flag.
     unsafe {
         core::arch::asm!("cli");
     }
-    TCP_SAVED_FLAGS.store(flags, Ordering::Relaxed);
+    TCP_SAVED_FLAGS.store(flags as u32, Ordering::Relaxed);
     while TCP_LOCK.compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed).is_err() {
         // SAFETY: `pause` is a spin-loop hint; it reads and writes no memory and
         // changes no architectural state.

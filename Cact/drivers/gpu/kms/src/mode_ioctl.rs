@@ -108,7 +108,7 @@ const _: () = assert!(core::mem::size_of::<ModeGetEncoder>() == 20);
 const _: () = assert!(core::mem::offset_of!(ModeGetEncoder, encoder_type) == 4);
 const _: () = assert!(core::mem::offset_of!(ModeGetEncoder, crtc_id) == 8);
 
-const _: () = assert!(core::mem::size_of::<ModeGetPlaneRes>() == 12);
+const _: () = assert!(core::mem::size_of::<ModeGetPlaneRes>() == 16);
 const _: () = assert!(core::mem::offset_of!(ModeGetPlaneRes, count_planes) == 8);
 
 const _: () = assert!(core::mem::size_of::<ModeGetPlane>() == 32);
@@ -708,3 +708,4 @@ pub extern "C" fn drm_mode_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void) 
         _ => -38,
     }
 }
+

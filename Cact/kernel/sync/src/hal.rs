@@ -34,12 +34,14 @@ pub fn interrupts_enable() {
 
 #[inline(always)]
 pub fn eflags_read() -> u32 {
-    // SAFETY: `pushfd` pushes EFLAGS onto the (valid) kernel stack and `pop`
+    // SAFETY: `pushfq` pushes RFLAGS onto the (valid) kernel stack and `pop`
     // reads it back into a register; both are unprivileged and the sequence is
-    // stack-balanced, so it only reports the current EFLAGS value.
+    // stack-balanced, so it only reports the current RFLAGS value.  Long mode
+    // only encodes the 64-bit form; the report itself stays 32-bit wide until
+    // the memory layer is re-typed in Phase 2 of PORTING-x86_64.md.
     unsafe {
-        let flags: u32;
-        core::arch::asm!("pushfd; pop {}", out(reg) flags, options(nomem, preserves_flags));
-        flags
+        let flags: u64;
+        core::arch::asm!("pushfq; pop {}", out(reg) flags, options(nomem, preserves_flags));
+        flags as u32
     }
 }

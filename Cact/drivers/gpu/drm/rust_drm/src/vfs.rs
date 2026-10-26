@@ -30,8 +30,8 @@ pub struct File {
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<File>() == 24);
-const _: () = assert!(core::mem::offset_of!(File, priv_) == 20);
+const _: () = assert!(core::mem::size_of::<File>() == 32);
+const _: () = assert!(core::mem::offset_of!(File, priv_) == 24);
 
 /* ── vfs_node_t ─────────────────────────────────────────────────────────── */
 
@@ -50,10 +50,10 @@ pub struct VfsNode {
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 168);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 156);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 164);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
 
 /* ── vfs_file_ops_t ─────────────────────────────────────────────────────── */
 
@@ -67,7 +67,7 @@ pub struct VfsFileOps {
     pub release: Option<extern "C" fn(*mut VfsNode, *mut File)>,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsFileOps>() == 24);
+const _: () = assert!(core::mem::size_of::<VfsFileOps>() == 48);
 
 /* ── vfs_ops_t ──────────────────────────────────────────────────────────── */
 
@@ -81,8 +81,8 @@ pub struct VfsOps {
     pub after: [*mut c_void; 7],
 }
 
-const _: () = assert!(core::mem::size_of::<VfsOps>() == 100);
-const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 68);
+const _: () = assert!(core::mem::size_of::<VfsOps>() == 200);
+const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 136);
 
 /* ── vfs_dirent_t ───────────────────────────────────────────────────────── */
 
@@ -108,7 +108,7 @@ pub struct DevfsDriver {
     pub readdir: Option<extern "C" fn(*mut c_void, u32) -> *mut VfsDirent>,
 }
 
-const _: () = assert!(core::mem::size_of::<DevfsDriver>() == 28);
+const _: () = assert!(core::mem::size_of::<DevfsDriver>() == 56);
 
 /* ── devfs.h ────────────────────────────────────────────────────────────── */
 
@@ -228,3 +228,4 @@ pub unsafe fn fmt_indexed(dst: *mut u8, cap: usize, prefix: &[u8], n: i32) {
         out[len] = 0;
     }
 }
+
