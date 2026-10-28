@@ -53,15 +53,15 @@ const WORKERS_RUN_TASKS: bool = true;
 // Info block offsets inside the trampoline page (INFO_BASE in trampoline.asm).
 // The vector lands an AP on offset 0, which trampoline.asm must keep as entry
 // code, so the BSP-patched block sits at a fixed offset near the top instead.
-const INFO_CR3: usize = 0x0F00;
-const INFO_STACK: usize = 0x0F04;
-const INFO_ENTRY: usize = 0x0F08;
-const INFO_CPU: usize = 0x0F0C;
+const INFO_CR3: usize = 0x0F00;   // u64: physical PML4 (< 4 GiB)
+const INFO_STACK: usize = 0x0F08; // u64: per-CPU idle stack top (higher half)
+const INFO_ENTRY: usize = 0x0F10; // u64: smp_ap_entry (higher half)
+const INFO_CPU: usize = 0x0F18;   // u32
 // AP sets INFO_ACK = AP_STAGE_TRAMP_READ once it consumed the info block.
 // The BSP must not re-stamp 0x8000 for the next worker until it is set (or
 // the worker is confirmed lost), otherwise the AP could read a stale/mixed
 // stack/cpu pair while still executing from the shared page.
-const INFO_ACK: usize = 0x0F10;
+const INFO_ACK: usize = 0x0F1C;   // u32
 const AP_STAGE_TRAMP_READ: u32 = 1;
 
 /// Bring-up / idle stack per worker.  A worker runs its whole idle life on this
@@ -176,6 +176,7 @@ unsafe extern "C" {
     static TRAMPOLINE_BIN_START: u8;
     #[link_name = "_binary_build_trampoline_bin_end"]
     static TRAMPOLINE_BIN_END: u8;
+    fn ktime_busy_wait_us(us: u64);
 }
 
 fn cpu_ptr(cpu: usize) -> *mut SmpCpu {
@@ -186,28 +187,26 @@ fn cpu_ptr(cpu: usize) -> *mut SmpCpu {
 }
 
 fn delay_ms(ms: u32) {
-    let mut n = ms.saturating_mul(20000);
-    while n > 0 {
-        n -= 1;
-        // SAFETY: `pause` is a spin-wait hint; it touches no memory, no registers and no flags.
-        unsafe {
-            core::arch::asm!("pause", options(nomem, nostack, preserves_flags));
-        }
-    }
+    // A real timebase (calibrated TSC, else the ACPI PM timer).  A raw `pause`
+    // count is wildly inaccurate under a hypervisor, which intercepts PAUSE: a
+    // 10 ms delay could stretch to hundreds of milliseconds and make bring-up
+    // look hung.
+    // SAFETY: `ktime_busy_wait_us` is a value-only busy wait.
+    unsafe { ktime_busy_wait_us(ms as u64 * 1000) };
 }
 
-fn read_cr3() -> u32 {
+fn read_cr3() -> u64 {
     let cr3: u64;
     // SAFETY: `mov ..., cr3` only copies the current page-directory base into an output register;
     // `nomem`/`nostack` declare that it reads and writes no memory.  The 64-bit register is the
-    // only form long mode encodes; the outward width follows the memory layer (Phase 2).
+    // only form long mode encodes.
     unsafe {
         core::arch::asm!("mov {0}, cr3", out(reg) cr3, options(nomem, nostack));
     }
-    cr3 as u32
+    cr3
 }
 
-fn stack_top(cpu: usize) -> u32 {
+fn stack_top(cpu: usize) -> u64 {
     let p = cpu_ptr(cpu);
     // SAFETY: `p` points at a `CPU_TABLE` entry for a bounds-checked `cpu`, so `idle_stack` is a
     // live in-bounds array and taking its address is valid.
@@ -217,7 +216,17 @@ fn stack_top(cpu: usize) -> u32 {
     // fields that follow it (`lapic_id`, `online`) — the fix for that is here,
     // because it made every worker's recorded LAPIC id garbage and the re-online
     // path then INIT'd APIC id 0, the BSP, which resets the machine.
-    ((base + IDLE_STACK_SIZE) & !15usize) as u32
+    ((base + IDLE_STACK_SIZE) & !15usize) as u64
+}
+
+/// Stack pointer to hand the AP trampoline so `smp_ap_entry` is entered the way
+/// the SysV ABI expects a function to be: RSP % 16 == 8, as though a `call` had
+/// just pushed a return address.  The trampoline reaches the entry by `jmp`,
+/// which pushes nothing, so the aligned `stack_top` itself would land the entry
+/// on a 16-byte boundary and make the first `movaps` (an SSE spill) in any
+/// deeper call fault.
+fn ap_entry_stack(cpu: usize) -> u64 {
+    stack_top(cpu) - 8
 }
 
 fn write_volatile<T: Copy>(addr: *mut T, val: T) {
@@ -243,11 +252,25 @@ fn set_gdt(entry: &mut GdtEntry, base: u64, limit: u32, access: u8, gran: u8) {
 /// descriptor of type 9 (available 64-bit TSS), and a second slot carrying bits
 /// 63..32 of the base, which a segment descriptor has no room for.
 fn set_tss_descriptor(slot: &mut GdtEntry, base: u64, limit: u32) {
-    set_gdt(slot, base, limit, 0x89, 0x00);
-    // SAFETY: the caller passes the first of the two consecutive slots of a
-    // per-CPU TSS, both inside `gdt`.
-    let hi = unsafe { &mut *((slot as *mut GdtEntry).add(1)) };
-    set_gdt(hi, base >> 32, 0, 0, 0);
+    // A 64-bit TSS descriptor is 16 bytes.  The low qword is the ordinary
+    // segment shape (limit, base[31:0], access, flags); the high qword carries
+    // base[63:32] in its low dword and is reserved above it.  `set_gdt` cannot
+    // express that — its fields would scatter base[63:32] across limit/base —
+    // so the two qwords are built whole, exactly as `write_tss` in gdt.c does.
+    let lo: u64 = (limit as u64 & 0xFFFF)
+        | ((base & 0xFFFF) << 16)
+        | (((base >> 16) & 0xFF) << 32)
+        | (0x89u64 << 40) // present, DPL 0, system, type 9 (available 64-bit TSS)
+        | ((((limit >> 16) & 0x0F) as u64) << 48)
+        | (((base >> 24) & 0xFF) << 56);
+    let hi: u64 = base >> 32;
+    // SAFETY: `slot` is the first of the two consecutive 8-byte slots reserved
+    // for a per-CPU 64-bit TSS descriptor, inside the `gdt` array.
+    unsafe {
+        let p = slot as *mut GdtEntry as *mut u64;
+        p.write_volatile(lo);
+        p.add(1).write_volatile(hi);
+    }
 }
 
 /// (Re)write `cpu`'s TSS descriptor in its per-CPU GDT.
@@ -439,13 +462,14 @@ fn stage_trampoline() -> i32 {
     unsafe {
         ptr::copy_nonoverlapping(start as *const u8, dst, len);
     }
-    // Patch info block.
-    write_volatile((TRAMP_ADDR as usize + INFO_CR3) as *mut u32, read_cr3());
-    write_volatile((TRAMP_ADDR as usize + INFO_STACK) as *mut u32, 0);
+    // Patch info block.  CR3, the idle stack top and the entry point are all
+    // patched once and stay valid; only stack/cpu/ack change per worker.
+    write_volatile((TRAMP_ADDR as usize + INFO_CR3) as *mut u64, read_cr3());
+    write_volatile((TRAMP_ADDR as usize + INFO_STACK) as *mut u64, 0);
     write_volatile((TRAMP_ADDR as usize + INFO_CPU) as *mut u32, 0);
     write_volatile((TRAMP_ADDR as usize + INFO_ACK) as *mut u32, 0);
-    let entry = (smp_ap_entry as extern "C" fn() -> !) as usize as u32;
-    write_volatile((TRAMP_ADDR as usize + INFO_ENTRY) as *mut u32, entry);
+    let entry = (smp_ap_entry as extern "C" fn() -> !) as usize as u64;
+    write_volatile((TRAMP_ADDR as usize + INFO_ENTRY) as *mut u64, entry);
     0
 }
 
@@ -497,8 +521,8 @@ pub extern "C" fn smp_init() -> i32 {
         // has acked (consumed) the block.
         write_volatile((TRAMP_ADDR as usize + INFO_ACK) as *mut u32, 0);
         write_volatile(
-            (TRAMP_ADDR as usize + INFO_STACK) as *mut u32,
-            stack_top(cpu),
+            (TRAMP_ADDR as usize + INFO_STACK) as *mut u64,
+            ap_entry_stack(cpu),
         );
         write_volatile((TRAMP_ADDR as usize + INFO_CPU) as *mut u32, cpu as u32);
 
@@ -665,7 +689,7 @@ pub fn smp_cpu_online_sipi(cpu: u32) -> i32 {
     // intact — only the info block needs refreshing for this core.  (Do NOT
     // re-copy the blob here: 0x8000 is reserved and holds our own data.)
     write_volatile((TRAMP_ADDR as usize + INFO_ACK) as *mut u32, 0);
-    write_volatile((TRAMP_ADDR as usize + INFO_STACK) as *mut u32, stack_top(cpu as usize));
+    write_volatile((TRAMP_ADDR as usize + INFO_STACK) as *mut u64, ap_entry_stack(cpu as usize));
     write_volatile((TRAMP_ADDR as usize + INFO_CPU) as *mut u32, cpu);
     // `ltr` set this core's TSS descriptor busy during the first bring-up and the
     // processor refuses to load a busy TSS, so rewrite it before `smp_ap_entry`
