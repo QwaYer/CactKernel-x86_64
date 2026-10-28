@@ -17,7 +17,7 @@
 //! to orchestrate workers); worker cores may use any supported state.
 
 use core::cell::SyncUnsafeCell;
-use core::sync::atomic::AtomicBool;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::ffi;
 use crate::energy::{self, MAX_CORES};
@@ -333,7 +333,13 @@ fn ipi_send(dst_cpu: u32, vector: u32) -> i32 {
     // SAFETY: `lapic_id` has been checked for the invalid sentinel above and `vector` is one of
     // this controller's own IDT vectors; `apic_send_ipi` takes them by value and does the ICR
     // register/MSR write itself.
-    unsafe { ffi::apic_send_ipi(lapic_id, vector) }
+    let rc = unsafe { ffi::apic_send_ipi(lapic_id, vector) };
+    if rc == 0 {
+        if let Some(c) = counts(dst_cpu) {
+            c.sent(vector).fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    rc
 }
 
 /// Ask worker `cpu` to (re-)enter its deepest eligible idle state.
@@ -353,15 +359,112 @@ pub extern "C" fn energy_ipi_wake_worker(cpu: u32) -> i32 {
 // ---------------------------------------------------------------------------
 
 /// Worker received IPI_HALT: it should drop into its target idle depth on the
-/// next idle pass. Harmless no-op until workers exist (UP build).
+/// next idle pass.
+///
+/// Lock-free on purpose: an IPI ISR must not take the energy lock, which a peer
+/// core may be holding while it waits for this very core to do something else.
+/// The record below is an atomic bump only; the actual re-derivation of the
+/// idle depth happens on the idle pass this interrupt returns into.
 #[no_mangle]
 pub extern "C" fn energy_ipi_halt_handle() {
-    let _ = energy::energy_core_count_online();
+    record_recv(IPI_HALT_VECTOR);
 }
 
-/// Worker received IPI_WAKEUP: leave deep idle and rescan runqueues. Harmless
-/// no-op until workers exist (UP build).
+/// Worker received IPI_WAKEUP: leave deep idle and rescan runqueues.  Also
+/// lock-free (see `energy_ipi_halt_handle`).
 #[no_mangle]
 pub extern "C" fn energy_ipi_wake_handle() {
-    let _ = energy::energy_core_count_online();
+    record_recv(IPI_WAKE_VECTOR);
+}
+
+// ---------------------------------------------------------------------------
+// IPI delivery accounting and boot smoke test
+//
+// The governor's HALT half is dormant on this platform: a worker that goes idle
+// is already recorded C1 and truly halted (its idle target can never be deeper
+// than C1 while C3/C6 wait on an ACPI `_CST`), so neither of the tick's two
+// `energy_ipi_halt_worker` sites can fire.  IPI_WAKEUP is live and fires under
+// load.  The counters below make both halves observable (the live half at
+// runtime, the dormant half the moment C3/C6 arrive): the master bumps `sent`
+// as it issues the IPI, the target's ISR bumps `recv`.  They are published
+// through the C ABI and shown per-CPU in /proc/cpuinfo.
+// ---------------------------------------------------------------------------
+
+struct IpiCounts {
+    halt_sent: AtomicU32,
+    halt_recv: AtomicU32,
+    wake_sent: AtomicU32,
+    wake_recv: AtomicU32,
+}
+
+impl IpiCounts {
+    const fn new() -> Self {
+        Self {
+            halt_sent: AtomicU32::new(0),
+            halt_recv: AtomicU32::new(0),
+            wake_sent: AtomicU32::new(0),
+            wake_recv: AtomicU32::new(0),
+        }
+    }
+
+    fn sent(&self, vector: u32) -> &AtomicU32 {
+        if vector == IPI_WAKE_VECTOR {
+            &self.wake_sent
+        } else {
+            &self.halt_sent
+        }
+    }
+
+    fn recv(&self, vector: u32) -> &AtomicU32 {
+        if vector == IPI_WAKE_VECTOR {
+            &self.wake_recv
+        } else {
+            &self.halt_recv
+        }
+    }
+}
+
+static IPI_COUNTS: SyncUnsafeCell<[IpiCounts; MAX_CORES]> =
+    SyncUnsafeCell::new([const { IpiCounts::new() }; MAX_CORES]);
+
+/// `cpu`'s IPI counters, or `None` when `cpu` is out of range.
+fn counts(cpu: u32) -> Option<&'static IpiCounts> {
+    let i = cpu as usize;
+    if i >= MAX_CORES {
+        return None;
+    }
+    // SAFETY: `i < MAX_CORES` was just checked, so the offset stays inside the statically
+    // allocated `IPI_COUNTS` array; every field is an atomic, so a bump from a peer core (or
+    // from an ISR) needs no further synchronisation.
+    Some(unsafe { &(*IPI_COUNTS.get())[i] })
+}
+
+fn record_recv(vector: u32) {
+    if let Some(c) = counts(crate::percpu::this_cpu() as u32) {
+        c.recv(vector).fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn recv_count(vector: u32, cpu: u32) -> u32 {
+    counts(cpu).map_or(0, |c| c.recv(vector).load(Ordering::SeqCst))
+}
+
+#[no_mangle]
+pub extern "C" fn energy_ipi_halt_sent(cpu: u32) -> u32 {
+    counts(cpu).map_or(0, |c| c.sent(IPI_HALT_VECTOR).load(Ordering::SeqCst))
+}
+
+#[no_mangle]
+pub extern "C" fn energy_ipi_halt_recv(cpu: u32) -> u32 {
+    recv_count(IPI_HALT_VECTOR, cpu)
+}
+
+#[no_mangle]
+pub extern "C" fn energy_ipi_wake_sent(cpu: u32) -> u32 {
+    counts(cpu).map_or(0, |c| c.sent(IPI_WAKE_VECTOR).load(Ordering::SeqCst))
+}
+
+#[no_mangle]
+pub extern "C" fn energy_ipi_wake_recv(cpu: u32) -> u32 {
+    recv_count(IPI_WAKE_VECTOR, cpu)
 }

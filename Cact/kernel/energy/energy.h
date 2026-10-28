@@ -80,6 +80,13 @@ int energy_ipi_init(void);
 int energy_ipi_halt_worker(uint32_t cpu);
 int energy_ipi_wake_worker(uint32_t cpu);
 
+/* Per-CPU IPI delivery counters (sent by the master, recv observed in the ISR).
+ * Shown per-CPU in /proc/cpuinfo; the HALT half stays at zero until C3/C6 exist. */
+uint32_t energy_ipi_halt_sent(uint32_t cpu);
+uint32_t energy_ipi_halt_recv(uint32_t cpu);
+uint32_t energy_ipi_wake_sent(uint32_t cpu);
+uint32_t energy_ipi_wake_recv(uint32_t cpu);
+
 int energy_monitor_init(void);
 uint32_t energy_monitor_load_avg(uint32_t cpu);
 uint32_t energy_monitor_cpu_utilization(uint32_t cpu);

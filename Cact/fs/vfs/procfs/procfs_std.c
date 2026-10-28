@@ -97,6 +97,10 @@ int _cpuinfo_read(uint32_t off, uint32_t size, char *buf) {
         }
         _APP("online          : "); _APP(energy_core_is_online(cpu) ? "yes\n" : "no\n");
         _APP("idle            : "); _APP(energy_core_is_idle(cpu) ? "yes\n" : "no\n");
+        _APP("ipi halted      : "); _APPN(energy_ipi_halt_sent(cpu)); _APP("/");
+        _APPN(energy_ipi_halt_recv(cpu)); _APP(" (sent/recv)\n");
+        _APP("ipi woken       : "); _APPN(energy_ipi_wake_sent(cpu)); _APP("/");
+        _APPN(energy_ipi_wake_recv(cpu)); _APP(" (sent/recv)\n");
 
         // Full feature flags are identical on every core; print once (cpu0).
         if (cpu != 0)
