@@ -26,6 +26,12 @@ pub(crate) const PD_KERNEL_ENTRIES: usize = ((USER_STACK_TOP >> 30) & 0x1FF) as 
 /// Virtual address at which the kernel image is linked.
 const KERNEL_VMA: u64 = 0xFFFF_FFFF_8000_0000;
 
+/// Base of the direct map: physical address `p` is reachable at
+/// `DIRECT_MAP_BASE + p`.  This is PML4[256], the first entry of the canonical
+/// upper half, away from both the low user half and the kernel image window, so
+/// a frame the kernel reaches here can never be shadowed by a user mapping.
+pub(crate) const DIRECT_MAP_BASE: u64 = 0xFFFF_8000_0000_0000;
+
 #[repr(C, align(4096))]
 struct Aligned4K<T>(T);
 
@@ -50,6 +56,13 @@ static mut PDPT_HIGH: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 /// The identity map's page directories: window `w` maps physical
 /// `w GiB … (w+1) GiB`, 2 MiB per entry.
 static mut PD_LOW: Aligned4K<[Table; 4]> = Aligned4K([[0u64; TABLE_ENTRIES]; 4]);
+
+/// PML4[256]: the direct map of physical memory at `DIRECT_MAP_BASE`.
+static mut PDPT_DIRECT: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
+
+/// The direct map's page directories — window `w` maps physical
+/// `w GiB … (w+1) GiB`, mirroring the identity map's coverage.
+static mut PD_DIRECT: Aligned4K<[Table; 4]> = Aligned4K([[0u64; TABLE_ENTRIES]; 4]);
 
 /// Address of entry `idx` inside a page table.
 ///
@@ -87,9 +100,18 @@ pub(crate) fn v2p<T>(ptr: *const T) -> u64 {
     let addr = ptr as u64;
     if addr >= KERNEL_VMA {
         addr - KERNEL_VMA
+    } else if addr >= DIRECT_MAP_BASE {
+        addr - DIRECT_MAP_BASE
     } else {
         addr
     }
+}
+
+/// Virtual address at which physical `phys` is reachable — the inverse of
+/// [`v2p`].  Frames the kernel owns are addressed through the direct map.
+#[inline(always)]
+pub(crate) fn p2v(phys: u64) -> u64 {
+    DIRECT_MAP_BASE + phys
 }
 
 /// The kernel page map — the PML4 the C side knows as `page_directory`.
@@ -348,14 +370,45 @@ fn build_kernel_map() {
         unsafe { *entry(pdpt_low, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
     }
 
+    // Direct map: the same physical windows are also reachable at
+    // `DIRECT_MAP_BASE`, so the kernel can address a frame without aliasing it
+    // into the low (user) half — the alias `USER_FRAME_CEIL` used to guard
+    // against.  The cache policy matches the identity map's.
+    // SAFETY: `addr_of_mut!` projects the address of the static table without
+    // forming a reference.
+    let pd_direct = unsafe { core::ptr::addr_of_mut!(PD_DIRECT.0) };
+    // SAFETY: `pd_direct` addresses the live table array, as for `PD_LOW`.
+    let dmap = unsafe { &mut *pd_direct };
+    for (window, table) in dmap.iter_mut().enumerate() {
+        for (slot, slot_value) in table.iter_mut().enumerate() {
+            let phys = (window * TABLE_ENTRIES + slot) as u64 * LARGE_PAGE_SIZE as u64;
+            let cache = if phys >= ram_end { PAGE_PCD | PAGE_PWT } else { 0 };
+            *slot_value = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_PS as u64
+                | cache as u64;
+        }
+    }
+
+    // SAFETY: `addr_of_mut!` projects the address of the static without forming
+    // a reference.
+    let pdpt_direct = unsafe { core::ptr::addr_of_mut!(PDPT_DIRECT.0).cast::<u64>() };
+    let dmap_base = v2p(dmap.as_ptr());
+    for i in 0..dmap.len() {
+        // SAFETY: window `i`'s table is at the array base plus its stride.
+        let phys = dmap_base + (i * TABLE_ENTRIES * 8) as u64;
+        // SAFETY: `i < 4`, so this PDPT entry is in bounds.
+        unsafe { *entry(pdpt_direct, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
+    }
+
     // 0xFFFFFFFF80000000 is PML4[511], PDPT[510] — the entry that puts physical
     // zero at the address the kernel is linked at.  The first GiB of physical
     // memory is RAM, so the window reuses the identity map's own page directory:
-    // the same write-back policy applies to both views.
+    // the same write-back policy applies to both views.  PML4[256] carries the
+    // direct map (0xFFFF800000000000).
     // SAFETY: the PDA entries are in bounds and initialised above.
     unsafe {
         *entry(pdpt_high, 510) = entry_val(pdpt_low, 0);
         *entry(pml4, 0) = v2p(pdpt_low) | PAGE_PRESENT as u64 | PAGE_RW as u64;
+        *entry(pml4, 256) = v2p(pdpt_direct) | PAGE_PRESENT as u64 | PAGE_RW as u64;
         *entry(pml4, 511) = v2p(pdpt_high) | PAGE_PRESENT as u64 | PAGE_RW as u64;
     }
 }
@@ -401,8 +454,10 @@ pub unsafe extern "C" fn vmm_sync_kernel_mmio_mappings(pd: *mut u64) {
     // written.
     unsafe {
         // The kernel's high half must be identical everywhere: it is how the
-        // kernel reaches its own code and data under a process CR3.
+        // kernel reaches its own code and data under a process CR3 (entry 511,
+        // the image) and its frames (entry 256, the direct map).
         *entry(dst, 511) = entry_val(src, 511);
+        *entry(dst, 256) = entry_val(src, 256);
         let dst_low = entry_val(dst, 0);
         let src_low = entry_val(src, 0);
         if dst_low & PAGE_PRESENT as u64 == 0
@@ -629,8 +684,12 @@ pub extern "C" fn vmm_create_address_space() -> *mut u64 {
     }
     let kernel = kernel_table();
     // SAFETY: `kernel` is the live kernel PML4 and `pml4` the fresh map just
-    // checked non-null; the two are distinct frames.
-    unsafe { *entry(pml4, 511) = entry_val(kernel, 511) };
+    // checked non-null; the two are distinct frames.  The kernel image (511) and
+    // the direct map (256) are shared verbatim.
+    unsafe {
+        *entry(pml4, 511) = entry_val(kernel, 511);
+        *entry(pml4, 256) = entry_val(kernel, 256);
+    }
 
     let pdpt = new_table();
     if pdpt.is_null() {
@@ -732,8 +791,10 @@ pub unsafe extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u
 
     // SAFETY: both are live page maps and distinct frames.
     unsafe {
-        // The kernel half is shared verbatim.
+        // The kernel half is shared verbatim: the image (511) and the direct
+        // map (256).
         *entry(dst_root, 511) = entry_val(src_root, 511);
+        *entry(dst_root, 256) = entry_val(src_root, 256);
 
         let src_low = entry_val(src_root, 0);
         let dst_low = entry_val(dst_root, 0);

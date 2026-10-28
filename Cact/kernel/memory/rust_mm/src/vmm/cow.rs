@@ -36,8 +36,10 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
     // SAFETY: as above, for the child map, which this call writes.
     let dst_root = unsafe { core::slice::from_raw_parts_mut(dst_pd, TABLE_ENTRIES) };
 
-    // The kernel's own image is shared outright.
+    // The kernel's own image (511) and the direct map of physical memory (256)
+    // are shared outright: every address space needs both to reach the kernel.
     dst_root[511] = src_root[511];
+    dst_root[256] = src_root[256];
 
     let src_low = src_root[0];
     let dst_low = dst_root[0];
