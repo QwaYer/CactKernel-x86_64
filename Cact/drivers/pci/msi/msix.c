@@ -193,7 +193,10 @@ int pci_msix_table_map(pci_device_t *dev,
     if (table_end <= table_addr) return -1;
     if (table_end > bar->base + bar->size) { pr_warn("%s: table beyond BAR\n", "msi-x"); return -1; }
 
-    /* 32-bit non-PAE kernel: an identity map can only reach below 4 GiB. */
+    /* The table is reached through its identity VA (see the vmm_map below), so
+     * only a table below 4 GiB — where the kernel's identity map of RAM/MMIO
+     * lives — is reachable.  A table above the boundary would need to be mapped
+     * through the MMIO window and addressed by that VA instead. */
     uint64_t page_base = table_addr & ~0xFFFULL;
     uint64_t page_end  = (table_end + 0xFFF) & ~0xFFFULL;
     if (page_end > 0x100000000ULL) {

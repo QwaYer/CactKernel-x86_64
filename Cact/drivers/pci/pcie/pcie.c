@@ -8,7 +8,7 @@
 #include "cact_acpi.h"
 
 typedef struct {
-    uint32_t           base_addr;
+    uint64_t           base_addr;   /* physical ECAM base, 64-bit (MCFG holds it) */
     uint16_t           segment;
     uint8_t            start_bus;
     uint8_t            end_bus;
@@ -159,7 +159,10 @@ bool pcie_init(void)
     while (offset + sizeof(ACPI_MCFG_ALLOCATION) <= table_len &&
            pcie_ecam_count < PCIE_MAX_SEGMENTS)
     {
-        uint32_t base      = (uint32_t)entry->Address;
+        /* The MCFG allocation carries a 64-bit ECAM base; keep it 64-bit — a
+         * segment placed above 4 GiB is mapped through the MMIO window like
+         * any other, so there is nothing to truncate away. */
+        uint64_t base      = entry->Address;
         uint8_t  start_bus = entry->StartBusNumber;
         uint8_t  end_bus   = entry->EndBusNumber;
 
@@ -178,9 +181,10 @@ bool pcie_init(void)
         uint32_t vaddr     = cact_mmio_window_base() + KERNEL_MMIO_WINDOW_SIZE
                                                        + seg_shift;
 
-        /* A segment that would run past the top of the 32-bit VA space must be
-         * refused: the window address would wrap into the identity-mapped low
-         * memory and remap real kernel/RAM pages. */
+        /* The window lives in the shared low-half kernel window, so its own VA
+         * must stay under 4 GiB — past that it would wrap into low memory and
+         * remap real kernel/RAM pages.  The ECAM *physical* base is free of
+         * that bound: it is mapped through the window, not identity-mapped. */
         if ((uint64_t)vaddr + (uint64_t)pages * 4096 > 0x100000000ull) {
             pr_warn("%s: ECAM window for segment %u exceeds 4 GB, skipping\n",
                     "pcie", (unsigned)entry->PciSegment);
@@ -197,7 +201,7 @@ bool pcie_init(void)
         pcie_ecams[pcie_ecam_count].segment   = entry->PciSegment;
         pcie_ecams[pcie_ecam_count].start_bus = start_bus;
         pcie_ecams[pcie_ecam_count].end_bus   = end_bus;
-        pcie_ecams[pcie_ecam_count].virt      = (volatile uint8_t *)vaddr;
+        pcie_ecams[pcie_ecam_count].virt      = (volatile uint8_t *)(uintptr_t)vaddr;
         pcie_ecam_count++;
         mapped++;
 
@@ -207,8 +211,8 @@ bool pcie_init(void)
 
     if (mapped > 0) {
         pcie_ready = 1;
-        pr_info("%s: ECAM @ 0x%x, bus %u-%u (%u segment(s))\n",
-                "pcie", (unsigned)pcie_ecams[0].base_addr,
+        pr_info("%s: ECAM @ 0x%llx, bus %u-%u (%u segment(s))\n",
+                "pcie", (unsigned long long)pcie_ecams[0].base_addr,
                 (unsigned)pcie_ecams[0].start_bus,
                 (unsigned)pcie_ecams[0].end_bus,
                 (unsigned)pcie_ecam_count);
