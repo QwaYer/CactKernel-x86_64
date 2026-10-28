@@ -229,13 +229,19 @@ const char* cpu_brand_str(void);
 
 int cpu_syscall_commit(void);
 
-// Update the calling CPU's entry in the per-CPU syscall_esp0[] table, which is
-// the kernel stack the SYSCALL entry loads (SYSCALL does not switch stacks).
+// Set the calling CPU's SYSCALL entry stack — the kernel stack the SYSCALL
+// entry loads (SYSCALL does not switch stacks).  Backed by the scheduler's
+// per-CPU block (`sched/src/percpu.rs`), which `syscall_entry` reads at `%gs:8`.
 // Called by the scheduler on every context switch, next to tss_entry.esp0.
 void syscall_set_esp0(uint64_t esp);
 
 // Same, for an explicit `cpu` (used during bring-up before the scheduler sets
 // the calling CPU's slot). Called by the scheduler next to syscall_set_esp0().
 void syscall_set_cpu_esp0(uint32_t cpu, uint64_t esp0);
+
+// Program the calling CPU's per-CPU %gs base (IA32_GS_BASE = the kernel block,
+// IA32_KERNEL_GS_BASE = 0).  Called from cpu_syscall_commit() on the BSP and on
+// every AP, so each core can take a SYSCALL or a ring-3 fault with swapgs.
+void percpu_gs_init(void);
 
 #endif

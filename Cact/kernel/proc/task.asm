@@ -85,6 +85,7 @@ user_task_trampoline:
     mov ax, 0x23
     mov ds, ax
     mov es, ax
+    swapgs                          ; kernel -> user: %gs back to the user base
     iretq
 
 ; First entry of a fork child.  A full `struct context_frame` follows the
@@ -107,4 +108,5 @@ fork_task_trampoline:
     pop rsi
     pop rdi
     add rsp, 16
+    swapgs                          ; kernel -> user: %gs back to the user base
     iretq

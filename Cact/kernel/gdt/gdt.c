@@ -109,3 +109,14 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
 void gdt_write_tls(uint64_t base) {
     wrmsr(IA32_FS_BASE, base);
 }
+
+#define IA32_GS_BASE        0xC0000101u
+#define IA32_KERNEL_GS_BASE 0xC0000102u
+
+/* In kernel mode %gs is this CPU's per-CPU block; in user mode it is the user
+ * base, which this port never sets (TLS is %fs), so it stays 0 — that makes
+ * `swapgs` on a ring-3 entry a plain exchange between the block and zero. */
+void gdt_write_gs_base(uint64_t base) {
+    wrmsr(IA32_GS_BASE, base);
+    wrmsr(IA32_KERNEL_GS_BASE, 0);
+}

@@ -50,3 +50,33 @@
     pop rsi
     pop rdi
 %endmacro
+
+; ---------------------------------------------------------------------------
+; swapgs discipline.
+;
+; In kernel mode %gs is this CPU's per-CPU block; in user mode it is the user's
+; (always zero) base, and IA32_KERNEL_GS_BASE holds the other one.  An entry
+; from ring 3 therefore has to `swapgs` in, and its return `swapgs` out — but an
+; entry that interrupted the kernel must not swap at all, so the swap is keyed
+; on the interrupted CS.RPL.
+;
+; These are used where the CPU-pushed frame is at the top of the stack, i.e.
+; [rsp] = RIP and [rsp+8] = CS: at a stub's first instruction, or right after
+; the frame has been popped back on the way out.  `test [rsp+8], 3` is therefore
+; "the interrupted code was ring 3".  (syscall_entry does not use these: it is
+; reached only from ring 3, so it swaps unconditionally.)
+; ---------------------------------------------------------------------------
+
+%macro SWAPGS_IN 0
+    test byte [rsp+8], 3
+    jz %%keep
+    swapgs
+%%keep:
+%endmacro
+
+%macro SWAPGS_OUT 0
+    test byte [rsp+8], 3
+    jz %%keep
+    swapgs
+%%keep:
+%endmacro

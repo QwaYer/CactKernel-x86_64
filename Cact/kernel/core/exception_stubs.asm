@@ -46,6 +46,7 @@ section .text
 %macro ISR_NOERR 1
 global isr%1
 isr%1:
+    SWAPGS_IN
     push qword 0
     push qword %1
     jmp isr_common_stub
@@ -54,6 +55,7 @@ isr%1:
 %macro ISR_ERR 1
 global isr%1
 isr%1:
+    SWAPGS_IN
     push qword %1
     jmp isr_common_stub
 %endmacro
@@ -91,6 +93,7 @@ ISR_NOERR 31
 
 ; #PF has a handler of its own (it resolves the fault instead of reporting it).
 isr14:
+    SWAPGS_IN
     push qword 14
     jmp isr_pf_stub
 
@@ -108,6 +111,7 @@ isr_pf_stub:
     mov rsp, rbp
     ISR_RESTORE
     add rsp, 16                 ; drop the vector and the error code
+    SWAPGS_OUT
     iretq
 
 isr_common_stub:
@@ -119,4 +123,5 @@ isr_common_stub:
     mov rsp, rbp
     ISR_RESTORE
     add rsp, 16
+    SWAPGS_OUT
     iretq

@@ -61,6 +61,9 @@ void tss_set_ist(int index, uint64_t rsp);
 
 /* Rewrite the per-task %fs base (the boot GDT; APs program their own MSR). */
 void gdt_write_tls(uint64_t base);
+/* Program the calling core's per-CPU %gs base (IA32_GS_BASE) and clear
+ * IA32_KERNEL_GS_BASE, so `swapgs` covers ring-3 entry and exit. */
+void gdt_write_gs_base(uint64_t base);
 /* Load a data selector into %fs. */
 extern void gdt_load_fs(uint16_t sel);
 

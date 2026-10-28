@@ -108,13 +108,8 @@ unsafe extern "C" {
     pub static tss_entry: SyncUnsafeCell<TssEntry>;
     pub static vfs_root: SyncUnsafeCell<*mut VfsNode>;
     pub static sys_sigreturn_num: u32;
-    
-    pub fn syscall_set_esp0(esp: u64);
-    /// Set `cpu`'s entry stack in the per-CPU `syscall_esp0[]` table that the
-    /// SYSCALL entry path indexes (`syscall_entries.asm`).
-    pub fn syscall_set_cpu_esp0(cpu: u32, esp0: u64);
-    pub fn elf_load_exec_symtab(path: *const u8, proc: *mut c_void);
 
+    pub fn elf_load_exec_symtab(path: *const u8, proc: *mut c_void);
     pub fn apic_lapic_id() -> u32;
 
     pub fn set_idt_gate(n: i32, handler: u64);
@@ -124,6 +119,9 @@ unsafe extern "C" {
     pub fn gdt_flush(gdt_ptr: u64);
     /// Program the per-task `%fs` base (IA32_FS_BASE) on the calling core.
     pub fn gdt_write_tls(base: u64);
+    /// Program the calling core's per-CPU `%gs` base (IA32_GS_BASE) and clear
+    /// IA32_KERNEL_GS_BASE, so `swapgs` covers a ring-3 entry/exit.
+    pub fn gdt_write_gs_base(base: u64);
     /// Load `sel` into `%fs` on the calling core.
     pub fn gdt_load_fs(sel: u16);
     pub fn idt_reload();

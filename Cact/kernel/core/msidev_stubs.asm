@@ -19,6 +19,7 @@ section .text
 %macro msidev_entry 1
 global msidev_stub_%1
 msidev_stub_%1:
+    SWAPGS_IN
     push qword 0
     push qword %1
     jmp msidev_common_dispatch
@@ -46,6 +47,7 @@ msidev_common_dispatch:
     mov rsp, rbp
     ISR_RESTORE
     add rsp, 16                 ; drop the vector and the error-code slot
+    SWAPGS_OUT
     iretq
 
 section .rodata

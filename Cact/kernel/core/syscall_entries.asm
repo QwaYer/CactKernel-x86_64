@@ -4,7 +4,6 @@
 global syscall_entry
 
 extern syscall_handler
-extern syscall_esp0
 
 section .text
 
@@ -29,16 +28,15 @@ section .text
 ; identical and IRET keeps one return path for syscalls, faults and IRQs.
 ; ---------------------------------------------------------------------------
 syscall_entry:
+    ; `syscall` is only ever entered from ring 3, so the per-CPU %gs swap is
+    ; unconditional here (the exception/IRQ stubs key theirs on CS.RPL instead).
+    swapgs
     ; Borrow one word of user stack to hold the syscall number while we find
     ; this CPU's kernel stack; nothing reads it back except us, and the user
     ; stack pointer is restored on return.  r10 is spare in our 3-argument ABI.
     mov r10, rsp                    ; r10 = user RSP
     push rax                        ; [user_rsp - 8] = number
-    str ax                          ; AX = TR selector = (TSS_SLOT + 2*cpu) << 3
-    shr eax, 3
-    sub eax, 5                      ; drop TSS_SLOT
-    shr eax, 1                      ; two GDT slots per 64-bit TSS -> cpu index
-    mov rsp, [syscall_esp0 + rax*8] ; this CPU's kernel entry stack (per-CPU)
+    mov rsp, [gs:8]                 ; this CPU's kernel entry stack (%gs:esp0)
     mov rax, [r10 - 8]              ; reload the number
 
     ; Build the frame, lowest address last: the pushes run in reverse field
@@ -73,4 +71,5 @@ syscall_entry:
 
     ISR_RESTORE
     add rsp, 16                     ; drop int_no / err_code
+    swapgs                          ; back to the user %gs base before returning
     iretq

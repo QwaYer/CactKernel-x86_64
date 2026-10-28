@@ -250,8 +250,8 @@ pub unsafe extern "C" fn task_exec(
     let tss_ptr = unsafe { ffi::tss_entry.get() };
     // SAFETY: `tss_ptr` points at the kernel TSS.
     unsafe { (*tss_ptr).rsp0 = esp0 };
-    // SAFETY: sets the ring-0 stack the upcoming user entry will trap onto.
-    unsafe { ffi::syscall_set_esp0(esp0) };
+    // Sets the ring-0 stack the upcoming user entry will trap onto.
+    crate::percpu::syscall_set_esp0(esp0);
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let ustack_virt = unsafe { (*p).ustack_virt };

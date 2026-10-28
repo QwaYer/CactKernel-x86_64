@@ -599,11 +599,11 @@ pub unsafe extern "C" fn schedule() {
             } else {
                 crate::smp::set_tss_esp0(me, esp0);
             }
-            // SAFETY: sets the ring-0 stack the incoming task will trap onto in
-            // this core's slot of the per-CPU SYSCALL entry-stack table.
-            unsafe { ffi::syscall_set_esp0(esp0) };
-            // SAFETY: same slot, addressed by explicit CPU index.
-            unsafe { ffi::syscall_set_cpu_esp0(me as u32, esp0) };
+            // Sets the ring-0 stack the incoming task will trap onto, in this
+            // core's per-CPU block (the SYSCALL entry reads it at `%gs:8`).
+            crate::percpu::syscall_set_esp0(esp0);
+            // Same slot, addressed by explicit CPU index.
+            crate::percpu::syscall_set_cpu_esp0(me as u32, esp0);
         }
 
         // The incoming task's TLS base, on this core: the base lives in an MSR,

@@ -24,9 +24,19 @@ use crate::task::TaskStruct;
 /// Number of logical CPUs the per-CPU table covers.  Must match `smp::MAX_CPUS`.
 pub const MAX_CPUS: usize = 64;
 
-/// One CPU's private scheduler state.
+/// One CPU's private scheduler state.  `syscall_entry` reads the first two
+/// fields by fixed offset through the per-CPU `%gs` base, so `self_index` must
+/// stay at offset 0 and `esp0` at offset 8 (see the asserts below).
 #[repr(C)]
 pub struct CpuSched {
+    /// This CPU's logical index, at `%gs:0`.  The SYSCALL entry loads it from
+    /// there because every general-purpose register still holds a user value at
+    /// that point, leaving none free for the usual TR-selector search.
+    pub self_index: u32,
+    /// Padding so `esp0` lands at `%gs:8`.
+    pub _pad: u32,
+    /// Ring-0 stack the SYSCALL entry switches to, at `%gs:8`.
+    pub esp0: u64,
     /// Task currently running on this CPU (null only before the scheduler starts).
     pub current: *mut TaskStruct,
     /// This CPU's idle task (the fallback context for the CPU).
@@ -42,6 +52,10 @@ pub struct CpuSched {
     pub parked: AtomicU32,
 }
 
+// `syscall_entries.asm` hardcodes these two offsets; keep them in sync.
+const _: () = assert!(core::mem::offset_of!(CpuSched, self_index) == 0);
+const _: () = assert!(core::mem::offset_of!(CpuSched, esp0) == 8);
+
 /// Park-protocol states (see `smp_cpu_offline` / `energy_cstate_idle`).
 pub const PARK_NONE: u32 = 0;
 pub const PARK_REQ: u32 = 1;
@@ -50,6 +64,9 @@ pub const PARK_CLAIMED: u32 = 2;
 impl CpuSched {
     const fn new() -> Self {
         Self {
+            self_index: 0,
+            _pad: 0,
+            esp0: 0,
             current: ptr::null_mut(),
             idle: ptr::null_mut(),
             fpu_owner: ptr::null_mut(),
@@ -212,4 +229,54 @@ pub extern "C" fn cact_current_task_get() -> *mut TaskStruct {
 pub extern "C" fn cact_fpu_owner_slot() -> *mut *mut TaskStruct {
     // SAFETY: as for `cact_current_task_slot`, for the `fpu_owner` field.
     unsafe { &mut (*slot(this_cpu())).fpu_owner }
+}
+
+// ---------------------------------------------------------------------------
+// Per-CPU `%gs` base and the SYSCALL entry stack
+//
+// In kernel mode `%gs` holds this CPU's `CpuSched` block; in user mode it holds
+// the user's (always zero) base.  `swapgs` on a ring-3 entry exchanges the two
+// (`IA32_GS_BASE` <-> `IA32_KERNEL_GS_BASE`), so kernel code may reach its own
+// per-CPU state with a `%gs`-relative access instead of the TR search.  This is
+// the plumbing stage: only the SYSCALL entry uses it so far — the generic
+// accessors (`this_cpu`, `current`, ...) still resolve through the TR.
+// ---------------------------------------------------------------------------
+
+/// Address of `cpu`'s per-CPU block — the value `IA32_GS_BASE` holds on that
+/// CPU in kernel mode.
+#[inline]
+pub fn block_ptr(cpu: usize) -> *mut CpuSched {
+    slot(cpu)
+}
+
+/// Set `cpu`'s SYSCALL entry stack (the ring-0 stack its `syscall` traps onto).
+/// Backs the `%gs:8` read in `syscall_entry`; replaced the old `.boot.data`
+/// table, which only existed because the stub had no base register to index by.
+#[no_mangle]
+pub extern "C" fn syscall_set_cpu_esp0(cpu: u32, esp0: u64) {
+    if (cpu as usize) < MAX_CPUS {
+        // SAFETY: `cpu < MAX_CPUS`, so the store lands inside the live `CPU_SCHED` array; the
+        // caller targets another core's slot only while that core is being brought up.
+        unsafe { (*slot(cpu as usize)).esp0 = esp0 };
+    }
+}
+
+/// Set the calling CPU's SYSCALL entry stack.
+#[no_mangle]
+pub extern "C" fn syscall_set_esp0(esp: u64) {
+    // SAFETY: `slot` addresses this CPU's live `CPU_SCHED` entry.
+    unsafe { (*slot(this_cpu())).esp0 = esp };
+}
+
+/// Program the calling CPU's per-CPU `%gs` base and clear `IA32_KERNEL_GS_BASE`.
+/// Must run on every core before it can take a SYSCALL or a ring-3 fault;
+/// `cpu_syscall_commit` (the BSP and each AP) calls it next to the SYSCALL MSRs.
+#[no_mangle]
+pub extern "C" fn percpu_gs_init() {
+    let cpu = this_cpu();
+    // SAFETY: `cpu < MAX_CPUS` (clamped by `this_cpu`), so the store lands inside `CPU_SCHED`.
+    unsafe { (*slot(cpu)).self_index = cpu as u32 };
+    // SAFETY: `block_ptr` is this CPU's live block and `gdt_write_gs_base` writes only the two
+    // GS-base MSRs of the calling core.
+    unsafe { crate::ffi::gdt_write_gs_base(block_ptr(cpu) as u64) };
 }

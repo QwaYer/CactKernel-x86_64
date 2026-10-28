@@ -57,28 +57,11 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
     __asm__ __volatile__("wrmsr" :: "c"(msr), "a"(lo), "d"(hi));
 }
 
-/* Per-CPU ring-0 stack for the SYSCALL entry.  SYSCALL does not switch stacks,
- * so `syscall_entry` (syscall_entries.asm) must load the current CPU's entry
- * stack itself; it indexes this table by the loaded TR selector.  The scheduler
- * updates the calling CPU's slot on every context switch, next to the per-CPU
- * TSS esp0.  The table lives in the low boot section because the entry
- * addresses it with a 32-bit absolute displacement — it has no register to
- * spare for a base (every register still holds a user value at that point). */
-#define SYSCALL_ESP0_MAX 64
-uint64_t syscall_esp0[SYSCALL_ESP0_MAX] __attribute__((section(".boot.data")));
-
+/* The SYSCALL entry stack (`syscall_set_esp0` / `syscall_set_cpu_esp0`) now
+ * lives in the scheduler's per-CPU block (Rust, `sched/src/percpu.rs`): the
+ * entry reads it from `%gs:8` rather than from a low-memory table indexed by the
+ * TR selector, so it no longer needs the `.boot.data` section. */
 extern int smp_self_cpu(void);
-
-void syscall_set_cpu_esp0(uint32_t cpu, uint64_t esp0) {
-    if (cpu < SYSCALL_ESP0_MAX)
-        syscall_esp0[cpu] = esp0;
-}
-
-// The scheduler calls this for the CPU it is running on.
-void syscall_set_esp0(uint64_t esp) {
-    int me = smp_self_cpu();
-    syscall_set_cpu_esp0((uint32_t)(me < 0 ? 0 : me), esp);
-}
 
 // CPUID leaf 0 lays the 12-byte vendor ID out as EBX, then EDX, then ECX
 // (e.g. "GenuineIntel" = EBX "Genu", EDX "ineI", ECX "ntel").
@@ -326,6 +309,12 @@ int cpu_syscall_commit(void) {
         int me = smp_self_cpu();
         syscall_set_cpu_esp0((uint32_t)(me < 0 ? 0 : me), boot_rsp);
     }
+
+    // Establish this CPU's per-CPU %gs base: the kernel block in IA32_GS_BASE
+    // and zero (the always-zero user base) in IA32_KERNEL_GS_BASE, so the
+    // `syscall_entry` `%gs` access and the swapgs discipline in every ring-3
+    // entry stub are valid on this core.
+    percpu_gs_init();
 
     // Long-mode fast syscall: EFER.SCE enables SYSCALL/SYSRET, LSTAR is the
     // 64-bit entry point, and STAR carries the segment bases —
