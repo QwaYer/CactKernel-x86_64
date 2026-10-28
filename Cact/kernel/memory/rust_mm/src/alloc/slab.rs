@@ -312,8 +312,11 @@ pub unsafe extern "C" fn slab_free(cache: *mut SlabCache, obj: *mut u8) {
 
     lock_acquire(G_CACHE_LOCK.as_ptr());
 
-    // SAFETY: obj resides within a page that starts with a Slab header.
-    let s = (obj as u32 & !(PAGE_SIZE - 1)) as *mut Slab;
+    // SAFETY: obj resides within a page that starts with a Slab header.  The
+    // object pointers are direct-map VAs (the slab page is a `kalloc` frame),
+    // and the direct map is page-aligned, so masking the low 12 bits of the VA
+    // gives the VA of the page base.
+    let s = (obj as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
 
     // SAFETY: `cache` is a live cache (per the caller contract); `G_CACHE_LOCK` is
     // held, so this borrow is exclusive for the counter updates below.

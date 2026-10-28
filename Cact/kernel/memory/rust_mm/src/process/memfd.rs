@@ -348,8 +348,9 @@ pub(crate) fn memfd_grow_to(handle: i32, end: u32) -> i32 {
 /// Fetch the frame pointer for page index `idx` (caller must have grown).
 /// Exported so kernel subsystems can touch a shared object's storage directly
 /// (DRM GEM buffers, framebuffer blits) instead of copying through
-/// memfd_read/memfd_write.  Frames are identity-mapped, so the returned
-/// pointer is usable as a plain kernel pointer.
+/// memfd_read/memfd_write.  Frames are handed out by `kalloc`, so the returned
+/// pointer is a direct-map VA: usable as a plain kernel pointer, and turned back
+/// into the physical address with `v2p` where an entry or a device needs one.
 #[unsafe(no_mangle)]
 pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
     memfd_ensure_init();

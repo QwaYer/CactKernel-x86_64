@@ -547,13 +547,19 @@ pub fn read_cr2() -> u64 {
     val
 }
 
-/// Read CR3 (current page directory — the PML4 in long mode).
+/// Read CR3 (current page directory — the PML4 in long mode) as a **kernel VA**.
+///
+/// CR3 holds the *physical* address of the live PML4; the kernel reaches that
+/// frame through the direct map (PML4[256], see [`crate::vmm::paging::p2v`]), so
+/// the raw value is translated before it is handed back — a caller dereferences
+/// the result (it walks the tables) and would otherwise be relying on the low
+/// identity map.
 #[inline(always)]
 pub fn get_current_pd() -> *mut u64 {
     let val: u64;
     // SAFETY: reading CR3 is side-effect-free.
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) val, options(nomem, nostack)) };
-    val as *mut u64
+    crate::vmm::paging::p2v(val) as *mut u64
 }
 
 /// Invalidate a single TLB entry.

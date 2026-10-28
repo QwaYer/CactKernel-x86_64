@@ -45,7 +45,9 @@ static int peek_user_u32(uint64_t* pd, uint32_t addr, uint32_t* out) {
     if (!(vmm_pte_flags(pd, addr) & PAGE_PRESENT)) return -1;
     uint64_t phys = vmm_get_phys(pd, addr);
     if (!phys) return -1;
-    *out = *(volatile uint32_t*)(uintptr_t)phys;
+    // vmm_get_phys answers with a physical address; the frame is dereferenced
+    // through the direct map.
+    *out = *(volatile uint32_t*)vmm_p2v(phys);
     return 0;
 }
 
@@ -196,10 +198,13 @@ static void print_code_bytes(uintptr_t rip) {
     if (page) {
         uint64_t base = page & ~0xFFFULL;
         unsigned off  = (unsigned)(rip & 0xFFFu);
+        // The frame comes back as a physical address; read it through the
+        // direct map.
+        const volatile uint8_t* code = (const volatile uint8_t*)vmm_p2v(base);
         printk_color_level(KLOG_LEVEL_CRIT, ":", COLOR_DARK_GREY);
         char b[4];
         for (unsigned i = 0; i < 16u && off + i < 4096u; i++) {
-            uint8_t byte = *(volatile uint8_t*)(uintptr_t)(base + off + i);
+            uint8_t byte = code[off + i];
             snprintf(b, sizeof(b), " %02x", byte);
             printk_color_level(KLOG_LEVEL_CRIT, b, COLOR_LIGHT_BROWN);
         }

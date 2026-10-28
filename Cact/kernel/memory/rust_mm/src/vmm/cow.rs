@@ -8,7 +8,7 @@
 use crate::ffi::*;
 use crate::pmm::{kalloc, page_ref_inc};
 use crate::safe::{zero_page, flush_tlb_all};
-use crate::vmm::paging::PD_KERNEL_ENTRIES;
+use crate::vmm::paging::{p2v, v2p, PD_KERNEL_ENTRIES};
 
 /// Number of entries in each level.
 const TABLE_ENTRIES: usize = 512;
@@ -46,12 +46,13 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
     if src_low & PAGE_PRESENT as u64 == 0 || dst_low & PAGE_PRESENT as u64 == 0 {
         return;
     }
-    // SAFETY: both are live 512-entry page-directory-pointer tables.
+    // SAFETY: both are live 512-entry page-directory-pointer tables, reached
+    // through the direct map (the physical address in each PML4 entry).
     let src_pdpt =
-        unsafe { core::slice::from_raw_parts((src_low & !0xFFF) as *const u64, TABLE_ENTRIES) };
+        unsafe { core::slice::from_raw_parts(p2v(src_low & !0xFFF) as *const u64, TABLE_ENTRIES) };
     // SAFETY: as above, for the child's table.
     let dst_pdpt =
-        unsafe { core::slice::from_raw_parts_mut((dst_low & !0xFFF) as *mut u64, TABLE_ENTRIES) };
+        unsafe { core::slice::from_raw_parts_mut(p2v(dst_low & !0xFFF) as *mut u64, TABLE_ENTRIES) };
 
     for i in 0..PD_KERNEL_ENTRIES {
         let src_pdpt_val = src_pdpt[i];
@@ -62,7 +63,9 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
             continue;
         }
 
-        let src_pdt_ptr = (src_pdpt_val & !0xFFF) as *const u64;
+        // The entry names a physical address; the kernel dereferences the table
+        // through the direct map.
+        let src_pdt_ptr = p2v(src_pdpt_val & !0xFFF) as *const u64;
         // SAFETY: the source PDPT entry names a live page directory; so does the
         // destination's when it is private already.
         let src_pdt = unsafe { core::slice::from_raw_parts(src_pdt_ptr, TABLE_ENTRIES) };
@@ -81,12 +84,14 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
             unsafe {
                 core::ptr::copy_nonoverlapping(src_pdt_ptr, new_pd, TABLE_ENTRIES);
             }
-            dst_pdpt[i] = (new_pd as u64 & !0xFFF) | (src_pdpt_val & 0xFFF) | PDE_PRIVATE as u64;
+            // The entry takes the new table's physical address.
+            dst_pdpt[i] = (v2p(new_pd) & !0xFFF) | (src_pdpt_val & 0xFFF) | PDE_PRIVATE as u64;
         }
         // SAFETY: the destination PDPT entry is present and names a private page
-        // directory.
-        let dst_pdt =
-            unsafe { core::slice::from_raw_parts_mut((dst_pdpt[i] & !0xFFF) as *mut u64, TABLE_ENTRIES) };
+        // directory, which the kernel reaches through the direct map.
+        let dst_pdt = unsafe {
+            core::slice::from_raw_parts_mut(p2v(dst_pdpt[i] & !0xFFF) as *mut u64, TABLE_ENTRIES)
+        };
 
         for j in 0..TABLE_ENTRIES {
             if i == mmap_window && j >= mmap_pd_start && j < mmap_pd_end {
@@ -105,7 +110,8 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
                 continue;
             }
 
-            let src_pt = (src_pde & !0xFFF) as *mut u64;
+            // The entry names a physical address; the walk uses the direct map.
+            let src_pt = p2v(src_pde & !0xFFF) as *mut u64;
             let dst_pt = kalloc() as *mut u64;
             if dst_pt.is_null() {
                 continue;
@@ -151,18 +157,19 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
                         flags &= !(PAGE_COW as u64);
                         flags |= PAGE_RW as u64;
                         // SAFETY: `phys` is a page-aligned frame named by the
-                        // parent PTE and `new_page` is a fresh kalloc page, so the
-                        // 4 KiB copy is in bounds.
+                        // parent PTE (read through the direct map) and `new_page`
+                        // is a fresh kalloc page (a direct-map VA), so the 4 KiB
+                        // copy is in bounds.
                         unsafe {
                             core::ptr::copy_nonoverlapping(
-                                phys as *const u8,
+                                p2v(phys) as *const u8,
                                 new_page,
                                 PAGE_SIZE as usize,
                             );
                         }
                         // SAFETY: `dst_entry` points at one PTE, which receives
-                        // the cloned child frame.
-                        unsafe { *dst_entry = (new_page as u64 & !0xFFF) | flags };
+                        // the cloned child frame by its physical address.
+                        unsafe { *dst_entry = (v2p(new_page) & !0xFFF) | flags };
                         continue;
                     }
                     // Out of frames: fall through to plain copy-on-write.
@@ -178,10 +185,10 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
                 // SAFETY: `dst_entry` points at one PTE, which receives the same
                 // flags.
                 unsafe { *dst_entry = phys | cow_flags };
-                page_ref_inc(phys as *const u8);
+                page_ref_inc(p2v(phys) as *const u8);
             }
 
-            dst_pdt[j] = (dst_pt as u64 & !0xFFF) | (src_pde & 0xFFF);
+            dst_pdt[j] = (v2p(dst_pt) & !0xFFF) | (src_pde & 0xFFF);
         }
 
         flush_tlb_all();

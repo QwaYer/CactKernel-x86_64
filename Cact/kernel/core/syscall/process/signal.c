@@ -52,7 +52,10 @@ static int sys_sigreturn_impl(struct syscall_frame* regs) {
         if (!frame) return -1;
         uint64_t phys = frame & ~0xFFFULL;
 
-        memory_copy(&frame_buf, (signal_frame_t*)(uintptr_t)(phys + page_off), sizeof(frame_buf));
+        // vmm_get_phys answers with a physical address; the frame is read
+        // through the direct map.
+        memory_copy(&frame_buf, (signal_frame_t*)((uint8_t*)vmm_p2v(phys) + page_off),
+                    sizeof(frame_buf));
 
         // Re-validate: the mapping must still resolve to the same frame
         if ((vmm_get_phys(pd, user_esp) & ~0xFFFULL) == phys)

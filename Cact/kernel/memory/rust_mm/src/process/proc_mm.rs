@@ -8,10 +8,11 @@ use crate::vmm::paging::vmm_free_address_space;
 ///
 /// `t` must be null or point to a live `ProcPageTracker` owned by the caller
 /// whose `pages` array is either null or a `kmalloc`'d array of `capacity`
-/// slots; `phys` must be a caller-owned physical page pointer or null.
+/// slots; `frame` must be a caller-owned frame pointer as `kalloc` hands it out
+/// (a direct-map VA) or null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, phys: *mut u8) -> i32 {
-    if t.is_null() || phys.is_null() {
+pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u8) -> i32 {
+    if t.is_null() || frame.is_null() {
         return -1;
     }
 
@@ -65,7 +66,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, phys: *mut u8
     // `t.pages` is a valid `t.capacity`-slot array; the slice spans exactly that
     // allocation and this borrow is exclusive.
     let slots = unsafe { core::slice::from_raw_parts_mut(t.pages, t.capacity as usize) };
-    slots[t.count as usize] = phys;
+    slots[t.count as usize] = frame;
     t.count += 1;
     0
 }

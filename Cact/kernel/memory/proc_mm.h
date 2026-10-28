@@ -22,7 +22,11 @@ static inline void proc_tracker_init(proc_page_tracker_t* t)
     t->page_dir = 0;
 }
 
-int  proc_tracker_add(proc_page_tracker_t* t, void* phys);
+/* Record a frame the process owns.  `frame` is the pointer kalloc() handed out
+ * (a direct-map VA) — the tracker only keeps the entries and releases the array
+ * itself; the frames are reclaimed through the page directory by
+ * vmm_free_address_space(). */
+int  proc_tracker_add(proc_page_tracker_t* t, void* frame);
 void proc_free_pages(proc_page_tracker_t* t);
 
 #endif

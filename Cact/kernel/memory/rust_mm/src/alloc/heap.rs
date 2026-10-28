@@ -7,6 +7,7 @@
 use crate::ffi::*;
 use crate::pmm::{heap_end, heap_start};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, klog_msg};
+use crate::vmm::paging::{p2v, v2p};
 
 #[repr(C)]
 struct HeapBlock {
@@ -56,6 +57,12 @@ pub extern "C" fn init_heap() {
 
 }
 
+/// Allocate `size` bytes from the heap window.
+///
+/// The block is addressed from the outside by its **direct-map** VA (`p2v`),
+/// while the free list keeps every block in physical terms: the heap window is
+/// ordinary low RAM and its `HeapBlock` links stay physical addresses, so the
+/// conversion happens only here and in `kfree`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kmalloc(size: u32) -> *mut u8 {
     if size == 0 {
@@ -139,7 +146,8 @@ pub extern "C" fn kmalloc(size: u32) -> *mut u8 {
         let tail = unsafe { user_ptr.add(block_size as usize - 4) as *mut u32 };
         // SAFETY: writing the tail canary into the reserved slot computed above.
         unsafe { *tail = HEAP_TAIL_MAGIC; }
-        return user_ptr;
+        // The heap's own bookkeeping is physical; the caller gets a direct-map VA.
+        return p2v(user_ptr as u64) as *mut u8;
     }
 
     lock_release(HEAP_LOCK.as_ptr());
@@ -154,45 +162,55 @@ pub extern "C" fn kmalloc_aligned(size: u32, align: u32) -> *mut u8 {
     if raw.is_null() {
         return core::ptr::null_mut();
     }
-    let addr = raw as u32 + 4;
+    // The alignment and the back-pointer are computed in the heap's own physical
+    // terms (the free list and the linkage live there); the caller gets the
+    // direct-map VA of the aligned address.  The direct map is far coarser than
+    // any alignment the heap uses, so aligning the frame also aligns the VA.
+    let raw_phys = v2p(raw) as u32;
+    let addr = raw_phys + 4;
     let aligned = (addr + align - 1) & !(align - 1);
     // SAFETY: `kmalloc_aligned` reserved four extra bytes below `aligned` for
     // exactly this back-pointer; `aligned` is inside the block just returned by
-    // `kmalloc`, which lives in the identity-mapped heap window.
-    unsafe { *((aligned - 4) as *mut u32) = raw as u32; }
-    aligned as *mut u8
+    // `kmalloc`, which lives in the low heap window.
+    unsafe { *((aligned - 4) as *mut u32) = raw_phys; }
+    p2v(aligned as u64) as *mut u8
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or a pointer previously returned by `kmalloc` /
-/// `kmalloc_aligned` (or a C caller honouring the same heap contract) that has
-/// not already been freed, and it must stay valid for the duration of the call.
+/// `ptr` must be null or a **virtual** address (direct-map, as `kmalloc` /
+/// `kmalloc_aligned` hand out) of a block previously returned by those and not
+/// already freed, and it must stay valid for the duration of the call.
+///
+/// The heap's free list is kept in physical terms, so the pointer is translated
+/// once here and the whole walk below works on the physical address.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn kfree(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
+    let phys = v2p(ptr) as *mut u8;
     let hdr_size = core::mem::size_of::<HeapBlock>() as usize;
 
     // Normal heap block?
     // SAFETY: `kfree` may only be called with a pointer from `kmalloc`, so
     // stepping back by the header size stays inside the same heap block; the
     // result is range-checked before any dereference.
-    let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
+    let block = unsafe { phys.sub(hdr_size) } as *mut HeapBlock;
     // SAFETY: `block` is inside the heap window and correctly aligned (checked
     // by `heap_addr_in_range` before the dereference).
     if heap_addr_in_range(block as u32) && unsafe { (*block).magic } == HEAP_MAGIC {
-        kfree_impl(ptr);
+        kfree_impl(phys);
         return;
     }
 
     // Linux-style fallback: kmalloc_aligned stores the raw heap pointer
-    // 4 bytes below the aligned address.
-    // SAFETY: aligned-allocation fallback — `ptr - 4` holds the raw heap pointer
-    // `kmalloc_aligned` stored at allocation time; it is read before any check
-    // but the address is validated immediately afterwards.
-    let raw = unsafe { *((ptr as u32 - 4) as *const u32) } as *mut u8;
+    // 4 bytes below the aligned address (as a physical address — see
+    // `kmalloc_aligned`).
+    // SAFETY: aligned-allocation fallback — `phys - 4` holds the raw heap
+    // pointer `kmalloc_aligned` stored at allocation time; it is read before any
+    // check but the address is validated immediately afterwards.
+    let raw = unsafe { *((phys as u32 - 4) as *const u32) } as *mut u8;
     if heap_addr_in_range(raw as u32) {
         // SAFETY: `raw` is only dereferenced after `heap_addr_in_range` proved it
         // lies in the heap window, so stepping back by the header size stays within
@@ -212,9 +230,10 @@ fn kfree_impl(ptr: *mut u8) {
     let hdr_size = core::mem::size_of::<HeapBlock>() as usize;
     lock_acquire(HEAP_LOCK.as_ptr());
 
-    // SAFETY: `kfree_impl` is called from `kfree` (or the slab layer) with a
-    // pointer returned by `kmalloc`; the header step-back stays in the same block
-    // and `HEAP_LOCK` is already held, so the list cannot move under us.
+    // SAFETY: `kfree_impl` is called from `kfree` with the *physical* address of
+    // a block returned by `kmalloc` (the free list's own terms); the header
+    // step-back stays in the same block and `HEAP_LOCK` is already held, so the
+    // list cannot move under us.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
     if !heap_addr_in_range(block as u32) {
         klog_msg(LOG_WARN, c"kfree pointer outside heap range".as_ptr() as *const u8);

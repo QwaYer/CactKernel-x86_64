@@ -1,7 +1,7 @@
 //! Shared-memory attach/detach/ctl syscall entry points. Split out of `shm.rs`.
 
 use crate::ffi::*;
-use crate::vmm::paging::vmm_map;
+use crate::vmm::paging::{vmm_map, v2p};
 use crate::safe::{KStatic, lock_acquire, lock_release};
 use crate::process::shm::{
     find_shm_va, seg_free, seg_valid, shm_ensure_init, shm_unmap_from, ShmSeg, SHM_LOCK, SHM_TABLE,
@@ -76,8 +76,11 @@ pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
         let pd = unsafe { (*t).page_directory };
         // SAFETY: `pd` is the CR3 root of the live current task, `va + i *
         // PAGE_SIZE` is inside the SHM window chosen above, and the segment's
-        // frames stay live while `SHM_LOCK` is held.
-        unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, seg.pages[i as usize] as u64, page_flags) };
+        // frames stay live while `SHM_LOCK` is held.  `seg.pages[i]` is the
+        // `kalloc` VA of the frame, so the entry takes its physical address.
+        unsafe {
+            vmm_map(pd, (va + i * PAGE_SIZE) as u64, v2p(seg.pages[i as usize]), page_flags)
+        };
     }
 
     // SAFETY: `proc_meta` is the live `ProcMeta` and `slot` is in bounds

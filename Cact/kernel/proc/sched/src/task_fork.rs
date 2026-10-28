@@ -285,7 +285,9 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
 
     for i in 0..USER_STACK_PAGES as usize {
         let vaddr = child_p.ustack_virt.wrapping_add((i as u32).wrapping_mul(PAGE_SIZE));
-        let cphys = ustack_phys_by_idx(child_p, i) as u64;
+        // `ustack_phys_by_idx` holds the `kalloc` VAs of the stack pages; the
+        // page-table entry takes the physical address.
+        let cphys = cact_mm::vmm_v2p(ustack_phys_by_idx(child_p, i) as *const u8);
         // SAFETY: `child_pd` is a live address space, `vaddr` is in the child's user range and
         // `cphys` is a page owned by the child.
         unsafe { cact_mm::vmm_map(child_pd, vaddr as u64, cphys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32) };

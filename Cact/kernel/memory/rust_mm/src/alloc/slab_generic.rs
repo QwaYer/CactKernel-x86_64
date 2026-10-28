@@ -88,8 +88,10 @@ pub unsafe extern "C" fn slab_kfree(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: obj resides in a page whose start is a Slab header.
-    let s = (ptr as u32 & !(PAGE_SIZE - 1)) as *mut Slab;
+    // SAFETY: obj resides in a page whose start is a Slab header.  Objects are
+    // direct-map VAs (their slab page is a `kalloc` frame) and the direct map is
+    // page-aligned, so masking the low 12 bits of the VA yields the page base.
+    let s = (ptr as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
     // SAFETY: `s` is the `Slab` header at the start of the page containing `ptr`
     // (slab objects are page-aligned per slab); this shared borrow is consumed by
     // the checks below.

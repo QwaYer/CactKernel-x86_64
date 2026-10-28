@@ -114,6 +114,27 @@ pub(crate) fn p2v(phys: u64) -> u64 {
     DIRECT_MAP_BASE + phys
 }
 
+/// C entry point: the physical address behind a pointer the kernel can
+/// dereference (see [`v2p`]).
+///
+/// The C side uses this wherever a `kalloc`'d frame has to go into a page-table
+/// entry; it is declared for C in `memory.h`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_v2p(ptr: *const u8) -> u64 {
+    v2p(ptr)
+}
+
+/// C entry point: the direct-map VA at which physical `phys` is reachable (see
+/// [`p2v`]).
+///
+/// The C side uses this wherever an address out of a page-table entry — or out
+/// of `vmm_get_phys` — has to be dereferenced; it is declared for C in
+/// `memory.h`.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_p2v(phys: u64) -> *mut u8 {
+    p2v(phys) as *mut u8
+}
+
 /// The kernel page map — the PML4 the C side knows as `page_directory`.
 pub fn get_kernel_pd() -> *mut u64 {
     // SAFETY: `addr_of_mut!` projects the address of the static without forming
@@ -188,13 +209,16 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
             return out;
         }
         // SAFETY: `pml4_entry` is in bounds; the fresh PDPT is recorded in it.
+        // The entry takes the table's *physical* address, the table is a
+        // direct-map VA — hence `v2p`.
         unsafe {
-            *pml4_entry = (pdpt as u64) | PAGE_PRESENT as u64 | PAGE_RW as u64
+            *pml4_entry = v2p(pdpt) | PAGE_PRESENT as u64 | PAGE_RW as u64
                 | if private { PDE_PRIVATE as u64 } else { 0 }
         };
     }
-    // SAFETY: the entry is present and names a 4 KiB-aligned table.
-    let pdpt = unsafe { (*pml4_entry & !0xFFF) as *mut u64 };
+    // SAFETY: the entry is present and names a 4 KiB-aligned table, which the
+    // kernel reaches through the direct map.
+    let pdpt = unsafe { p2v(*pml4_entry & !0xFFF) as *mut u64 };
 
     // PDPT → PD.
     // SAFETY: `pdpt` is the live table from the PML4 entry and the index masks
@@ -211,9 +235,10 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
             return out;
         }
         // SAFETY: `out.pdpt_entry` is in bounds; the fresh page directory is
-        // recorded in it.
+        // recorded in it, by its physical address (the table itself is a
+        // direct-map VA).
         unsafe {
-            *out.pdpt_entry = (pd as u64) | PAGE_PRESENT as u64 | PAGE_RW as u64
+            *out.pdpt_entry = v2p(pd) | PAGE_PRESENT as u64 | PAGE_RW as u64
                 | if private { PDE_PRIVATE as u64 } else { 0 }
         };
     } else if pdpt_val & PAGE_PS as u64 != 0 {
@@ -227,7 +252,7 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
         if !create {
             return out;
         }
-        let shared = (pdpt_val & !0xFFF) as *const u64;
+        let shared = p2v(pdpt_val & !0xFFF) as *const u64;
         let pd = new_table();
         if pd.is_null() {
             return out;
@@ -235,11 +260,13 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
         // SAFETY: `shared` is the live 512-entry page directory named by the
         // present kernel entry and `pd` is the fresh table; distinct frames.
         unsafe { core::ptr::copy_nonoverlapping(shared, pd, TABLE_ENTRIES) };
-        // SAFETY: `out.pdpt_entry` is in bounds; it now names the private copy.
-        unsafe { *out.pdpt_entry = (pd as u64) | (pdpt_val & 0xFFF) | PDE_PRIVATE as u64 };
+        // SAFETY: `out.pdpt_entry` is in bounds; it now names the private copy
+        // by its physical address.
+        unsafe { *out.pdpt_entry = v2p(pd) | (pdpt_val & 0xFFF) | PDE_PRIVATE as u64 };
     }
-    // SAFETY: the PDPT entry is present, is not a large page, and names a table.
-    let pd = unsafe { (*out.pdpt_entry & !0xFFF) as *mut u64 };
+    // SAFETY: the PDPT entry is present, is not a large page, and names a table
+    // the kernel reaches through the direct map.
+    let pd = unsafe { p2v(*out.pdpt_entry & !0xFFF) as *mut u64 };
 
     // PD → PT, or the 2 MiB page itself.
     // SAFETY: `pd` is the live page directory from the PDPT entry and the index
@@ -266,16 +293,17 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
             return out;
         }
         // SAFETY: `out.pd_entry` is in bounds and the fresh table is recorded in
-        // it, private when the caller is mapping in its own space.
+        // it, by its physical address, private when the caller is mapping in its
+        // own space.
         unsafe {
-            *out.pd_entry = (pt as u64) | PAGE_PRESENT as u64 | PAGE_RW as u64
+            *out.pd_entry = v2p(pt) | PAGE_PRESENT as u64 | PAGE_RW as u64
                 | if private { PDE_PRIVATE as u64 } else { 0 }
         };
     }
 
     // SAFETY: the PD entry is present, is not a large page any more, and names a
-    // 512-entry page table.
-    out.pt = unsafe { (*out.pd_entry & !0xFFF) as *mut u64 };
+    // 512-entry page table the kernel reaches through the direct map.
+    out.pt = unsafe { p2v(*out.pd_entry & !0xFFF) as *mut u64 };
     // SAFETY: `out.pt` is that live table and the index masks to 9 bits.
     out.pte_entry = unsafe { entry(out.pt, pt_index(vaddr)) };
     out
@@ -318,11 +346,11 @@ unsafe fn split_large_page(pd_entry: *mut u64, private: bool) -> *mut u64 {
             *pt.add(i) = base + (i as u64) * PAGE_SIZE as u64 | flags | PAGE_PRESENT as u64;
         }
     }
-    // SAFETY: `pd_entry` is in bounds; it now names the page table, keeping the
-    // private mark so the teardown and fork paths treat it as one of the
-    // caller's own tables.
+    // SAFETY: `pd_entry` is in bounds; it now names the page table, by its
+    // physical address, keeping the private mark so the teardown and fork paths
+    // treat it as one of the caller's own tables.
     unsafe {
-        *pd_entry = (pt as u64) | flags | PAGE_PRESENT as u64
+        *pd_entry = v2p(pt) | flags | PAGE_PRESENT as u64
             | if private { PDE_PRIVATE as u64 } else { 0 }
     };
     pt
@@ -466,8 +494,8 @@ pub unsafe extern "C" fn vmm_sync_kernel_mmio_mappings(pd: *mut u64) {
         {
             return;
         }
-        let dst_pdpt = (dst_low & !0xFFF) as *mut u64;
-        let src_pdpt = (src_low & !0xFFF) as *const u64;
+        let dst_pdpt = p2v(dst_low & !0xFFF) as *mut u64;
+        let src_pdpt = p2v(src_low & !0xFFF) as *const u64;
         for i in PD_KERNEL_ENTRIES..TABLE_ENTRIES {
             // SAFETY: both PDPTs are live 512-entry tables and `i` is in bounds.
             *entry(dst_pdpt, i as u32) = entry_val(src_pdpt, i as u32);
@@ -530,8 +558,9 @@ pub unsafe extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr:
         && (old_pte & !0xFFF) != (physical_addr & !0xFFF)
     {
         // SAFETY: the frame is live and PMM-managed; this releases exactly one
-        // reference to it.
-        unsafe { free_page((old_pte & !0xFFF) as *mut u8) };
+        // reference to it.  The entry names a physical address, which the
+        // allocator wants as a VA.
+        unsafe { free_page(p2v(old_pte & !0xFFF) as *mut u8) };
     }
     if is_kernel_mmio {
         // Shared entries carry no private bit, and the permission bits have to
@@ -700,15 +729,16 @@ pub extern "C" fn vmm_create_address_space() -> *mut u64 {
     // SAFETY: `kernel` is the live kernel PML4, `pdpt` the fresh table.
     let kernel_low = unsafe { entry_val(kernel, 0) };
     if kernel_low & PAGE_PRESENT as u64 != 0 {
-        let src = (kernel_low & !0xFFF) as *const u64;
+        let src = p2v(kernel_low & !0xFFF) as *const u64;
         // SAFETY: `src` is the kernel's live low PDPT and `pdpt` is the fresh
         // one; both span 512 entries and do not overlap.
         unsafe { core::ptr::copy_nonoverlapping(src, pdpt, TABLE_ENTRIES) };
     }
-    // SAFETY: `pml4` is the fresh map; entry 0 takes the private PDPT.
+    // SAFETY: `pml4` is the fresh map; entry 0 takes the private PDPT, by its
+    // physical address.
     unsafe {
         *entry(pml4, 0) =
-            (pdpt as u64) | PAGE_PRESENT as u64 | PAGE_RW as u64 | PDE_PRIVATE as u64
+            v2p(pdpt) | PAGE_PRESENT as u64 | PAGE_RW as u64 | PDE_PRIVATE as u64
     };
     pml4
 }
@@ -730,7 +760,7 @@ pub unsafe extern "C" fn vmm_free_address_space(pd: *mut u64) {
         // here is the caller's to release.
         return;
     }
-    let pdpt = (low & !0xFFF) as *mut u64;
+    let pdpt = p2v(low & !0xFFF) as *mut u64;
     for i in 0..PD_KERNEL_ENTRIES {
         // SAFETY: the PDPT belongs to this map and `i` is in bounds.
         let pd_val = unsafe { entry_val(pdpt, i as u32) };
@@ -741,7 +771,7 @@ pub unsafe extern "C" fn vmm_free_address_space(pd: *mut u64) {
         if pd_val & PAGE_PS as u64 != 0 {
             continue;
         }
-        let pdt = (pd_val & !0xFFF) as *mut u64;
+        let pdt = p2v(pd_val & !0xFFF) as *mut u64;
         for j in 0..TABLE_ENTRIES {
             // SAFETY: the page directory is private to this map and `j` is in
             // bounds.
@@ -752,20 +782,23 @@ pub unsafe extern "C" fn vmm_free_address_space(pd: *mut u64) {
             {
                 continue;
             }
-            let pt = (pd_entry_val & !0xFFF) as *mut u64;
+            let pt = p2v(pd_entry_val & !0xFFF) as *mut u64;
             for k in 0..TABLE_ENTRIES {
                 // SAFETY: the page table is private to this map and `k` is in
                 // bounds.
                 let pte = unsafe { entry_val(pt, k as u32) };
                 // Only user pages are per-process; the rest belong to the PMM's
-                // own accounting and must not be freed a second time.
+                // own accounting and must not be freed a second time.  The
+                // entry names a physical address, which `free_page` wants as a
+                // direct-map VA.
                 if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
                     // SAFETY: the frame is live and PMM-managed; this releases
                     // one reference to it.
-                    unsafe { free_page((pte & !0xFFF) as *mut u8) };
+                    unsafe { free_page(p2v(pte & !0xFFF) as *mut u8) };
                 }
             }
-            // SAFETY: the table was kalloc'd for this map.
+            // SAFETY: the table was kalloc'd for this map, so `pt` is already a
+            // direct-map VA.
             unsafe { free_page(pt as *mut u8) };
         }
         // SAFETY: the page directory was kalloc'd for this map.
@@ -801,8 +834,8 @@ pub unsafe extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u
         if src_low & PAGE_PRESENT as u64 == 0 || dst_low & PAGE_PRESENT as u64 == 0 {
             return;
         }
-        let src_pdpt = (src_low & !0xFFF) as *const u64;
-        let dst_pdpt = (dst_low & !0xFFF) as *mut u64;
+        let src_pdpt = p2v(src_low & !0xFFF) as *const u64;
+        let dst_pdpt = p2v(dst_low & !0xFFF) as *mut u64;
 
         for i in 0..PD_KERNEL_ENTRIES {
             let src_pd_val = entry_val(src_pdpt, i as u32);
@@ -811,7 +844,7 @@ pub unsafe extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u
                 *entry(dst_pdpt, i as u32) = src_pd_val;
                 continue;
             }
-            let src_pdt = (src_pd_val & !0xFFF) as *const u64;
+            let src_pdt = p2v(src_pd_val & !0xFFF) as *const u64;
             let dst_pd = new_table();
             if dst_pd.is_null() {
                 continue;
@@ -827,7 +860,7 @@ pub unsafe extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u
                     *entry(dst_pd, j as u32) = src_entry;
                     continue;
                 }
-                let src_pt = (src_entry & !0xFFF) as *const u64;
+                let src_pt = p2v(src_entry & !0xFFF) as *const u64;
                 let dst_pt = new_table();
                 if dst_pt.is_null() {
                     continue;
@@ -841,18 +874,21 @@ pub unsafe extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u
                     if new_page.is_null() {
                         continue;
                     }
-                    // SAFETY: `src_pte` names a present frame and `new_page` is a
-                    // fresh 4 KiB frame, so the copy is in bounds.
+                    // SAFETY: `src_pte` names a present frame (reached through
+                    // the direct map) and `new_page` is a fresh 4 KiB frame, so
+                    // the copy is in bounds.
                     core::ptr::copy_nonoverlapping(
-                        (src_pte & !0xFFF) as *const u8,
+                        p2v(src_pte & !0xFFF) as *const u8,
                         new_page,
                         PAGE_SIZE as usize,
                     );
-                    *entry(dst_pt, k as u32) = (new_page as u64 & !0xFFF) | (src_pte & 0xFFF);
+                    // Both the destination table and the copied frame go into
+                    // the entry by physical address.
+                    *entry(dst_pt, k as u32) = (v2p(new_page) & !0xFFF) | (src_pte & 0xFFF);
                 }
-                *entry(dst_pd, j as u32) = (dst_pt as u64 & !0xFFF) | (src_entry & 0xFFF);
+                *entry(dst_pd, j as u32) = (v2p(dst_pt) & !0xFFF) | (src_entry & 0xFFF);
             }
-            *entry(dst_pdpt, i as u32) = (dst_pd as u64 & !0xFFF) | (src_pd_val & 0xFFF);
+            *entry(dst_pdpt, i as u32) = (v2p(dst_pd) & !0xFFF) | (src_pd_val & 0xFFF);
         }
     }
 }

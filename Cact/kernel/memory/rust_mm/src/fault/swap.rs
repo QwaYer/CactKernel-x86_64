@@ -7,6 +7,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
+use crate::vmm::paging::{p2v, v2p};
 
 pub type SwapSlot = u32;
 pub type SwapReadFn = Option<unsafe extern "C" fn(u32, *mut u8, u32) -> i32>;
@@ -196,7 +197,9 @@ pub extern "C" fn swap_is_enabled_ffi() -> i32 {
 /// # Safety
 ///
 /// `out_slot` must be null or point to a writable `SwapSlot` valid for the
-/// call, and `phys_addr` must be a page-aligned physical frame address.
+/// call, and `phys_addr` must be a page-aligned **physical** frame address (a
+/// PTE's frame, as `swap.h` documents) — the backing-store callback reads the
+/// page, so the address is translated through the direct map before the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) -> i32 {
     // SAFETY: `G_ENABLED` is immutable after `swap_init`.
@@ -227,8 +230,9 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) 
         Some(f) => f,
         None => return -1,
     };
-    // SAFETY: calling the C-provided write function.
-    let rc = unsafe { write_fn(lba, phys_addr as *const u8, PAGE_SIZE / 512) };
+    // SAFETY: calling the C-provided write function; `phys_addr` is a physical
+    // address, so the page it reads is the direct-map alias.
+    let rc = unsafe { write_fn(lba, p2v(phys_addr) as *const u8, PAGE_SIZE / 512) };
     if rc != 0 {
         lock_acquire(G_SWAP_LOCK.as_ptr());
         bitmap_free(slot);
@@ -245,6 +249,9 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) 
     0
 }
 
+/// Fill the frame at physical address `phys_addr` from swap slot `slot` (see
+/// `swap_out_page` for why the address is physical and how the callback's
+/// buffer is derived from it).
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
     // SAFETY: `G_ENABLED` immutable after boot init.
@@ -267,8 +274,9 @@ pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
         Some(f) => f,
         None => return -1,
     };
-    // SAFETY: calling the C-provided read function.
-    let rc = unsafe { read_fn(lba, phys_addr as *mut u8, PAGE_SIZE / 512) };
+    // SAFETY: calling the C-provided read function; `phys_addr` is a physical
+    // address, so the page it fills is the direct-map alias.
+    let rc = unsafe { read_fn(lba, p2v(phys_addr) as *mut u8, PAGE_SIZE / 512) };
     if rc != 0 {
         // SAFETY: `G_STATS.swap_failures` — unlocked diagnostic counter, see above.
         (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).swap_failures += 1;
@@ -358,9 +366,11 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
 
                     flush_tlb(va as u64);
 
-                    // SAFETY: the frame is live and PMM-managed; this call releases
-                    // exactly one reference to it.
-                    unsafe { free_page(phys as *mut u8) };
+                    // SAFETY: the frame is live and PMM-managed; this call
+                    // releases exactly one reference to it.  The scan read the
+                    // frame's physical address out of the PTE, so it goes through
+                    // `p2v` to reach the allocator's VA contract.
+                    unsafe { free_page(p2v(phys) as *mut u8) };
 
                     let next = va + PAGE_SIZE;
                     // SAFETY: saving the clock hand after a successful eviction;
@@ -426,7 +436,9 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
         }
     }
 
-    if swap_in_page(slot, phys as u64) != 0 {
+    // `swap_in_page` takes the frame's *physical* address (that is what its I/O
+    // callback needs), while `kalloc` handed out a direct-map VA.
+    if swap_in_page(slot, v2p(phys)) != 0 {
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
         unsafe { free_page(phys) };
         return -1;
@@ -434,10 +446,10 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
 
     let old_flags = pte & ((PAGE_RW | PAGE_USER) as u64);
     // SAFETY: `pte_entry` points at one live atomic PTE; the store publishes the
-    // restored mapping.
+    // restored mapping, by the frame's physical address.
     unsafe {
         (*pte_entry).store(
-            (phys as u64 & !0xFFF) | old_flags | PAGE_PRESENT as u64,
+            (v2p(phys) & !0xFFF) | old_flags | PAGE_PRESENT as u64,
             Ordering::Release,
         )
     };

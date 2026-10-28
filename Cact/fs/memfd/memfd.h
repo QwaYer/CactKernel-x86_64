@@ -23,9 +23,11 @@ int memfd_map_inc(int handle);      // MAP_SHARED region added
 int memfd_map_dec(int handle);      // MAP_SHARED region removed
 
 /* Frame pointer for page `idx` of the object, or NULL when the handle/size is
- * invalid.  Frames are identity-mapped, so the result is usable directly as a
- * kernel pointer.  Used by kernel subsystems that own a shared object (DRM GEM
- * buffers) and must read/write its storage without copying. */
+ * invalid.  Frames are `kalloc`'d, so the result is a direct-map VA: usable
+ * directly as a kernel pointer, and turned back into the physical address with
+ * vmm_v2p() where a page-table entry or a device needs one.  Used by kernel
+ * subsystems that own a shared object (DRM GEM buffers) and must read/write its
+ * storage without copying. */
 void *memfd_get_page(int handle, uint32_t idx);
 
 // C-side VFS glue (memfd.c).

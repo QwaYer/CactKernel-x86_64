@@ -293,11 +293,12 @@ pub(crate) fn map_user_stack_in_pd(pd: *mut u64, p: &ProcMeta) {
     }
     // SAFETY: `pd` is null-checked and, per the contract, a live page directory owned by the
     // task; `p` is a live `ProcMeta` whose `ustack_phys`/`ustack_phys_extra` hold this process's
-    // stack pages, so each `vmm_map` is handed a real physical page.
+    // stack pages (the VAs `kalloc` handed out, so `vmm_v2p` gives the frames the entries take),
+    // so each `vmm_map` is handed a real physical page.
     unsafe {
         for i in 0..USER_STACK_PAGES {
             let vaddr = p.ustack_virt.wrapping_add(i.wrapping_mul(PAGE_SIZE));
-            let phys = ustack_phys_by_idx(p, i as usize) as u64;
+            let phys = cact_mm::vmm_v2p(ustack_phys_by_idx(p, i as usize) as *const u8);
             cact_mm::vmm_map(pd, vaddr as u64, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
         }
     }

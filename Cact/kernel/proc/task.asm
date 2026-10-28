@@ -57,12 +57,13 @@ switch_to:
     pop rbx
     ret
 
-; void switch_paging(uint32_t* pd)
+; void switch_paging(uint64_t* pd)
 ;
-; `pd` is a kernel VA for the kernel's own map (its tables live in the higher
-; half) but a physical address for a user address space (allocated in the
-; identity-mapped low heap).  CR3 wants the physical form, so subtract the
-; link base when the pointer is in the kernel half.
+; `pd` is the *physical* address of the page map to load: callers translate the
+; pointer (a direct-map VA for a process map, the kernel-image VA for the
+; kernel's own map) with vmm_v2p() first, because CR3 can only hold a physical
+; address.  The link-base subtraction below stays as a safety net for a caller
+; that hands over a kernel-image VA.
 switch_paging:
     mov rax, rdi
     mov rcx, 0xFFFFFFFF80000000

@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_get_locked, PAGE_LOCK};
-use crate::vmm::paging::vmm_map;
+use crate::vmm::paging::{vmm_map, p2v, v2p};
 use crate::fault::page_fault::{ensure_private_pte, pte_get};
 use crate::safe::{zero_page, flush_tlb, lock_acquire, lock_release};
 
@@ -126,8 +126,9 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
         return -1;
     }
 
-    // SAFETY: pte is valid and has COW flag.
-    let old_phys = unsafe { *pte & !0xFFF } as *mut u8;
+    // SAFETY: pte is valid and has COW flag; the low bits masked off give the
+    // page-aligned physical frame it names.
+    let old_phys = unsafe { *pte & !0xFFF };
     // SAFETY: `pte` is non-null and COW-flagged; reading its value is valid.
     let pte_val = unsafe { *pte };
     let flags = ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_RW as u64 | PAGE_PRESENT as u64;
@@ -137,10 +138,10 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     // can observe rc == 1 and also promote its own PTE to RW for the same
     // physical frame (C-01: two processes writing to one physical frame).
     lock_acquire(PAGE_LOCK.as_ptr());
-    if page_ref_get_locked(old_phys) == 1 {
+    if page_ref_get_locked(p2v(old_phys) as *const u8) == 1 {
         // SAFETY: writing the private copy's frame into the live COW PTE addressed by
-        // `pte`.
-        unsafe { *pte = (old_phys as u64 & !0xFFF) | flags; }
+        // `pte`; the entry takes the frame's physical address.
+        unsafe { *pte = (old_phys & !0xFFF) | flags; }
         lock_release(PAGE_LOCK.as_ptr());
         flush_tlb(virtual_addr & !0xFFF);
         return 0;
@@ -154,16 +155,20 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
         return -1;
     }
 
-    // SAFETY: `old_phys` is the shared frame named by the live COW PTE and
-    // `new_phys` a fresh `kalloc` page, so the 4 KiB copy is in bounds.
-    unsafe { core::ptr::copy_nonoverlapping(old_phys as *const u8, new_phys, PAGE_SIZE as usize) };
+    // SAFETY: `old_phys` is the shared frame named by the live COW PTE (reached
+    // through the direct map) and `new_phys` a fresh `kalloc` page, so the 4 KiB
+    // copy is in bounds.
+    unsafe {
+        core::ptr::copy_nonoverlapping(p2v(old_phys) as *const u8, new_phys, PAGE_SIZE as usize)
+    };
     // SAFETY: `pte` is non-null (checked above), so storing the private copy's
-    // frame back is in bounds.
-    unsafe { *pte = (new_phys as u64 & !0xFFF) | flags };
+    // frame's physical address back is in bounds.
+    unsafe { *pte = (v2p(new_phys) & !0xFFF) | flags };
 
     // Release our reference to the shared frame.
     // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-    unsafe { free_page(old_phys) };
+    // The PTE names a physical address, which `free_page` wants as a VA.
+    unsafe { free_page(p2v(old_phys) as *mut u8) };
 
     flush_tlb(virtual_addr & !0xFFF);
     0
@@ -194,12 +199,13 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -
         }
         zero_page(phys);
         // SAFETY: `pd` is valid (checked at entry), `va` lies in the user stack
-        // window and `phys` is the zeroed frame just allocated for it.
+        // window and `phys` is the zeroed frame just allocated for it; the
+        // mapping takes the frame's physical address.
         unsafe {
             vmm_map(
                 pd,
                 va,
-                phys as u64,
+                v2p(phys),
                 (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
             );
         }

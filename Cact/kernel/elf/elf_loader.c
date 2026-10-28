@@ -115,7 +115,9 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
                                      (char*)phys + page_offset) <= 0) return -1;
                     }
                 }
-                vmm_map(pd, va, (uint64_t)phys,
+                // `kalloc` returns a direct-map VA; the PTE takes the frame's
+                // physical address.
+                vmm_map(pd, va, vmm_v2p(phys),
                         PAGE_USER | PAGE_RW | PAGE_PRESENT);
             }
 
@@ -149,7 +151,8 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
 
         if (min_vaddr < PAGE_SIZE) return -1;
         uint32_t page_va = min_vaddr - 0x1000u;
-        vmm_map(pd, page_va, (uint64_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+        // `kalloc` returns a direct-map VA; the PTE takes the physical address.
+        vmm_map(pd, page_va, vmm_v2p(phys), PAGE_USER | PAGE_RW | PAGE_PRESENT);
         phdr_vaddr = page_va + page_off;
     }
 
@@ -283,7 +286,9 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                     }
                 }
 
-                vmm_map(pd, va, (uint64_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+                // `kalloc` returns a direct-map VA; the PTE takes the frame's
+                // physical address.
+                vmm_map(pd, va, vmm_v2p(phys), PAGE_USER | PAGE_RW | PAGE_PRESENT);
             } else {
                 /* p_memsz > p_filesz: .bss / zero tail — need present mappings (not demand-only). */
                 void* zphys = kalloc();
@@ -300,7 +305,8 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                 }
                 uint8_t* zp = (uint8_t*)zphys;
                 for (int k = 0; k < (int)PAGE_SIZE; k++) zp[k] = 0;
-                vmm_map(pd, va, (uint64_t)zphys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+                // `kalloc` returns a direct-map VA; the PTE takes the physical one.
+                vmm_map(pd, va, vmm_v2p(zphys), PAGE_USER | PAGE_RW | PAGE_PRESENT);
             }
         }
     }

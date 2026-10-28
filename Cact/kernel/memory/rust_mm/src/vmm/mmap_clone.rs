@@ -6,6 +6,7 @@ use crate::pmm::page_ref_inc;
 use crate::process::memfd::memfd_map_inc;
 use crate::safe::flush_tlb_all;
 use crate::vmm::mmap::do_munmap;
+use crate::vmm::paging::p2v;
 
 /// # Safety
 ///
@@ -81,7 +82,7 @@ pub unsafe extern "C" fn mmap_table_clone(
                 unsafe { *dst_w.pte_entry = pte };
 
                 if pte & PAGE_PRESENT as u64 != 0 {
-                    page_ref_inc((pte & !0xFFF) as *const u8);
+                    page_ref_inc(p2v(pte & !0xFFF) as *const u8);
                 }
             }
         } else {
@@ -120,7 +121,7 @@ pub unsafe extern "C" fn mmap_table_clone(
                     *dst_w.pte_entry = cow_pte;
                 }
 
-                page_ref_inc((pte & !0xFFF) as *const u8);
+                page_ref_inc(p2v(pte & !0xFFF) as *const u8);
             }
 
             flush_tlb_all();

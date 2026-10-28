@@ -6,6 +6,9 @@
 #include "pci.h"
 #include "multiboot2.h"
 #include "cpudev.h"
+/* vmm_p2v()/vmm_v2p(): the address-space translations exported by the memory
+ * layer (rust_mm paging.rs).  get_current_pd() below needs the former. */
+#include "memory.h"
 
 // Forward declarations for exception frame and process metadata
 struct context_frame;
@@ -196,11 +199,17 @@ static inline uint64_t read_cr2(void) {
     return (uint64_t)(uintptr_t)val;
 }
 
-// Get current page directory pointer (CR3)
+// Get the current page-directory pointer — the live PML4, as a kernel VA.
+//
+// CR3 holds the *physical* address of the live page map; the kernel reaches
+// that frame through the direct map (rust_mm paging.rs DIRECT_MAP_BASE), so the
+// raw value is translated before it is handed out: every caller dereferences
+// the result (vmm_map / vmm_get_phys walk the tables), and must not have to
+// rely on the low identity map for a frame the PMM may have moved.
 static inline uint64_t* get_current_pd(void) {
-    void* val;
+    uint64_t val;
     __asm__ __volatile__("mov %%cr3, %0" : "=r"(val));
-    return (uint64_t*)val;
+    return (uint64_t*)vmm_p2v(val);
 }
 
 // Hardware detection helpers

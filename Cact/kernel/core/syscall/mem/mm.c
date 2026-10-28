@@ -47,7 +47,9 @@ int sys_brk(struct syscall_frame* regs) {
             if (!phys) return -1;
             uint8_t* p = (uint8_t*)phys;
             for (int i = 0; i < (int)PAGE_SIZE; i++) p[i] = 0;
-            vmm_map(current_task->page_directory, va, (uint64_t)phys,
+            // `kalloc` hands out a direct-map VA; the page-table entry takes the
+            // frame's physical address.
+            vmm_map(current_task->page_directory, va, vmm_v2p(phys),
                     PAGE_USER | PAGE_RW | PAGE_PRESENT);
             proc_tracker_add(&ps->mm, phys);   // track for cleanup on exit
         }

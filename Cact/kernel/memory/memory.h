@@ -93,6 +93,15 @@ uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
 void      vmm_map(uint64_t* pd, uint64_t virtual_addr, uint64_t physical_addr, int flags);
 uint64_t  vmm_get_phys(uint64_t* pd, uint64_t virtual_addr);
+/* Physical address behind a pointer the kernel can dereference (rust_mm
+ * paging.rs: v2p).  The kernel addresses its own frames through the direct map,
+ * so a `kalloc`'d frame — or anything else it holds a pointer to — has to come
+ * back through here before its numeric value goes into a page-table entry. */
+uint64_t  vmm_v2p(const void* ptr);
+/* Virtual address at which physical `phys` is reachable (rust_mm paging.rs:
+ * p2v — DIRECT_MAP_BASE + phys).  An address read out of a page-table entry, or
+ * out of vmm_get_phys(), is dereferenceable only after this translation. */
+void*     vmm_p2v(uint64_t phys);
 /* Low flag bits of the mapping for `virt` (0 when unmapped); the fault and
  * diagnostic paths need the permission bits, not the frame. */
 uint32_t  vmm_pte_flags(uint64_t* pd, uint64_t virt);

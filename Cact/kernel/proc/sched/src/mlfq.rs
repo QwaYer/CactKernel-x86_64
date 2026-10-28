@@ -574,8 +574,12 @@ pub unsafe extern "C" fn schedule() {
     unsafe { cact_mm::vmm_sync_kernel_mmio_mappings(effective_next_pd) };
 
     if effective_next_pd != effective_prev_pd {
-        // SAFETY: switches CR3 to the incoming live address space.
-        unsafe { ffi::switch_paging(effective_next_pd) };
+        // SAFETY: switches CR3 to the incoming live address space.  A page map is
+        // a VA (a `kalloc` one for a process, the kernel-image one for the
+        // kernel's own map) and CR3 takes a physical address.
+        unsafe {
+            ffi::switch_paging(cact_mm::vmm_v2p(effective_next_pd as *const u8) as *mut u64)
+        };
     }
 
     // SAFETY: `next` is live.

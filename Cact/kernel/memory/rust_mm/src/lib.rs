@@ -37,8 +37,8 @@ pub use crate::process::shm::shm_detach_all;
 pub use crate::vmm::mmap::{mmap_table_clone, mmap_table_free, mmap_table_init};
 pub use crate::vmm::cow::vmm_fork_address_space;
 pub use crate::vmm::paging::{
-    vmm_create_address_space, vmm_free_address_space, vmm_map,
-    vmm_sync_kernel_mmio_mappings,
+    vmm_create_address_space, vmm_free_address_space, vmm_map, vmm_p2v, vmm_sync_kernel_mmio_mappings,
+    vmm_v2p,
 };
 mod safe;
 pub mod pmm;

@@ -3,6 +3,7 @@
 use crate::ffi::*;
 use crate::pmm_math::{self, addr_to_page, page_to_addr};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, klog_msg};
+use crate::vmm::paging::{p2v, v2p};
 
 // The pure math module and the FFI ABI must agree on the page size; if they
 // ever drift, this fails the build instead of corrupting the bitmap.
@@ -272,6 +273,12 @@ pub extern "C" fn init_memory_manager() {
 
 }
 
+/// Allocate one 4 KiB frame.
+///
+/// The result is a **virtual** address: the frame is handed out through the
+/// direct map (`p2v`), so a caller can dereference it, hand it to `vmm_map`
+/// after a `v2p`, or give it back to [`free_page`] unchanged.  A caller that
+/// needs the physical address itself asks `v2p`.
 #[unsafe(no_mangle)]
 pub extern "C" fn kalloc() -> *mut u8 {
     const MAX_RECLAIM_ROUNDS: u32 = 4;
@@ -293,7 +300,9 @@ pub extern "C" fn kalloc() -> *mut u8 {
                 // SAFETY: `FIRST_AVAILABLE_PAGE` write while holding `PAGE_LOCK`.
                 *unsafe { KStatic::get_mut(FIRST_AVAILABLE_PAGE.as_ptr()) } = i + 1;
                 lock_release(PAGE_LOCK.as_ptr());
-                return page_to_addr(i) as *mut u8;
+                // The bitmap indexes *physical* frames; the frame itself is
+                // reached through the direct map.
+                return p2v(page_to_addr(i) as u64) as *mut u8;
             }
             i += 1;
         }
@@ -328,14 +337,16 @@ pub extern "C" fn kalloc() -> *mut u8 {
 
 /// # Safety
 ///
-/// `ptr` must be null or a page-aligned base address previously returned by the
-/// page allocator (a `kalloc` frame or another PMM-managed page, or a C caller
-/// honouring the same contract) that has not already been freed.
+/// `ptr` must be null or a page-aligned **virtual** address of a frame previously
+/// returned by the page allocator (whatever `kalloc` handed out — a direct-map
+/// VA — or a kernel-image VA of a PMM-managed page, or a C caller honouring the
+/// same contract) that has not already been freed.  The bitmap and the refcounts
+/// are indexed by physical address, so the translation happens here.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn free_page(ptr: *mut u8) {
     if ptr.is_null() { return; }
 
-    let addr = ptr as u32;
+    let addr = v2p(ptr) as u32;
     // Must be page-aligned and within the managed range.
     if !addr.is_multiple_of(PAGE_SIZE) { return; }
 
@@ -374,8 +385,13 @@ pub unsafe extern "C" fn free_page(ptr: *mut u8) {
     lock_release(PAGE_LOCK.as_ptr());
 }
 
-pub fn page_ref_inc(phys: *const u8) {
-    let addr = phys as u32;
+/// Take one more reference on the frame a caller addresses by VA.
+///
+/// The pointer is the same kind of value `kalloc`/`free_page` use — a direct-map
+/// VA of a PMM-managed frame (a PTE's physical address goes through `p2v`
+/// first) — because the refcount array is indexed physically.
+pub fn page_ref_inc(ptr: *const u8) {
+    let addr = v2p(ptr) as u32;
     if addr < reserved_end() { return; }
     let idx = addr_to_page(addr);
     if idx >= TOTAL_PAGES { return; }
@@ -389,13 +405,14 @@ pub fn page_ref_inc(phys: *const u8) {
     lock_release(PAGE_LOCK.as_ptr());
 }
 
-/// Read the reference count of a physical page under `PAGE_LOCK`.
+/// Read the reference count of a page addressed by VA (as for
+/// [`page_ref_inc`]) under `PAGE_LOCK`.
 ///
 /// The lock guarantees that the value is not stale: `page_ref_inc` and
 /// `free_page` both modify the count under the same lock, so holding it
 /// here provides a sequentially-consistent view of the refcount.
-pub fn page_ref_get(phys: *const u8) -> u16 {
-    let addr = phys as u32;
+pub fn page_ref_get(ptr: *const u8) -> u16 {
+    let addr = v2p(ptr) as u32;
     if addr < reserved_end() { return 0; }
     let idx = addr_to_page(addr);
     if idx >= TOTAL_PAGES { return 0; }
@@ -407,14 +424,15 @@ pub fn page_ref_get(phys: *const u8) -> u16 {
     rc
 }
 
-/// Read the reference count **without** acquiring `PAGE_LOCK`.
+/// Read the reference count **without** acquiring `PAGE_LOCK`.  As for
+/// [`page_ref_inc`], `ptr` is a VA of a PMM-managed frame.
 ///
 /// # Safety
 /// The caller **must** already hold `PAGE_LOCK`.  Use this inside a critical
 /// section where the lock is acquired around a check-then-act sequence (e.g.
 /// the COW sole-owner fast path in `vmm_handle_cow`).
-pub(crate) fn page_ref_get_locked(phys: *const u8) -> u16 {
-    let addr = phys as u32;
+pub(crate) fn page_ref_get_locked(ptr: *const u8) -> u16 {
+    let addr = v2p(ptr) as u32;
     if addr < reserved_end() { return 0; }
     let idx = addr_to_page(addr);
     if idx >= TOTAL_PAGES { return 0; }

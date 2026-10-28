@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_get_locked, PAGE_LOCK};
-use crate::vmm::paging::{get_kernel_pd, vmm_map};
+use crate::vmm::paging::{get_kernel_pd, vmm_map, p2v, v2p};
 use crate::fault::swap::{swap_pte_is_swapped, swap_handle_fault};
 use crate::fault::oom::oom_kill;
 use crate::safe::{KStatic, zero_page, flush_tlb, kprint_str, read_cr2_val, current_page_dir};
@@ -227,7 +227,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, phys as u64, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            unsafe { vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see the
             // note above.
@@ -261,7 +261,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, phys as u64, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            unsafe { vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see above.
             (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).stack_grows += 1;
@@ -311,8 +311,9 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             let flags = (pte_val & 0xFFF) & !((PAGE_DEMAND | PAGE_ZERO) as u64);
             let flags = flags | PAGE_PRESENT as u64 | PAGE_RW as u64;
             // SAFETY: `pte` is the live PTE for this demand page; the new frame `phys` was
-            // just allocated and zeroed, so publishing it here is well-defined.
-            unsafe { *pte = (phys as u64 & !0xFFF) | flags; }
+            // just allocated and zeroed, so publishing its physical address here is
+            // well-defined.
+            unsafe { *pte = (v2p(phys) & !0xFFF) | flags; }
             flush_tlb(page_va);
 
             // SAFETY: `G_STATS.demand_allocs` — unprotected diagnostic counter; see above.
@@ -324,11 +325,11 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
         if !pte.is_null() && unsafe { *pte & PAGE_COW as u64 != 0 } {
             // SAFETY: `pte` is non-null and present; the low bits masked off give the
             // page-aligned physical frame it points at.
-            let old_phys = unsafe { *pte & !0xFFF } as *mut u8;
+            let old_phys = unsafe { *pte & !0xFFF };
 
             // ── Sole-owner check + act under PAGE_LOCK (C-01 fix) ────────────
             crate::safe::lock_acquire(PAGE_LOCK.as_ptr());
-            let rc = page_ref_get_locked(old_phys);
+            let rc = page_ref_get_locked(p2v(old_phys) as *const u8);
             if rc <= 1 {
                 // Sole owner — promote the existing frame to writable in-place.
                 // SAFETY: `pte` is a live PTE (non-null, checked above).
@@ -337,7 +338,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                     ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_PRESENT as u64 | PAGE_RW as u64;
                 // SAFETY: promoting the existing frame to writable under `PAGE_LOCK`; `pte` is
                 // the valid PTE for this page.
-                unsafe { *pte = (old_phys as u64 & !0xFFF) | flags; }
+                unsafe { *pte = (old_phys & !0xFFF) | flags; }
                 crate::safe::lock_release(PAGE_LOCK.as_ptr());
                 flush_tlb(page_va);
                 // SAFETY: `G_STATS.cow_copies` — unprotected diagnostic counter; see above.
@@ -356,19 +357,27 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                 return;
             }
 
-            // SAFETY: copying page contents.
+            // SAFETY: `old_phys` names the shared frame read through the direct map
+            // and `phys` is a fresh kalloc page (a direct-map VA), so the copy is in
+            // bounds.
             unsafe {
-                core::ptr::copy_nonoverlapping(old_phys as *const u8, phys, PAGE_SIZE as usize);
+                core::ptr::copy_nonoverlapping(
+                    p2v(old_phys) as *const u8,
+                    phys,
+                    PAGE_SIZE as usize,
+                );
             }
             // SAFETY: `pte` is non-null and present; its value is read to derive the new
             // PTE flags.
             let pte_val = unsafe { *pte };
             let flags =
                 ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_PRESENT as u64 | PAGE_RW as u64;
-            // SAFETY: publishing the freshly copied frame `phys` into the live PTE.
-            unsafe { *pte = (phys as u64 & !0xFFF) | flags; }
+            // SAFETY: publishing the freshly copied frame's physical address into the
+            // live PTE.
+            unsafe { *pte = (v2p(phys) & !0xFFF) | flags; }
             // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-            unsafe { free_page(old_phys) };
+            // The PTE names a physical address, which `free_page` wants as a VA.
+            unsafe { free_page(p2v(old_phys) as *mut u8) };
             flush_tlb(page_va);
 
             // SAFETY: `G_STATS.cow_copies` — unprotected diagnostic counter; see above.
@@ -397,12 +406,13 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                 }
                 zero_page(phys);
                 // SAFETY: `pd` is valid, `page_va` is inside the user stack window
-                // and `phys` is the zeroed frame just allocated for it.
+                // and `phys` is the zeroed frame just allocated for it; the mapping
+                // takes the frame's physical address.
                 unsafe {
                     vmm_map(
                         pd,
                         page_va,
-                        phys as u64,
+                        v2p(phys),
                         (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
                     );
                 }

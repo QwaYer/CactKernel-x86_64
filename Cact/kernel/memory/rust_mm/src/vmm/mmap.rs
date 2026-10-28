@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page, page_ref_inc};
-use crate::vmm::paging::{vmm_map, walk};
+use crate::vmm::paging::{vmm_map, p2v, v2p, walk};
 use crate::fault::page_fault::vmm_map_zero;
 use crate::process::memfd::{memfd_get_page, memfd_grow_to, memfd_map_dec, memfd_map_inc};
 
@@ -139,7 +139,8 @@ fn clear_user_pte(pd: *mut u64, va: u32) {
     let pte = unsafe { *w.pte_entry };
     if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-        unsafe { free_page((pte & !0xFFF) as *mut u8) };
+        // The entry names a physical address, which `free_page` wants as a VA.
+        unsafe { free_page(p2v(pte & !0xFFF) as *mut u8) };
     }
     // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
     unsafe { *w.pte_entry = 0 };
@@ -306,9 +307,10 @@ pub unsafe extern "C" fn do_mmap(
                 }
                 let va_i = va + installed * PAGE_SIZE;
                 // SAFETY: `pd` is valid, `va_i` lies inside the region reserved
-                // above, and `page` is a live memfd frame.
-                unsafe { vmm_map(pd, va_i as u64, page as u64, page_flags); }
-                if pte_phys(pd, va_i) != page as u64 {
+                // above, and `page` is a live memfd frame (a direct-map VA), so
+                // the mapping takes its physical address.
+                unsafe { vmm_map(pd, va_i as u64, v2p(page), page_flags); }
+                if pte_phys(pd, va_i) != v2p(page) {
                     break;
                 }
                 page_ref_inc(page);
@@ -338,12 +340,14 @@ pub unsafe extern "C" fn do_mmap(
                 zero_page(phys);
                 let src = memfd_get_page(shobj, obj_off / PAGE_SIZE + i);
                 if !src.is_null() {
-                    // SAFETY: both page pointers are valid 4 KiB frames.
+                    // SAFETY: both page pointers are valid 4 KiB frames (the
+                    // destination is a direct-map VA from `kalloc`).
                     unsafe { core::ptr::copy_nonoverlapping(src, phys, PAGE_SIZE as usize); }
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
-                // reserved above, and `phys` is the frame just allocated for it.
-                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, phys as u64, page_flags); }
+                // reserved above, and `phys` is the frame just allocated for it;
+                // the mapping takes its physical address.
+                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, v2p(phys), page_flags); }
             }
         } else {
             let node = fd_to_node(fd);
@@ -359,12 +363,14 @@ pub unsafe extern "C" fn do_mmap(
                 }
                 zero_page(phys);
                 if !node.is_null() {
-                    // SAFETY: node is a valid VfsNode.
+                    // SAFETY: node is a valid VfsNode; `phys` is the kalloc'd
+                    // frame (a direct-map VA) the read fills.
                     unsafe { read_vfs(node, file_off, PAGE_SIZE, phys); }
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
-                // reserved above, and `phys` is the frame just allocated for it.
-                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, phys as u64, page_flags); }
+                // reserved above, and `phys` is the frame just allocated for it;
+                // the mapping takes its physical address.
+                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, v2p(phys), page_flags); }
                 file_off += PAGE_SIZE;
             }
         }
@@ -452,7 +458,8 @@ pub unsafe extern "C" fn do_munmap(
         // identity PTEs (present, no PAGE_USER) must not be passed to free_page.
         if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
             // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-            unsafe { free_page((pte & !0xFFF) as *mut u8) };
+            // The entry names a physical address, which `free_page` wants as a VA.
+            unsafe { free_page(p2v(pte & !0xFFF) as *mut u8) };
         }
         // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
         unsafe { *w.pte_entry = 0 };
@@ -609,7 +616,8 @@ pub unsafe extern "C" fn mmap_handle_fault(
         let file_off = unsafe { (*region).file_off } + page_offset;
         let node = fd_to_node(fd);
         if !node.is_null() {
-            // SAFETY: node is a valid VfsNode.
+            // SAFETY: node is a valid VfsNode; `phys` is the kalloc'd frame (a
+            // direct-map VA) the read fills.
             unsafe { read_vfs(node, file_off, PAGE_SIZE, phys); }
         }
     }
@@ -617,8 +625,8 @@ pub unsafe extern "C" fn mmap_handle_fault(
     // SAFETY: `region` is live and `prot` is a plain field of it.
     let page_flags = prot_to_page_flags(unsafe { (*region).prot as i32 }, true) as u32;
     // SAFETY: `pte_entry` is the in-bounds PTE pointer computed above, which
-    // receives the freshly-allocated frame.
-    unsafe { *pte_entry = (phys as u64 & !0xFFF) | page_flags as u64 };
+    // receives the freshly-allocated frame by its physical address.
+    unsafe { *pte_entry = (v2p(phys) & !0xFFF) | page_flags as u64 };
     flush_tlb(page_va as u64);
     0
 }

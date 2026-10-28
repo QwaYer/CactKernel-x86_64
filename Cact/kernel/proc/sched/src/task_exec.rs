@@ -455,8 +455,9 @@ pub unsafe extern "C" fn task_exec(
     let old_pd = unsafe { (*t).page_directory };
     // SAFETY: `t` is live.
     unsafe { (*t).page_directory = new_pd };
-    // SAFETY: switches CR3 to the freshly loaded address space.
-    unsafe { ffi::switch_paging(new_pd) };
+    // SAFETY: switches CR3 to the freshly loaded address space; CR3 takes the
+    // map's physical address and `new_pd` is a `kalloc` VA.
+    unsafe { ffi::switch_paging(cact_mm::vmm_v2p(new_pd as *const u8) as *mut u64) };
     if !old_pd.is_null() {
         // SAFETY: `old_pd` is this task's previous, now-unreferenced address space.
         unsafe { cact_mm::vmm_free_address_space(old_pd) };
@@ -485,7 +486,8 @@ pub unsafe extern "C" fn task_exec(
     // shell) owns the console and claims it with CACT_TTYCTL_SET_FG, handing it
     // to the running job's process group and taking it back afterwards.
 
-    let pd_val = new_pd as u32;
+    // CR3 takes the map's physical address: `new_pd` is a `kalloc` VA.
+    let pd_val = cact_mm::vmm_v2p(new_pd as *const u8);
     let entry_u = entry as u32;
     let sp_u = sp;
 
