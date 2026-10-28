@@ -54,7 +54,11 @@ pub const KERNEL_STACK_CANARY: u32 = 0x5A5A_5A5A;
 /// `kstack_alloc` itself has no preconditions; the returned pointer must be passed to
 /// `kstack_free` exactly once and must not be used as a stack before it is initialised.
 pub unsafe fn kstack_alloc() -> *mut u32 {
-    let p = cact_mm::kmalloc(KERNEL_STACK_SIZE as u32) as *mut u32;
+    // 16-byte aligned: the SysV ABI keeps RSP 16-aligned across a call and the
+    // compiler emits `movaps` for it, so a stack that is only 8-aligned would
+    // fault the first time a task spills SSE state.  `kfree` recognises the
+    // aligned block through the back-pointer `kmalloc_aligned` leaves.
+    let p = cact_mm::kmalloc_aligned(KERNEL_STACK_SIZE as u32, 16) as *mut u32;
     if !p.is_null() {
         // SAFETY: `p` is a live `KERNEL_STACK_SIZE` block, so its first word is in bounds.
         unsafe { *p = KERNEL_STACK_CANARY };

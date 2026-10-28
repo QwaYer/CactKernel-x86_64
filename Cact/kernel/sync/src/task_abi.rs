@@ -26,23 +26,28 @@ pub struct TaskShmAttach {
     pub shm_vaddr: u32,
 }
 
-/// Lightweight hardware/scheduler context (48 bytes), matches C `task_struct`.
-/// Process metadata (signals, fds, cwd, etc.) lives in `ProcMeta` on the heap.
+/// Lightweight hardware/scheduler context (80 bytes on x86-64), matches C
+/// `task_struct`.  Process metadata (signals, fds, cwd, etc.) lives in
+/// `ProcMeta` on the heap.
+///
+/// `esp` is the saved (64-bit) RSP and is field 0 on purpose: `switch_to` takes
+/// `&prev->esp` as its first argument and treats it as the `TaskStruct` pointer
+/// as well, and the fork frame reuses the field order (see `Cact/kernel/proc/task.asm`).
 #[repr(C)]
 pub struct TaskStruct {
-    pub esp:            u32,              //  0
-    pub page_directory: *mut u32,         //  4
-    pub fpu_context_ptr: *mut c_void,     //  8
-    pub pid:            u32,              // 12
-    pub state:          TaskState,        // 16 (u32)
-    pub is_kernel:      u8,               // 20
-    pub _pad0:          [u8; 3],          // 21
-    pub next:           *mut TaskStruct,  // 24
-    pub queue_next:     *mut TaskStruct,  // 28
-    pub priority:       u32,              // 32
-    pub time_slice:     u32,              // 36
-    pub ticks_used:     u32,              // 40
-    pub proc:           *mut ProcMeta,    // 44
+    pub esp:            u64,              //  0
+    pub page_directory: *mut u32,         //  8
+    pub fpu_context_ptr: *mut c_void,     // 16
+    pub pid:            u32,              // 24
+    pub state:          TaskState,        // 28 (u32)
+    pub is_kernel:      u8,               // 32
+    pub _pad0:          [u8; 3],          // 33
+    pub next:           *mut TaskStruct,  // 40
+    pub queue_next:     *mut TaskStruct,  // 48
+    pub priority:       u32,              // 56
+    pub time_slice:     u32,              // 60
+    pub ticks_used:     u32,              // 64
+    pub proc:           *mut ProcMeta,    // 72
 }
 
 /// Refcounted state shared by every task of one thread group (a process).

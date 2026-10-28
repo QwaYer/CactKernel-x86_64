@@ -92,7 +92,7 @@ unsafe extern "C" {
 
 
 
-    pub fn switch_to(old_esp: *mut u32, new_esp: u32);
+    pub fn switch_to(old_esp: *mut u64, new_esp: u64);
     pub fn switch_paging(pd: *mut u32);
 
     pub fn kernel_task_trampoline();

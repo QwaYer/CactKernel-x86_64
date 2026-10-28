@@ -281,7 +281,7 @@ typedef char _proc_metadata_tail_check[
          sizeof(proc_metadata_t)) ? 1 : -1];
 
 struct task_struct {
-    uint32_t esp;
+    uint64_t esp;   /* saved RSP; field 0 so &task->esp == task (see task.asm) */
     uint32_t* page_directory;
     void* fpu_context_ptr;
     uint32_t pid;
@@ -434,6 +434,6 @@ extern struct task_struct* volatile task_list_head;
 extern uint32_t next_pid;
 extern irq_spinlock_t scheduler_lock;
 
-extern void switch_to(uint32_t* old_esp, uint32_t new_esp);
+extern void switch_to(uint64_t* old_esp, uint64_t new_esp);
 
 #endif

@@ -155,24 +155,27 @@ pub unsafe extern "C" fn sched_create_thread(
     // held, so the increment is serialized.
     unsafe { proc_shared_ref(parent_shared) };
 
-    // First-entry kernel frame: exactly the user-task layout that
-    // `user_task_trampoline` expects (pop ebx/esi/edi/ebp, ret, then iretd).
+    // First-entry kernel frame: six callee-saved slots for `switch_to`, the
+    // user trampoline it returns to, then the IRETQ frame that trampoline pops
+    // (rip, cs, rflags, rsp, ss).
     let stack_top = kstack as usize + KERNEL_STACK_SIZE;
-    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte stack, so the top 10 words lie inside.
-    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 10 * 4) as *mut u32, 10) };
-    let tramp = ffi::user_task_trampoline as *const () as u32;
-    frame[9] = USER_DATA_SEL;
-    frame[8] = user_esp;
-    frame[7] = 0x0000_0202;
-    frame[6] = USER_CODE_SEL;
-    frame[5] = entry as u32;
-    frame[4] = tramp;
-    frame[3] = 0;
-    frame[2] = 0;
-    frame[1] = 0;
+    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte stack, so the top 12 words lie inside.
+    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 12 * 8) as *mut u64, 12) };
+    let tramp = ffi::user_task_trampoline as *const () as u64;
     frame[0] = 0;
+    frame[1] = 0;
+    frame[2] = 0;
+    frame[3] = 0;
+    frame[4] = 0;
+    frame[5] = 0;
+    frame[6] = tramp;
+    frame[7] = entry as u64;
+    frame[8] = USER_CODE_SEL as u64;
+    frame[9] = 0x0000_0202;
+    frame[10] = user_esp as u64;
+    frame[11] = USER_DATA_SEL as u64;
 
-    child.esp = (stack_top - 10 * 4) as u32;
+    child.esp = (stack_top - 12 * 8) as u64;
 
     // Publish the tid into the join/set words *before* the thread can be
     // scheduled (like CLONE_CHILD_SETTID): userspace then never writes them, so

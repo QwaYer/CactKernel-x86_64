@@ -221,7 +221,7 @@ void                 task_init     (void);
 void                 schedule      (void);
 void                 list_tasks    (void);
 struct task_struct*  create_task   (void (*entry_point)(void));
-extern void          switch_to     (uint32_t* old_esp, uint32_t new_esp);
+extern void          switch_to     (uint64_t* old_esp, uint64_t new_esp);
 /* Per-CPU running-task pointer (see Cact/kernel/proc/task.h). */
 struct task_struct** cact_current_task_slot(void);
 #define current_task (*cact_current_task_slot())

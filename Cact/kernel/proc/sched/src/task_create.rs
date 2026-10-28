@@ -58,18 +58,27 @@ pub unsafe extern "C" fn create_task(entry_point: *const c_void) -> *mut TaskStr
     let p_ref = unsafe { &mut *p };
 
     let stack_top = stack as usize + KERNEL_STACK_SIZE;
-    // SAFETY: `stack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 6 words lie
+    // Six callee-saved slots for `switch_to`, the trampoline it returns to, and
+    // the entry point that trampoline then returns to.  The first six words are
+    // `switch_to`'s save area, so they start out zero.  The trailing word is
+    // padding: the SysV ABI expects an entry function to see RSP % 16 == 8 (as
+    // though a call had just pushed a return address), so the entry must not
+    // start exactly on the 16-aligned stack top.
+    // SAFETY: `stack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 9 words lie
     // inside it.
-    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 6 * 4) as *mut u32, 6) };
-    let tramp = ffi::kernel_task_trampoline as *const () as u32;
-    frame[5] = entry_point as u32;
-    frame[4] = tramp;
-    frame[3] = 0;
-    frame[2] = 0;
-    frame[1] = 0;
+    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 9 * 8) as *mut u64, 9) };
+    let tramp = ffi::kernel_task_trampoline as *const () as u64;
     frame[0] = 0;
+    frame[1] = 0;
+    frame[2] = 0;
+    frame[3] = 0;
+    frame[4] = 0;
+    frame[5] = 0;
+    frame[6] = tramp;
+    frame[7] = entry_point as u64;
+    frame[8] = 0;
 
-    t_ref.esp = (stack_top - 6 * 4) as u32;
+    t_ref.esp = (stack_top - 9 * 8) as u64;
     // SAFETY: `next_pid` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let pid = unsafe { next_pid };
     t_ref.pid = pid;
@@ -156,22 +165,26 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
     let ustack_virt: u32 = KERNEL_BASE - USER_STACK_BYTES;
 
     let stack_top = kstack as usize + KERNEL_STACK_SIZE;
-    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 10 words lie
+    // Six callee-saved slots for `switch_to`, the user trampoline it returns to,
+    // and the IRETQ frame that trampoline pops: rip, cs, rflags, rsp, ss.
+    // SAFETY: `kstack` is a live `KERNEL_STACK_SIZE`-byte kernel stack, so the top 12 words lie
     // inside it.
-    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 10 * 4) as *mut u32, 10) };
-    let tramp = ffi::user_task_trampoline as *const () as u32;
-    frame[9] = USER_DATA_SEL;
-    frame[8] = ustack_virt + USER_STACK_BYTES - 4;
-    frame[7] = 0x0000_0202;
-    frame[6] = USER_CODE_SEL;
-    frame[5] = entry_point as u32;
-    frame[4] = tramp;
-    frame[3] = 0;
-    frame[2] = 0;
-    frame[1] = 0;
+    let frame = unsafe { core::slice::from_raw_parts_mut((stack_top - 12 * 8) as *mut u64, 12) };
+    let tramp = ffi::user_task_trampoline as *const () as u64;
     frame[0] = 0;
+    frame[1] = 0;
+    frame[2] = 0;
+    frame[3] = 0;
+    frame[4] = 0;
+    frame[5] = 0;
+    frame[6] = tramp;
+    frame[7] = entry_point as u64;
+    frame[8] = USER_CODE_SEL as u64;
+    frame[9] = 0x0000_0202;
+    frame[10] = (ustack_virt + USER_STACK_BYTES - 4) as u64;
+    frame[11] = USER_DATA_SEL as u64;
 
-    t_ref.esp        = (stack_top - 10 * 4) as u32;
+    t_ref.esp        = (stack_top - 12 * 8) as u64;
     p_ref.stack_base = kstack as *mut c_void;
     p_ref.ustack_phys = ustack_pages[0];
     p_ref.ustack_phys_extra = [ustack_pages[1], ustack_pages[2], ustack_pages[3]];
@@ -272,11 +285,11 @@ pub unsafe extern "C" fn create_task_with_entry(
     t_ref.page_directory = pd;
 
     // SAFETY: `t_ref.esp` points at the task's initial kernel-stack frame.
-    let stk = t_ref.esp as *mut u32;
-    // SAFETY: `stk` is that frame's base, so offset 5 (the saved EIP slot) is in bounds.
-    let eip_slot = unsafe { stk.add(5) };
-    // SAFETY: `eip_slot` is that in-bounds slot.
-    unsafe { *eip_slot = entry as u32 };
+    let stk = t_ref.esp as *mut u64;
+    // SAFETY: `stk` is that frame's base, so offset 7 (the IRETQ RIP slot) is in bounds.
+    let rip_slot = unsafe { stk.add(7) };
+    // SAFETY: `rip_slot` is that in-bounds slot.
+    unsafe { *rip_slot = entry as u64 };
 
     map_user_stack_in_pd(pd, p);
 
@@ -289,10 +302,10 @@ pub unsafe extern "C" fn create_task_with_entry(
     let ustack_top = p.ustack_virt + USER_STACK_BYTES;
     let mut sp = ustack_top - 4;
     push_empty_args(p, &mut sp);
-    // SAFETY: `stk` is the frame base, so offset 8 (the saved ESP slot) is in bounds.
-    let esp_slot = unsafe { stk.add(8) };
-    // SAFETY: `esp_slot` is that in-bounds slot.
-    unsafe { *esp_slot = sp };
+    // SAFETY: `stk` is the frame base, so offset 10 (the IRETQ RSP slot) is in bounds.
+    let rsp_slot = unsafe { stk.add(10) };
+    // SAFETY: `rsp_slot` is that in-bounds slot.
+    unsafe { *rsp_slot = sp as u64 };
 
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };
@@ -404,11 +417,11 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     unsafe { ffi::elf_load_exec_symtab(path, p as *mut ProcMeta as *mut c_void) };
 
     // SAFETY: `t_ref.esp` points at the task's initial kernel-stack frame.
-    let stk = t_ref.esp as *mut u32;
-    // SAFETY: `stk` is the frame base, so offset 5 (the saved EIP slot) is in bounds.
-    let eip_slot = unsafe { stk.add(5) };
-    // SAFETY: `eip_slot` is that in-bounds slot.
-    unsafe { *eip_slot = entry as u32 };
+    let stk = t_ref.esp as *mut u64;
+    // SAFETY: `stk` is the frame base, so offset 7 (the IRETQ RIP slot) is in bounds.
+    let rip_slot = unsafe { stk.add(7) };
+    // SAFETY: `rip_slot` is that in-bounds slot.
+    unsafe { *rip_slot = entry as u64 };
 
     map_user_stack_in_pd(pd, p);
 
@@ -471,10 +484,10 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     }
 
     push_empty_args(p, &mut sp);
-    // SAFETY: `stk` is the frame base, so offset 8 (the saved ESP slot) is in bounds.
-    let esp_slot = unsafe { stk.add(8) };
-    // SAFETY: `esp_slot` is that in-bounds slot.
-    unsafe { *esp_slot = sp };
+    // SAFETY: `stk` is the frame base, so offset 10 (the IRETQ RSP slot) is in bounds.
+    let rsp_slot = unsafe { stk.add(10) };
+    // SAFETY: `rsp_slot` is that in-bounds slot.
+    unsafe { *rsp_slot = sp as u64 };
 
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };
