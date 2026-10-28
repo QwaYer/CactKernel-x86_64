@@ -84,14 +84,10 @@ static int xhci_program_regs(xhci_priv_t *priv) {
     return 0;
 }
 
-int xhci_init_one(uint64_t phys_base, uint32_t quirks) {
-    extern uint64_t page_directory[512];
-    uint32_t map_size = 0x10000;
-    /* Map xHCI MMIO as uncacheable (PCD|PWT). */
-    for (uint32_t off = 0; off < map_size; off += 0x1000)
-        vmm_map(page_directory, phys_base + off, phys_base + off,
-                PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT);
-
+int xhci_init_one(uint64_t mmio, uint32_t quirks) {
+    /* `mmio` is a direct-map VA (the caller translated the BAR).  The direct map
+     * already covers device space uncached and is shared by every address space,
+     * so nothing needs mapping here. */
     xhci_priv_t *priv = (xhci_priv_t *)kmalloc(sizeof(xhci_priv_t));
     if (!priv) { pr_warn("%s: state allocation failed\n", "xhci"); return -1; }
     memset(priv, 0, sizeof(xhci_priv_t));
@@ -99,8 +95,8 @@ int xhci_init_one(uint64_t phys_base, uint32_t quirks) {
     spin_lock_init(&priv->ctx_lock);
     priv->quirks = quirks;
 
-    priv->cap_phys = phys_base;
-    priv->cap = (volatile uint32_t *)(uintptr_t)phys_base;
+    priv->cap_phys = vmm_v2p((const void *)(uintptr_t)mmio);
+    priv->cap = (volatile uint32_t *)(uintptr_t)mmio;
 
     uint8_t  cap_len    = (uint8_t)(xhci_cap_read32(priv, XHCI_CAP_CAPLENGTH) & 0xFF);
     uint32_t hcsparams1 = xhci_cap_read32(priv, XHCI_CAP_HCSPARAMS1);
@@ -115,17 +111,17 @@ int xhci_init_one(uint64_t phys_base, uint32_t quirks) {
     if (priv->max_ports > XHCI_MAX_PORTS) priv->max_ports = XHCI_MAX_PORTS;
 
     priv->op_off = cap_len;
-    priv->op     = (volatile uint32_t *)(uintptr_t)(phys_base + cap_len);
+    priv->op     = (volatile uint32_t *)(uintptr_t)(mmio + cap_len);
     priv->rt_off = xhci_cap_read32(priv, XHCI_CAP_RTSOFF) & ~0x1F;
-    priv->rt     = (volatile uint32_t *)(uintptr_t)(phys_base + priv->rt_off);
+    priv->rt     = (volatile uint32_t *)(uintptr_t)(mmio + priv->rt_off);
     priv->db_off = xhci_cap_read32(priv, XHCI_CAP_DBOFF) & ~0x3;
-    priv->db     = (volatile uint32_t *)(uintptr_t)(phys_base + priv->db_off);
+    priv->db     = (volatile uint32_t *)(uintptr_t)(mmio + priv->db_off);
 
     uint32_t xecp_off = ((hccparams1 >> 16) & 0xFFFF) << 2;
     if (xecp_off) {
         uint32_t cur = xecp_off;
         for (int i = 0; i < 32 && cur; i++) {
-            volatile uint32_t *ecap = (volatile uint32_t *)(uintptr_t)(phys_base + cur);
+            volatile uint32_t *ecap = (volatile uint32_t *)(uintptr_t)(mmio + cur);
             uint8_t ecap_id = (uint8_t)(ecap[0] & 0xFF);
             if (ecap_id == 1) {
                 ecap[0] |= (1u << 24);

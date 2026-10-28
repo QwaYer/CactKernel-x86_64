@@ -82,13 +82,10 @@ pub const HEAP_MAGIC: u32 = 0xDEAD_BEEF;
 ///   Kernel text/data/BSS    0x0010_0000 – (kernel_end, 24 MB cctkfs stage)
 ///   Static page-tables BSS  up to 0x00BF_FFFF
 ///   Low user VA region      `USER_HEAP_START` (0x0800_0000) … ELF image +
-///                           `brk` heap.  Those VAs must never coincide with a
-///                           handed-out frame, or a process's own heap would
-///                           shadow the kernel's identity view of that frame —
-///                           see `USER_FRAME_CEIL`.  The floor therefore stays
-///                           above the reachable brk end, not just above the
-///                           image.  (Boot modules raise the live value past
-///                           this anyway — see `pmm_reserve_boot_images`.)
+///                           `brk` heap, which overlaps the reservation and so
+///                           must not collide with a handed-out frame.
+///                           (Boot modules raise the live value past this
+///                           anyway — see `pmm_reserve_boot_images`.)
 pub const RESERVED_END: u32 = 0x2000_0000;
 
 /// Maximum number of MMAP entries copied from the MB2 boot info.
@@ -144,30 +141,7 @@ pub const MAP_FIXED: i32 = 0x10;
 pub const MAP_ANON: i32 = 0x20;
 pub const MAP_FAILED: u32 = 0xFFFFFFFF;
 pub const MMAP_BASE: u32 = 0x80000000;
-/// Highest physical address the PMM may hand out.
-///
-/// The kernel reaches a kalloc'd frame through its **identity VA**, and a
-/// process PD inherits the kernel identity map only as *shared* page tables: as
-/// soon as the process claims a PDE inside a user window (its mmap/SHM region
-/// or its stack), the identity mapping for that 4 MiB window is replaced in
-/// that PD.  A frame whose address falls in such a window is therefore
-/// unaddressable — or silently aliased onto user data — while the process is
-/// current.  So every user VA window lives at or above this ceiling
-/// (`MMAP_BASE` = 0x80000000, `SHM_VA_BASE`, `USER_STACK_LIMIT`) and the PMM
-/// installs no RAM at or above it.  On a board with usable RAM above 2 GiB
-/// (e.g. `-M pc`, whose PCI hole starts at 3.5 GiB) that RAM is simply left
-/// unmanaged.
-pub const USER_FRAME_CEIL: u32 = 0x80000000;
 pub const MMAP_LIMIT: u32 = 0xBF000000;
-
-/// True when a user mapping at `[va, va+len)` cannot shadow a kernel frame: it
-/// lies inside the low PMM reservation (the ELF image / brk heap region, which
-/// is never handed out) or at/above `USER_FRAME_CEIL` (where no RAM is
-/// installed).  Anything in between would replace the kernel's identity view of
-/// a live frame in the process PD.
-pub const fn user_va_is_safe(va: u32, len: u32) -> bool {
-    va >= USER_FRAME_CEIL || va.saturating_add(len) <= RESERVED_END
-}
 pub const MMAP_MAX_REGIONS: usize = 256;
 // The shared array size must stay in step with this crate's constant.
 const _: () = assert!(MMAP_MAX_REGIONS == cact_sync::kernel_types::MMAP_MAX_REGIONS);

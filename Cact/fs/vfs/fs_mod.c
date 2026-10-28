@@ -262,7 +262,13 @@ static int load_module_image(const char *path, uint8_t **image_out,
     Elf32_Sym *syms    = (Elf32_Sym *)(elf_data + symtab_sh->sh_offset);
     uint32_t   sym_cnt = symtab_sh->sh_size / sizeof(Elf32_Sym);
 
-    // Apply relocations (R_386_32 and R_386_PC32 only, intra-module + ksym)
+    // Apply relocations (R_386_32 and R_386_PC32 only, intra-module + ksym).
+    // These are ELF32/32-bit-ABI modules: the relocation *values* are 32-bit,
+    // but they are only ever stored — every dereference below (`patch`, the
+    // resolved entry) uses the full 64-bit VA, so none of this depends on the
+    // identity alias.  A 64-bit kernel cannot run 32-bit module code, so Phase 6
+    // rebuilds these loaders for ELF64 + SHT_RELA rather than widening the
+    // values here.
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
         Elf32_Shdr *sh = get_shdr(eh, i);
         if (!sh || sh->sh_type != SHT_REL) continue;

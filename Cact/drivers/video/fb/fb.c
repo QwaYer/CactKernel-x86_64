@@ -126,7 +126,9 @@ fb_init_result_t fb_init(multiboot_info_t* mbi) {
         return FB_INIT_BAD_PITCH;
     }
 
-    fb_buffer = (uint32_t*)(uintptr_t)addr;
+    /* The framebuffer is device MMIO: reach it through the direct map, which is
+     * shared by every address space and maps device space uncached. */
+    fb_buffer = (uint32_t*)(uintptr_t)vmm_p2v(addr);
     fb_width  = mbi->framebuffer_width;
     fb_height = mbi->framebuffer_height;
     fb_pitch  = mbi->framebuffer_pitch;

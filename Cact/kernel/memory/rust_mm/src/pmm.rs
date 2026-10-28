@@ -24,9 +24,9 @@ static FIRST_AVAILABLE_PAGE: KStatic<u32> = KStatic::new(0);
 static RAM_END: KStatic<u32> = KStatic::new(PCI_HOLE_START);
 
 /// Base VA of the kernel's fixed MMIO windows (ACPI temp map, PCIe ECAM).
-/// Placed at or above `RAM_END` so the windows can never alias managed RAM
-/// (the identity map makes VA == PA, so a window below `RAM_END` would shadow
-/// a real frame).  Computed in `init_memory_manager`.
+/// Placed at or above `PCI_HOLE_START` (the kernel half, `>= USER_STACK_TOP`)
+/// so a window VA can never collide with a user mapping.  Computed in
+/// `init_memory_manager`.
 static MMIO_WINDOW_BASE: KStatic<u32> = KStatic::new(PCI_HOLE_START);
 
 /// Physical address at which device MMIO begins (device BARs live here).
@@ -153,17 +153,18 @@ pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
     let mut clipped_beyond_ceiling = false;
     for i in 0..count {
         let mut e = src.entries[i];
-        // Clip to `USER_FRAME_CEIL` as well as to the end of the address space:
-        // RAM at or above the first user VA window is not kernel-addressable, so
-        // installing it would hand out frames the kernel cannot dereference.
-        if let Some((base, end)) = pmm_math::clip_to_limit(e.base, e.len, USER_FRAME_CEIL as u64) {
+        // Clip to the end of the 4 GiB address space.  The kernel no longer
+        // reaches frames through a low identity alias (see paging.rs), so RAM
+        // the firmware places anywhere below 4 GiB is manageable; RAM above it
+        // needs a 64-bit PMM, which is a later step.
+        if let Some((base, end)) = pmm_math::clip_to_limit(e.base, e.len, PMM_MAX_ADDR) {
             if end < e.base.saturating_add(e.len).min(PMM_MAX_ADDR) {
                 clipped_beyond_ceiling = true;
             }
             e.base = base;
             e.len = end - base;
         } else {
-            if e.ty == MB2_MMAP_TYPE_AVAILABLE && e.len > 0 && e.base >= USER_FRAME_CEIL as u64 {
+            if e.ty == MB2_MMAP_TYPE_AVAILABLE && e.len > 0 && e.base >= PMM_MAX_ADDR {
                 clipped_beyond_ceiling = true;
             }
             e.len = 0;
@@ -171,7 +172,7 @@ pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
         dst.entries[i] = e;
     }
     if clipped_beyond_ceiling {
-        kprint_str(c"[PMM] RAM above USER_FRAME_CEIL (0x80000000) is not kernel-addressable and is left unmanaged\n".as_ptr() as *const u8);
+        kprint_str(c"[PMM] RAM at or above 4 GiB is left unmanaged (64-bit PMM pending)\n".as_ptr() as *const u8);
     }
 }
 
@@ -233,13 +234,14 @@ pub extern "C" fn init_memory_manager() {
 
     // Publish the RAM/MMIO boundary and the fixed-window VA base.  Keep the
     // conservative default when the map yielded no RAM above the reservation.
-    // The ceiling is `USER_FRAME_CEIL`: nothing at or above the first user VA
-    // window is kernel-addressable (see the constant's own comment).
-    let ram_end = pmm_math::ram_end_from_candidate(ram_end_candidate, reserved_end(), USER_FRAME_CEIL as u64)
+    // The ceiling is the 4 GiB physical limit: the identity alias is gone, so
+    // the only bound on manageable RAM below it is the map itself.
+    let ram_end = pmm_math::ram_end_from_candidate(ram_end_candidate, reserved_end(), PMM_MAX_ADDR)
         .unwrap_or(PCI_HOLE_START);
-    // The ACPI/PCIe windows must sit at or above the RAM top, otherwise their
-    // remapping would shadow a managed frame under the identity map.  Align to
-    // 2 MiB so each window stays clear of the identity neighbours.
+    // The ACPI/PCIe windows live in the shared kernel half: keep their base at
+    // or above PCI_HOLE_START (= USER_STACK_TOP) so no window VA can collide
+    // with a user mapping, and 2 MiB-aligned so each window stays clear of its
+    // neighbours.
     let window_base = pmm_math::mmio_window_base(ram_end, PCI_HOLE_START);
     // SAFETY: both are written once during single-threaded boot, before paging
     // is enabled and before any ACPI/PCIe user of the window runs.

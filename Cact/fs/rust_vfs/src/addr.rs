@@ -21,8 +21,9 @@ const AS_MAX: usize = 128;
 /// and on the populate path it stopped *filling* those pages entirely.
 const AS_PAGES_INITIAL: usize = 1024;
 const PAGE: usize = 4096;
-/// Ceiling on one object's mirror bitmaps: the frames the PMM can hand out.
-const AS_PAGES_MAX: usize = (cact_mm::USER_FRAME_CEIL / PAGE as u32) as usize;
+/// Ceiling on one object's mirror bitmaps: the frames the PMM can hand out
+/// below the 4 GiB physical limit.
+const AS_PAGES_MAX: usize = (cact_mm::PMM_MAX_ADDR / PAGE as u64) as usize;
 
 /// Bytes a bitmap describing `pages` pages occupies.
 #[inline]

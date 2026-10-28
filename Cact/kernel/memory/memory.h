@@ -11,10 +11,10 @@
 #define MEM_START 0x00100000u
 
 /*
- * PCI_HOLE_START is the user/kernel VA split (3 GiB / 1 GiB) and the default
- * physical MMIO base.  The real RAM/MMIO boundary is discovered at boot from
- * the Multiboot2 map (rust_mm pmm::ram_end): a board may have usable RAM above
- * this address, up to its PCI hole (e.g. 0xE0000000 = 3.5 GiB).
+ * PCI_HOLE_START is the default physical MMIO base (a board's real RAM/MMIO
+ * boundary is discovered at boot), and the floor below which the fixed kernel
+ * MMIO windows are placed so they sit in the shared kernel half, clear of every
+ * user mapping.
  */
 #define PCI_HOLE_START  0xC0000000u
 
@@ -30,8 +30,8 @@
  * each other's physical pages, so the windows are laid out from one base.
  *
  * The base is chosen at boot by the PMM: max(RAM top, PCI_HOLE_START), 2 MiB
- * aligned.  Keeping it at or above the RAM top means the identity map (VA ==
- * PA) of the windows never shadows a managed frame.
+ * aligned — at or above PCI_HOLE_START the windows land in the shared kernel
+ * half, where no user VA can collide with them.
  */
 uint32_t cact_mmio_window_base(void);               /* rust_mm: pmm.rs */
 #define KERNEL_MMIO_WINDOW_SIZE (256u * PAGE_SIZE)  /* 1 MB */
@@ -55,18 +55,9 @@ uint32_t cact_mmio_window_base(void);               /* rust_mm: pmm.rs */
  * the heap, whatever the boot reservation turns out to be.  It clears the
  * whole kernel image including the cctkfs staging buffer in .bss
  * (INITFS_MODBLOB_MAX_IMAGE, 24 MiB) *and* the low user VA region
- * (USER_HEAP_START … the reachable brk end, i.e. the ELF image + heap), so a
- * process's own heap can never shadow the kernel's identity view of a handed
- * out frame — see USER_FRAME_CEIL in rust_mm/ffi.rs.  See that header before
- * touching it. */
+ * (USER_HEAP_START … the reachable brk end, i.e. the ELF image + heap), which
+ * overlaps the reservation. */
 #define RESERVED_END (512u * 1024u * 1024u)
-
-/* Highest physical address the PMM hands out, and the lowest user VA window
- * (MMAP_BASE).  The kernel reaches a frame through its identity VA, and a
- * process PD inherits that identity map only as shared page tables, so a user
- * mapping below this address would replace the kernel's view of a live frame.
- * Keep in step with USER_FRAME_CEIL in rust_mm/ffi.rs and MMAP_BASE in mmap.h. */
-#define USER_FRAME_CEIL 0x80000000u
 
 #define PAGE_PRESENT 0x1
 #define PAGE_RW      0x2

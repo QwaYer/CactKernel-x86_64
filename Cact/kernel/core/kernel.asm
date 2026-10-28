@@ -8,15 +8,18 @@
 ; the kernel proper is linked into the top 2 GiB and becomes reachable as soon
 ; as those tables are live.
 ;
-; When this file is done, two views of memory exist:
+; When this file is done, three views of memory exist:
 ;
 ;   0x0000000000000000 .. 0x0000000100000000   identity map, 2 MiB pages
+;   0xFFFF800000000000 .. 0xFFFF800100000000   direct map (PML4[256])
 ;   0xFFFFFFFF80000000 .. 0xFFFFFFFFC0000000   the first GiB, higher half
 ;
 ; The identity map (write-back below 1 GiB, uncached above, where MMIO lives)
-; is what the not-yet-ported, 32-bit-era memory code still needs: it stores
-; physical addresses and dereferences them.  Phase 2 of PORTING-x86_64.md
-; replaces it with a real direct map and p2v()/v2p().
+; is what the not-yet-ported, 32-bit-era memory code still needs while early
+; boot runs: it stores physical addresses and dereferences them.  The direct
+; map is the same windows seen through PML4[256], so p2v() works before the
+; real kernel map is built; init_paging() (build_kernel_map) then rebuilds
+; both and shrinks the identity map to the boot reservation alone.
 
 [bits 32]
 
@@ -150,6 +153,9 @@ _start:
     mov eax, pdpt_low
     or eax, 3
     mov [edi], eax
+    mov eax, pdpt_low               ; direct map for p2v(): the same windows,
+    or eax, 3                       ; reachable at DIRECT_MAP_BASE.  Rebuilt by
+    mov [edi + (256 * 8)], eax      ; init_paging() once the kernel map is up.
     mov eax, pdpt_high
     or eax, 3
     mov [edi + (511 * 8)], eax

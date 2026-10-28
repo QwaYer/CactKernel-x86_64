@@ -30,15 +30,16 @@ static int xhci_pci_probe(pci_device_t *pdev) {
     for (int i = 0; i < 6; i++) {
         pci_bar_t *bar = &pdev->bars[i];
         if (!bar->is_io && bar->base) {
-            /* The driver reaches MMIO through its own identity VA, so a BAR
-             * decoded above 4 GiB — where the kernel's identity map of RAM/MMIO
-             * ends — is refused rather than truncated. */
+            /* MMIO is reached through the direct map, which every address space
+             * shares and which maps device space uncached.  It currently spans
+             * the low 4 GiB, so a BAR decoded above that is refused rather than
+             * truncated. */
             if (bar->base >= 0x100000000ULL) {
                 pr_warn("%s: BAR%d above 4 GiB (0x%llx) not supported\n",
                         "xhci", i, (unsigned long long)bar->base);
                 return -1;
             }
-            mmio = bar->base;
+            mmio = (uint64_t)(uintptr_t)vmm_p2v(bar->base);
             break;
         }
     }

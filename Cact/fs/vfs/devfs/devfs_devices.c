@@ -120,17 +120,17 @@ devfs_driver_t drv_fb = {
 
 // /dev/localrepo, /dev/cctkfs — the two Multiboot2 modules GRUB hands over:
 // the compressed localrepo archive and the cctkfs image.  Both are far too big
-// to stage a second time, so they stay in place in physical memory (RAM is
-// identity-mapped) and are served read-only.  cgoct copies the archive into
-// tmpfs at boot and firmextr/cact-install stream firmware out of it; the
-// installer lays the cctkfs image onto the target straight from /dev/cctkfs,
-// which is why the image must not be bundled inside itself.
+// to stage a second time, so they stay in place in physical memory and are
+// served read-only.  The module's physical range lies inside the boot
+// reservation, whose low identity alias a process PD can shadow (the ELF image
+// is loaded in that same range), so the copy goes through the direct map, whose
+// PML4 entry every address space shares.
 static int _module_read(const mb2_module_info_t *mod, uint32_t off,
                         uint32_t size, char *buf) {
     uint32_t total = mod->mod_size;
     if (!total || off >= total) return 0;
     if (size > total - off) size = total - off;
-    memcpy(buf, (const void *)(uintptr_t)(mod->mod_start + off), size);
+    memcpy(buf, vmm_p2v((uint64_t)mod->mod_start + off), size);
     return (int)size;
 }
 

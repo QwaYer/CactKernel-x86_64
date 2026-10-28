@@ -209,7 +209,10 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
     Elf32_Sym *syms    = (Elf32_Sym *)(elf_data + symtab_sh->sh_offset);
     uint32_t   sym_cnt = symtab_sh->sh_size / sizeof(Elf32_Sym);
 
-    // Apply relocations (R_386_32 and R_386_PC32 only, intra-module)
+    // Apply relocations (R_386_32 and R_386_PC32 only, intra-module).
+    // ELF32/32-bit-ABI modules: the relocation values are 32-bit but are only
+    // stored; all dereferences use 64-bit VAs, so nothing depends on the
+    // identity alias.  Phase 6 rebuilds these loaders for ELF64 + SHT_RELA.
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
         Elf32_Shdr *sh = get_shdr(eh, i);
         if (sh->sh_type != SHT_REL) continue;

@@ -265,19 +265,18 @@ Kernel is ready. Launching init…
 
 ## 🧠 Memory map (`rust_mm`)
 
-The PMM installs every **available** frame below 4 GiB that the **Multiboot2 memory map** reports, up to a **runtime** ceiling `pmm::ram_end()` — the page-aligned top of usable RAM below the PCI hole (default `PCI_HOLE_START`, `0xC000_0000`, but e.g. `0xE000_0000` on a board whose hole is at 3.5 GiB) — and below **`USER_FRAME_CEIL` (`0x8000_0000`)**: the kernel reaches a frame through its *identity* VA, and a process page directory inherits that identity map only as shared page tables, so a user mapping inside a VA window would replace the kernel's view of a live frame. Every user VA window therefore lives at or above that ceiling, and RAM above it is left unmanaged (a 3 GiB board keeps 2 GiB). The static arrays are sized for the worst case (**`TOTAL_PAGES = 1 048 576`**, 4 GiB) and the user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM ceiling. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB cctkfs staging buffer, static page tables, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`).
+The PMM installs every **available** frame below 4 GiB that the **Multiboot2 memory map** reports, up to a **runtime** ceiling `pmm::ram_end()` — the page-aligned top of usable RAM below the PCI hole (default `PCI_HOLE_START`, `0xC000_0000`, but e.g. `0xE000_0000` on a board whose hole is at 3.5 GiB). The kernel reaches a frame — and every device register — through the **direct map** (`0xFFFF_8000_0000_0000`), and the **identity map now covers only the boot reservation**, so no user VA window can displace a live frame: the old `USER_FRAME_CEIL` (a 2 GiB physical ceiling) is gone, and a 3 GiB board manages all 3 GiB. The static arrays are sized for the worst case (**`TOTAL_PAGES = 1 048 576`**, 4 GiB) and the user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM ceiling. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB cctkfs staging buffer, static page tables, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`).
 
 | Symbol | Value | Meaning |
 |--------|-------|---------|
 | `MEM_START` | `0x00100000` | Conventional kernel load floor |
-| `PCI_HOLE_START` | `0xC0000000` | Default RAM ceiling / VA split; the effective ceiling is `min(pmm::ram_end(), USER_FRAME_CEIL)` at boot |
+| `PCI_HOLE_START` | `0xC0000000` | Default MMIO base; the effective RAM ceiling is `pmm::ram_end()` (top of usable RAM below the PCI hole) |
 | `TOTAL_PAGES` | `1024 * 1024` | Frame arrays sized for 4 GiB (worst case) |
 | `BITMAP_SIZE` | `TOTAL_PAGES / 8` | Bitmap byte count (128 KiB worst case) |
-| `USER_FRAME_CEIL` | `0x80000000` (2 GiB) | Highest physical address handed out; lowest user VA window (`MMAP_BASE`) |
 | `RESERVED_END` | `0x20000000` (512 MiB) | Low memory never given to `kalloc`/user (floor; the boot modules raise it past their own RAM) |
 | `HEAP_START` / `HEAP_SIZE` | `0x20000000` / 16 MiB | Kernel heap window (floor; the PMM raises it above the boot modules) |
 | `HEAP_MAGIC` | `0xDEADBEEF` | Heap block canary |
-| `MMIO_WINDOW_BASE` | `≥ pmm::ram_end()` | Base of driver-owned MMIO mappings (placed above usable RAM so a WC/UC window cannot shadow a live frame) |
+| `MMIO_WINDOW_BASE` | `≥ PCI_HOLE_START` | Base of the fixed kernel MMIO windows (ACPI temp map, PCIe ECAM); in the shared kernel half, clear of every user mapping |
 | `SWAP_MAX_SLOTS` | 65536 | Swap bitmap. **Swap is opt-in per boot:** `swap_init` only installs the I/O callbacks (`swap_disk_read`/`write`) and swap stays off until the partition layer finds a swap partition and calls `swap_enable_device` — with no swap device nothing reaches the block layer and `/proc/meminfo` reports no swap |
 | `SLAB_MIN/MAX` | 8 … 2048 B | Slab object sizes |
 
@@ -290,7 +289,7 @@ The PMM installs every **available** frame below 4 GiB that the **Multiboot2 mem
 0xBEFFF000  ├──────────────────────────┤  Per-process sigreturn trampoline page (sysenter stub)
 0xB0000000  ├──────────────────────────┤  SHM ceiling (`SHM_VA_LIMIT`)
 0xA0000000  ├──────────────────────────┤  SHM base (`SHM_VA_BASE`)
-0x80000000  ├──────────────────────────┤  mmap window base (`MMAP_BASE`) == `USER_FRAME_CEIL` (no PMM frame at/above this)
+0x80000000  ├──────────────────────────┤  mmap window base (`MMAP_BASE`)
             │       mmap regions ↓      │  up to 256 regions (`MMAP_LIMIT` = 0xBF000000)
 0x18000000  ├──────────────────────────┤  ld.so / `PT_INTERP` (fixed base, kernel maps it at its link vaddr)
 0x10000000  ├──────────────────────────┤  libc (`CactLibc/libc.ld`)
@@ -300,9 +299,10 @@ The PMM installs every **available** frame below 4 GiB that the **Multiboot2 mem
 ```
 
 Everything below `RESERVED_END` (0x20000000) is reserved, so the low user
-regions (PIE images, libc, ld.so, brk heap) can never share an address with a
-handed-out frame; every region at or above `USER_FRAME_CEIL` is clear of the
-PMM by construction.
+regions (PIE images, libc, ld.so, brk heap) never share an address with a
+handed-out frame. Every frame — and all device MMIO — is reached through the
+direct map, whose PML4 entry lives in the upper half, so no user region can
+shadow kernel memory.
 
 ### Page / directory bits (excerpt)
 

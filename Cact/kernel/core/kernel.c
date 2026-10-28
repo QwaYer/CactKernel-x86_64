@@ -247,14 +247,15 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     init_framebuffer();
 
     // Probe PAT support and, if available, mark the framebuffer as Write-
-    // Combining via the PAT bit in each PTE. The boot identity map sets
-    // PCD|PWT on every page above the RAM/MMIO boundary (pmm::ram_end, so MMIO
-    // registers remain strictly UC).  PAT lets us override individual FB PTEs to WC by
-    // setting the PAT bit and clearing PCD|PWT — no MTRR ranges needed.
+    // Combining via the PAT bit in each page. The direct map sets PCD|PWT on
+    // every page at or above the RAM/MMIO boundary (pmm::ram_end, so MMIO
+    // registers remain strictly UC).  PAT lets us override the framebuffer's
+    // pages to WC by setting the PAT bit and clearing PCD|PWT — no MTRR ranges
+    // needed.
     pat_init();
     if (fb_get_width() != 0) {
         int fbwc = pat_enable_wc_for_framebuffer(
-            (uint32_t)(uintptr_t)fb_get_buffer(),
+            (uint64_t)(uintptr_t)fb_get_buffer(),
             fb_get_pitch(),
             fb_get_height());
         // Back-buffer in WB RAM: kills the FB->FB read penalty in scroll() and

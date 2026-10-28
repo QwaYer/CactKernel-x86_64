@@ -267,6 +267,9 @@ static int load_module_image(const char *path, uint8_t **image_out,
     uint32_t   sym_cnt = symtab_sh->sh_size / sizeof(Elf32_Sym);
 
     // Relocations (R_386_32 / R_386_PC32), intra-module + ksym.
+    // ELF32/32-bit-ABI modules: the relocation values are 32-bit but are only
+    // stored; all dereferences use 64-bit VAs, so nothing depends on the
+    // identity alias.  Phase 6 rebuilds these loaders for ELF64 + SHT_RELA.
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
         Elf32_Shdr *sh = get_shdr(eh, i);
         if (!sh || sh->sh_type != SHT_REL) continue;

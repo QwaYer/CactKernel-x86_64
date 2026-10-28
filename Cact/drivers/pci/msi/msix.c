@@ -14,10 +14,8 @@
  * cause of a "capability not found" is known. */
 #define MSIX_DIAG_HALT      1
 
-/* MMIO (BAR/MSI-X) mappings must live in the global kernel page directory,
- * never in whatever process PD happens to be active when the deferred driver
- * probe runs — otherwise the IRQ handler faults under a user CR3. */
-extern uint64_t page_directory[512];
+/* MMIO (BAR/MSI-X) is reached through the direct map, whose PML4 entry every
+ * address space shares, so it is valid under any CR3. */
 
 /* Byte 0x34 is the head of the standard capability list.  Print the chain
  * entry by entry: "no 0x11 in the chain" is then a fact about the device
@@ -193,22 +191,18 @@ int pci_msix_table_map(pci_device_t *dev,
     if (table_end <= table_addr) return -1;
     if (table_end > bar->base + bar->size) { pr_warn("%s: table beyond BAR\n", "msi-x"); return -1; }
 
-    /* The table is reached through its identity VA (see the vmm_map below), so
-     * only a table below 4 GiB — where the kernel's identity map of RAM/MMIO
-     * lives — is reachable.  A table above the boundary would need to be mapped
-     * through the MMIO window and addressed by that VA instead. */
-    uint64_t page_base = table_addr & ~0xFFFULL;
-    uint64_t page_end  = (table_end + 0xFFF) & ~0xFFFULL;
+    /* The table is a device BAR.  It is reached through the direct map
+     * (PML4[256]), which every address space shares and which maps device space
+     * uncached, so the IRQ handler touches it under any CR3 — no per-process or
+     * kernel-only mapping is involved.  The direct map currently spans the low
+     * 4 GiB. */
+    uint64_t page_end = (table_end + 0xFFF) & ~0xFFFULL;
     if (page_end > 0x100000000ULL) {
         pr_warn("%s: table above 4 GiB not mappable\n", "msi-x");
         return -1;
     }
 
-    for (uint64_t p = page_base; p < page_end; p += 0x1000)
-        vmm_map(page_directory, p, p,
-                PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT);
-
-    *table_out     = (volatile struct msix_table_entry *)(uintptr_t)table_addr;
+    *table_out     = (volatile struct msix_table_entry *)vmm_p2v(table_addr);
     *table_size_out = table_size;
     return 0;
 }
@@ -231,12 +225,10 @@ int pci_msix_pba_map(pci_device_t *dev,
 
     uint64_t pba_addr = bar->base + pba_offset;
     if (pba_addr >= 0x100000000ULL) return -1;
-    uint64_t pba_page = pba_addr & ~0xFFFULL;
 
-    vmm_map(page_directory, pba_page, pba_page,
-            PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT);
-
-    *pba_out = (volatile uint32_t *)(uintptr_t)pba_addr;
+    /* See pci_msix_table_map: the PBA is device memory, reached through the
+     * shared direct map. */
+    *pba_out = (volatile uint32_t *)vmm_p2v(pba_addr);
     return 0;
 }
 

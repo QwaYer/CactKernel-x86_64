@@ -18,7 +18,7 @@ static inline void cpuid_raw(uint32_t leaf,
         : "a"(leaf), "c"(0));
 }
 
-static inline void cpu_invlpg(uint32_t va) {
+static inline void cpu_invlpg(uint64_t va) {
     __asm__ __volatile__("invlpg (%0)" :: "r"(va) : "memory");
 }
 
@@ -67,31 +67,30 @@ int pat_available(void) {
     return g_pat_present;
 }
 
-int pat_enable_wc_for_framebuffer(uint32_t fb_phys,
+int pat_enable_wc_for_framebuffer(uint64_t fb_va,
                                    uint32_t fb_pitch,
                                    uint32_t fb_height)
 {
-    if (!fb_phys || !fb_pitch || !fb_height)
+    if (!fb_va || !fb_pitch || !fb_height)
         return -2;
 
     if (!g_pat_present) {
         return -1;   /* pat_init already reported the reason */
     }
 
-    fb_phys &= ~0xFFFu;
+    fb_va &= ~0xFFFull;
 
-    uint32_t fb_size = fb_pitch * fb_height;
-    fb_size = (fb_size + 0xFFFu) & ~0xFFFu;
+    uint64_t fb_size = (uint64_t)fb_pitch * fb_height;
+    fb_size = (fb_size + 0xFFFu) & ~0xFFFull;
 
-    uint32_t end = fb_phys + fb_size;
+    uint64_t end = fb_va + fb_size;
 
-    /* Set WC on the framebuffer's pages through the kernel's own map.  In long
-     * mode that map is four-level and its RAM/MMIO window is mapped with 2 MiB
-     * pages, so the cache bits live in the page-directory entry rather than a
-     * PTE; vmm_set_kernel_cache() walks to whichever of the two describes the
-     * address.  The upper half of every process map shares these tables, so one
-     * pass suffices. */
-    for (uint32_t va = fb_phys; va < end; va += PAGE_SIZE) {
+    /* Set WC on the framebuffer's mapping.  The framebuffer is reached through
+     * the direct map, whose device-space pages are 2 MiB, so the cache bits live
+     * in the page-directory entry rather than a PTE; vmm_set_kernel_cache()
+     * walks to whichever of the two describes the address.  PML4[256] is shared
+     * by every process map, so one pass suffices. */
+    for (uint64_t va = fb_va; va < end; va += PAGE_SIZE) {
         /* PAT set, PCD|PWT clear → (PAT=1, PCD=0, PWT=0) selects PAT entry 4 =
          * Write-Combining (WC). */
         vmm_set_kernel_cache(va, PAGE_PAT, PAGE_PCD | PAGE_PWT);

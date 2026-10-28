@@ -51,8 +51,13 @@ int  pat_available(void);
 
 /*
  * Mark the framebuffer range as Write-Combining by setting the PAT bit
- * and clearing PCD|PWT on every PTE in [fb_phys, fb_phys + pitch*height).
- * That selects PAT entry 4, which pat_init() programs to WC.
+ * and clearing PCD|PWT on every page in
+ * [fb_va, fb_va + pitch*height).  That selects PAT entry 4, which
+ * pat_init() programs to WC.
+ *
+ * `fb_va` is the framebuffer's *virtual* address (the direct-map VA
+ * fb_get_buffer() returns), not its physical address: the mapping the kernel
+ * itself uses is the one whose cache policy matters.
  *
  * Also used after a resume to re-apply the bits and flush the stale
  * translations, so the framebuffer is not left write-back.
@@ -61,7 +66,7 @@ int  pat_available(void);
  *   -1  PAT not supported
  *   -2  invalid arguments
  */
-int  pat_enable_wc_for_framebuffer(uint32_t fb_phys,
+int  pat_enable_wc_for_framebuffer(uint64_t fb_va,
                                     uint32_t fb_pitch,
                                     uint32_t fb_height);
 

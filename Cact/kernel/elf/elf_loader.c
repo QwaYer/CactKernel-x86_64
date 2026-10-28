@@ -20,20 +20,17 @@ typedef struct {
 /* A PT_LOAD must stay strictly below the kernel half: a segment at or above
  * USER_STACK_TOP would reach vmm_map()'s kernel-MMIO branch and be written
  * into the shared kernel page table, visible to every process.  Low addresses
- * are allowed as before -- vmm_map() COWs the shared identity table into a
- * private one for the process -- so the only extra refusals are the NULL page
- * and a segment wrapped past 4 GiB.
+ * are allowed -- vmm_map() COWs the shared low table into a private one for the
+ * process -- so the only extra refusals are the NULL page and a segment wrapped
+ * past 4 GiB.
  *
- * The segment must also sit in a VA range that cannot shadow a kernel frame:
- * either inside the low PMM reservation (the ELF image and brk heap) or at or
- * above USER_FRAME_CEIL, where no RAM is installed.  Between the two, the
- * kernel's identity view of a live frame would be replaced by the segment's
- * own private table -- see USER_FRAME_CEIL in rust_mm/ffi.rs. */
+ * No VA can shadow a kernel frame any more: the identity map is confined to the
+ * boot reservation and every frame (and all device MMIO) is reached through the
+ * direct map, whose PML4 entry lives in the upper half. */
 static int _elf_seg_ok(uint32_t seg_start, uint32_t seg_end) {
     if (seg_end < seg_start)      return 0; /* wrapped past 4 GiB */
     if (seg_end > USER_STACK_TOP) return 0; /* kernel half */
     if (seg_start < PAGE_SIZE)    return 0; /* would map the NULL page */
-    if (seg_start < USER_FRAME_CEIL && seg_end > RESERVED_END) return 0;
     return 1;
 }
 

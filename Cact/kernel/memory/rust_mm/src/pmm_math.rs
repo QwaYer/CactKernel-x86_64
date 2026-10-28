@@ -79,8 +79,9 @@ pub fn ram_end_from_candidate(candidate: u64, reserved_end: u32, limit: u64) -> 
 }
 
 /// Base VA of the fixed kernel MMIO windows (ACPI temp map, PCIe ECAM): the
-/// greater of the RAM top and the PCI hole, rounded up to 2 MiB so a window
-/// never aliases a managed RAM frame under the identity map.
+/// greater of the RAM top and the PCI hole, rounded up to 2 MiB.  Keeping it at
+/// or above `PCI_HOLE_START` (= `USER_STACK_TOP`) puts the windows in the shared
+/// kernel half, clear of every user mapping.
 pub const fn mmio_window_base(ram_end: u32, hole_start: u32) -> u32 {
     const ALIGN: u32 = 2 * 1024 * 1024;
     let base = if ram_end > hole_start { ram_end } else { hole_start };

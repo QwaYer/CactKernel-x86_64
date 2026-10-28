@@ -60,7 +60,7 @@ Ordered by how hard each gap blocks a port:
   individually allocated frames whose pointer array grows from the heap, so
   objects are bounded by free RAM rather than the old 4 MiB ceiling (the retired
   fixed `MEMFD_MAX_PAGES = 1024`; the live bound is `MEMFD_PAGES_MAX =
-  USER_FRAME_CEIL / PAGE_SIZE` in `rust_mm/src/process/memfd.rs`). The per-page
+  PMM_MAX_ADDR / PAGE_SIZE` in `rust_mm/src/process/memfd.rs`). The per-page
   physical walk a GTT needs **is** exported (`drm_gem_page_phys()` /
   `drm_gem_page_count()` in `ksym.c`); what is still missing is **contiguous**
   backing (next item).

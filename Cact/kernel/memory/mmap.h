@@ -17,15 +17,12 @@
 
 #define MAP_FAILED      ((void*)-1)
 
-/* mmap window.  It must stay ABOVE the highest physical address the PMM hands
- * out (`USER_FRAME_CEIL` in rust_mm/ffi.rs, == MMAP_BASE here): a user mapping
- * below that ceiling would shadow the kernel's low *identity* view of a live
- * frame in the process PD, and the kernel would fault on (or silently corrupt)
- * its own memory.  The kernel now addresses its frames through the direct map
- * (phase 5.4b), but the identity map — and with it this ceiling and the PMM
- * clip — is only removed in a later step.  The window starts at 0x80000000 and
- * runs to MMAP_LIMIT; the SHM window and the user stack live in the upper part
- * of that range. */
+/* mmap window.  The identity map is now confined to the boot reservation and
+ * every frame is reached through the direct map (phase 5.4c), so a user mapping
+ * anywhere in the user half is safe — these bounds are a layout choice, not a
+ * shadowing constraint.  The window starts at 0x80000000 and runs to
+ * MMAP_LIMIT; the SHM window and the user stack live in the upper part of that
+ * range. */
 #define MMAP_BASE       0x80000000u
 #define MMAP_LIMIT      0xBF000000u
 

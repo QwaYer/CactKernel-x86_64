@@ -53,8 +53,10 @@ static mut PDPT_LOW: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 /// PML4[511]: the kernel's own image, at `0xFFFFFFFF80000000`.
 static mut PDPT_HIGH: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
-/// The identity map's page directories: window `w` maps physical
-/// `w GiB … (w+1) GiB`, 2 MiB per entry.
+/// The identity map's page directories: window `w` would map physical
+/// `w GiB … (w+1) GiB`, 2 MiB per entry.  Only the boot reservation (below
+/// `pmm::reserved_end()`) is actually installed; the kernel reaches everything
+/// else through the direct map, so no user VA window can displace a frame.
 static mut PD_LOW: Aligned4K<[Table; 4]> = Aligned4K([[0u64; TABLE_ENTRIES]; 4]);
 
 /// PML4[256]: the direct map of physical memory at `DIRECT_MAP_BASE`.
@@ -356,13 +358,22 @@ unsafe fn split_large_page(pd_entry: *mut u64, private: bool) -> *mut u64 {
     pt
 }
 
-/// Build the kernel's page tables: the identity map of the whole 32-bit address
-/// space (2 MiB pages, uncached at and above the RAM/MMIO boundary) and the
-/// kernel's own window at `0xFFFFFFFF80000000`.
+/// Build the kernel's page tables: the identity map of the *boot reservation*
+/// (the RAM the kernel image and the bootloader's modules occupy), the direct
+/// map of all physical memory, and the kernel's own window at
+/// `0xFFFFFFFF80000000`.
+///
+/// The identity map is deliberately limited to `[0, pmm::reserved_end())`.
+/// Above it — managed RAM and device MMIO alike — the kernel reaches memory
+/// only through the direct map, whose PML4 entry is shared by every address
+/// space and lives in the upper half.  That is what lets a user VA window sit
+/// anywhere without displacing the kernel's view of a live frame, which was the
+/// sole reason `USER_FRAME_CEIL` existed.
 fn build_kernel_map() {
     let ram_end = crate::pmm::ram_end() as u64;
+    let reserved_end = crate::pmm::reserved_end() as u64;
 
-    // Identity map: four 1 GiB windows of 2 MiB pages.
+    // Identity map: 2 MiB pages, only below the boot reservation.
     // SAFETY: `addr_of_mut!` projects the address of the static table without
     // forming a reference; this runs once, single-threaded, before scheduling.
     let pd_low = unsafe { core::ptr::addr_of_mut!(PD_LOW.0) };
@@ -373,11 +384,13 @@ fn build_kernel_map() {
     for (window, table) in windows.iter_mut().enumerate() {
         for (slot, slot_value) in table.iter_mut().enumerate() {
             let phys = (window * TABLE_ENTRIES + slot) as u64 * LARGE_PAGE_SIZE as u64;
-            // Everything at or above the RAM/MMIO boundary is device space: it
-            // must not be cached, or a register read would be served from cache.
-            let cache = if phys >= ram_end { PAGE_PCD | PAGE_PWT } else { 0 };
-            *slot_value = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_PS as u64
-                | cache as u64;
+            // Only the boot reservation keeps an identity alias; it is ordinary
+            // write-back RAM.  Every slot above it stays absent.
+            *slot_value = if phys < reserved_end {
+                phys | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_PS as u64
+            } else {
+                0
+            };
         }
     }
 
@@ -398,10 +411,10 @@ fn build_kernel_map() {
         unsafe { *entry(pdpt_low, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
     }
 
-    // Direct map: the same physical windows are also reachable at
-    // `DIRECT_MAP_BASE`, so the kernel can address a frame without aliasing it
-    // into the low (user) half — the alias `USER_FRAME_CEIL` used to guard
-    // against.  The cache policy matches the identity map's.
+    // Direct map: the whole 4 GiB of physical memory at `DIRECT_MAP_BASE`, so
+    // the kernel can address a frame — or a device register — without an alias
+    // in the low (user) half.  Device space, at or above the RAM/MMIO boundary,
+    // must not be cached, or a register read would be served from cache.
     // SAFETY: `addr_of_mut!` projects the address of the static table without
     // forming a reference.
     let pd_direct = unsafe { core::ptr::addr_of_mut!(PD_DIRECT.0) };
@@ -428,10 +441,11 @@ fn build_kernel_map() {
     }
 
     // 0xFFFFFFFF80000000 is PML4[511], PDPT[510] — the entry that puts physical
-    // zero at the address the kernel is linked at.  The first GiB of physical
-    // memory is RAM, so the window reuses the identity map's own page directory:
-    // the same write-back policy applies to both views.  PML4[256] carries the
-    // direct map (0xFFFF800000000000).
+    // zero at the address the kernel is linked at.  The image and its static
+    // tables live in the first few MiB, well inside the boot reservation, so the
+    // window reuses the identity map's page directory (and inherits its hole
+    // above the reservation, which the image never reaches).  PML4[256] carries
+    // the direct map (0xFFFF800000000000).
     // SAFETY: the PDA entries are in bounds and initialised above.
     unsafe {
         *entry(pdpt_high, 510) = entry_val(pdpt_low, 0);

@@ -221,15 +221,13 @@ pub unsafe extern "C" fn do_mmap(
         if !hint.is_multiple_of(PAGE_SIZE) {
             return MAP_FAILED as *mut u8;
         }
-        // A fixed mapping must stay in the user half.  The upper bound alone
-        // let a caller pin a mapping at 0x1000 (inside the low identity-mapped
-        // kernel area); require the same floor the ELF loader enforces — and
-        // refuse the range between the low PMM reservation and USER_FRAME_CEIL,
-        // where a user mapping would shadow the kernel's view of a live frame.
+        // A fixed mapping must stay in the user half.  With the identity map
+        // confined to the boot reservation and every frame reached through the
+        // direct map, no user VA can shadow a kernel frame any more, so the
+        // whole user range is fair game.
         if hint < USER_SPACE_START
             || hint >= USER_STACK_TOP
             || hint.saturating_add(length) > USER_STACK_TOP
-            || !user_va_is_safe(hint, length)
         {
             return MAP_FAILED as *mut u8;
         }
