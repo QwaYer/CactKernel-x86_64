@@ -523,30 +523,66 @@ pub unsafe extern "C" fn init_scheduler() -> i32 {
     0
 }
 
+/// Highest mapped *user* VA below the mmap window, one page past it (the brk
+/// start).  Returns 0 when nothing user-visible is mapped.
+///
+/// A four-level walk: a page-table entry names a frame, and the kernel reaches
+/// frames through the direct map, so every table is entered via `vmm_p2v`.  The
+/// bound excludes the kernel's own entries — the image (`PML4[511]`), the direct
+/// map (`PML4[256]`) and the MMIO windows — which all sit at or above
+/// `0xBF00_0000`, and only `PAGE_USER` mappings are counted.
 pub(crate) fn calc_highest_mapped_va(pd: *mut u64) -> u32 {
+    const PAGE_PS: u64 = 1 << 7;
+    const ENTRY_MASK: u64 = !0xFFF;
+    const LIMIT: u64 = 0xBF00_0000;   /* MMAP_LIMIT */
     if pd.is_null() {
         return 0;
     }
-    for pdi in (0..512).rev() {
-        // SAFETY: `pd` is a live page directory and `pdi < 512`, so this PDE offset is in
-        // bounds.
-        let pde_ptr = unsafe { pd.add(pdi) };
-        // SAFETY: `pde_ptr` is a live PDE slot.
-        let pde = unsafe { *pde_ptr };
-        if pde & PAGE_PRESENT as u64 == 0 {
+    for pml4i in (0..512).rev() {
+        if ((pml4i as u64) << 39) >= LIMIT {
             continue;
         }
-        let pt = (pde & !0xFFF) as *mut u64;
-        for pti in (0..512).rev() {
-            // SAFETY: `pt` is a live page table and `pti < 512`, so this PTE offset is in
-            // bounds.
-            let pte_ptr = unsafe { pt.add(pti) };
-            // SAFETY: `pte_ptr` is a live PTE slot.
-            let pte = unsafe { *pte_ptr };
-            if pte & PAGE_PRESENT as u64 != 0 {
-                let va = ((pdi << 22) | (pti << 12)) as u32;
-                if va < 0xBF00_0000 {
-                    return va + PAGE_SIZE;
+        // SAFETY: `pd` is a live PML4 and `pml4i < 512`.
+        let e0 = unsafe { *pd.add(pml4i) };
+        if e0 & PAGE_PRESENT as u64 == 0 {
+            continue;
+        }
+        let pdpt = cact_mm::vmm_p2v(e0 & ENTRY_MASK) as *const u64;
+        for pdpti in (0..512).rev() {
+            if ((pml4i as u64) << 39) | ((pdpti as u64) << 30) >= LIMIT {
+                continue;
+            }
+            // SAFETY: `pdpt` is a live PDPT reached through the direct map.
+            let e1 = unsafe { *pdpt.add(pdpti) };
+            if e1 & PAGE_PRESENT as u64 == 0 {
+                continue;
+            }
+            let pdt = cact_mm::vmm_p2v(e1 & ENTRY_MASK) as *const u64;
+            for pdi in (0..512).rev() {
+                // SAFETY: `pdt` is a live page directory reached through the direct map.
+                let e2 = unsafe { *pdt.add(pdi) };
+                if e2 & PAGE_PRESENT as u64 == 0 || e2 & PAGE_USER as u64 == 0 {
+                    continue;
+                }
+                let base =
+                    ((pml4i as u64) << 39) | ((pdpti as u64) << 30) | ((pdi as u64) << 21);
+                if e2 & PAGE_PS != 0 {
+                    if base < LIMIT {
+                        return (base + 0x20_0000) as u32;   /* 2 MiB page */
+                    }
+                    continue;
+                }
+                let pt = cact_mm::vmm_p2v(e2 & ENTRY_MASK) as *const u64;
+                for pti in (0..512).rev() {
+                    // SAFETY: `pt` is a live page table reached through the direct map.
+                    let e3 = unsafe { *pt.add(pti) };
+                    if e3 & PAGE_PRESENT as u64 == 0 || e3 & PAGE_USER as u64 == 0 {
+                        continue;
+                    }
+                    let va = base | ((pti as u64) << 12);
+                    if va < LIMIT {
+                        return (va + PAGE_SIZE as u64) as u32;
+                    }
                 }
             }
         }

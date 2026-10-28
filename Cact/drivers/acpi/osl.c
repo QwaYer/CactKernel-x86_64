@@ -153,8 +153,11 @@ ACPI_STATUS AcpiOsTerminate(void)
 
 ACPI_PHYSICAL_ADDRESS AcpiOsGetRootPointer(void)
 {
+    // The BIOS data-area word at 0x40E holds the EBDA segment.  The low
+    // identity alias is gone, so read it through the direct map instead; the
+    // frame is ordinary firmware RAM and always present there.
     UINT32 ebda_addr = 0;
-    UINT16 *ebda_ptr = (UINT16*)(UINT32)0x40E;
+    UINT16 *ebda_ptr = (UINT16*)vmm_p2v(EBDA_SEGMENT + EBDA_OFFSET);
     ebda_addr = *ebda_ptr;
     ebda_addr = (ebda_addr << 4) & 0xFFFFF;
 

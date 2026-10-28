@@ -47,17 +47,31 @@ type Table = [u64; TABLE_ENTRIES];
 #[no_mangle]
 static mut page_directory: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
-/// PML4[0]: the four 1 GiB windows of the 32-bit address space.
+/// PML4[0]: the kernel's low half.  With the identity alias gone, exactly one
+/// page is installed here — the AP trampoline (see [`PT_TRAMP`]) in window 0.
+/// The kernel's fixed MMIO windows are added later at `PDPT_LOW[3]` (VAs
+/// `0xC000_0000` and up) by `vmm_map`, and every process inherits these entries.
 static mut PDPT_LOW: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
-/// PML4[511]: the kernel's own image, at `0xFFFFFFFF80000000`.
+/// PML4[511]: the kernel's own image (physical `[0, reserved_end)`) at
+/// `0xFFFFFFFF80000000`.  This is how the kernel reaches its code, data and
+/// static tables — a distinct VA range, not an identity alias.
 static mut PDPT_HIGH: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
-/// The identity map's page directories: window `w` would map physical
-/// `w GiB … (w+1) GiB`, 2 MiB per entry.  Only the boot reservation (below
-/// `pmm::reserved_end()`) is actually installed; the kernel reaches everything
-/// else through the direct map, so no user VA window can displace a frame.
-static mut PD_LOW: Aligned4K<[Table; 4]> = Aligned4K([[0u64; TABLE_ENTRIES]; 4]);
+/// The kernel-image window's page directory: physical `[0, 1 GiB)`, 2 MiB per
+/// entry (only the boot reservation is present).
+static mut PD_HIGH: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
+
+/// The low window's page directory.  Only entry 0 is populated, pointing at
+/// [`PT_TRAMP`]; the rest of the low half is reached through the direct map.
+static mut PD_LOW: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
+
+/// The single remaining identity-mapped page: the AP trampoline at `TRAMP_ADDR`.
+/// A woken core starts fetching at that physical address with the kernel's CR3
+/// and reads its stack and info block from the same page before jumping to the
+/// higher half, so the page cannot be reached through the direct map.
+/// Supervisor-only, so no user mapping can touch it.
+static mut PT_TRAMP: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
 /// PML4[256]: the direct map of physical memory at `DIRECT_MAP_BASE`.
 static mut PDPT_DIRECT: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
@@ -373,43 +387,67 @@ fn build_kernel_map() {
     let ram_end = crate::pmm::ram_end();
     let reserved_end = crate::pmm::reserved_end() as u64;
 
-    // Identity map: 2 MiB pages, only below the boot reservation.
-    // SAFETY: `addr_of_mut!` projects the address of the static table without
-    // forming a reference; this runs once, single-threaded, before scheduling.
-    let pd_low = unsafe { core::ptr::addr_of_mut!(PD_LOW.0) };
-    // SAFETY: `pd_low` addresses the live table array; the exclusive borrow is
-    // valid for the rest of this function.  (The borrow is expressed as a raw
-    // pointer so the tables can also be addressed through `entry`.)
-    let windows = unsafe { &mut *pd_low };
-    for (window, table) in windows.iter_mut().enumerate() {
-        for (slot, slot_value) in table.iter_mut().enumerate() {
-            let phys = (window * TABLE_ENTRIES + slot) as u64 * LARGE_PAGE_SIZE as u64;
-            // Only the boot reservation keeps an identity alias; it is ordinary
-            // write-back RAM.  Every slot above it stays absent.
-            *slot_value = if phys < reserved_end {
+    // SAFETY: `addr_of_mut!` projects the address of the static without forming
+    // a reference; the cast to `*mut u64` gives a one-entry stride.
+    let pdpt_low = unsafe { core::ptr::addr_of_mut!(PDPT_LOW.0).cast::<u64>() };
+    // SAFETY: as above.
+    let pdpt_high = unsafe { core::ptr::addr_of_mut!(PDPT_HIGH.0).cast::<u64>() };
+    // SAFETY: as above.
+    let pml4 = unsafe { core::ptr::addr_of_mut!(page_directory.0).cast::<u64>() };
+
+    // Kernel-image window: physical `[0, reserved_end)` at `KERNEL_VMA`, 2 MiB
+    // write-back pages.  This is how the kernel reaches its own code, data and
+    // static tables; the image sits in the first few MiB of the reservation.
+    // SAFETY: `addr_of_mut!` projects the address of the static without forming
+    // a reference; the cast gives a one-entry stride.
+    let pd_high = unsafe { core::ptr::addr_of_mut!(PD_HIGH.0).cast::<u64>() };
+    for slot in 0..TABLE_ENTRIES {
+        let phys = slot as u64 * LARGE_PAGE_SIZE as u64;
+        // SAFETY: `slot < 512`, so this write is inside the static table.
+        unsafe {
+            *pd_high.add(slot) = if phys < reserved_end {
                 phys | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_PS as u64
             } else {
                 0
-            };
-        }
+            }
+        };
     }
+    // SAFETY: `510 < 512`, so this PDPT entry is in bounds; the table is
+    // recorded by its physical address.
+    unsafe { *entry(pdpt_high, 510) = v2p(pd_high) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
 
+    // Identity map: exactly one page — the AP trampoline at `TRAMP_ADDR`.  It is
+    // the only thing that must be reachable at its physical address: a woken core
+    // lands there with the kernel's CR3 and runs from it until it jumps to the
+    // higher half.  Everything else in the low half goes through the direct map.
+    // `TRAMP_ADDR` is inside the boot reservation and below 2 MiB, so it fits
+    // window 0's first page directory entry; the page is supervisor-only.
+    const TRAMP_ADDR: u64 = 0x8000;   // must match `smp.rs`
     // SAFETY: `addr_of_mut!` projects the address of the static without forming
-    // a reference.
-    let pdpt_low = unsafe { core::ptr::addr_of_mut!(PDPT_LOW.0).cast::<u64>() };
-    let pdpt_high = unsafe { core::ptr::addr_of_mut!(PDPT_HIGH.0).cast::<u64>() };
-    let pml4 = unsafe { core::ptr::addr_of_mut!(page_directory.0).cast::<u64>() };
-
-    // The four window tables sit one after another in `PD_LOW`; the entries hold
-    // *physical* addresses and the tables live in the kernel image, which is in
-    // the higher half — hence v2p().
-    let windows_base = v2p(windows.as_ptr());
-    for i in 0..windows.len() {
-        // SAFETY: window `i`'s table is at the array base plus its stride.
-        let phys = windows_base + (i * TABLE_ENTRIES * 8) as u64;
-        // SAFETY: `i < 4`, so this PDPT entry is in bounds.
-        unsafe { *entry(pdpt_low, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
+    // a reference; the cast gives a one-entry stride.
+    let pt_tramp = unsafe { core::ptr::addr_of_mut!(PT_TRAMP.0).cast::<u64>() };
+    for slot in 0..TABLE_ENTRIES {
+        // SAFETY: `slot < 512`, so this write is inside the static table.
+        unsafe { *pt_tramp.add(slot) = 0 };
     }
+    // SAFETY: `(TRAMP_ADDR >> 12) < 512`, so this PTE is in bounds.
+    unsafe {
+        *pt_tramp.add((TRAMP_ADDR >> 12) as usize) =
+            TRAMP_ADDR | PAGE_PRESENT as u64 | PAGE_RW as u64
+    };
+    // SAFETY: `addr_of_mut!` projects the address of the static without forming
+    // a reference (the same one-entry stride as above).
+    let pd_low = unsafe { core::ptr::addr_of_mut!(PD_LOW.0).cast::<u64>() };
+    for slot in 0..TABLE_ENTRIES {
+        // SAFETY: `slot < 512`, so this write is inside the static table.
+        unsafe { *pd_low.add(slot) = 0 };
+    }
+    // A 4 KiB page-directory entry for `[0, 2 MiB)`, so window 0 slot 0's single
+    // mapped page lives in `PT_TRAMP` (all other slots stay absent).
+    // SAFETY: `0 < 512`, so this PDE is in bounds.
+    unsafe { *pd_low = v2p(pt_tramp) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
+    // SAFETY: `0 < 512`, so this PDPT entry is in bounds.
+    unsafe { *entry(pdpt_low, 0) = v2p(pd_low) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
 
     // Direct map: every managed physical address at `DIRECT_MAP_BASE`, so the
     // kernel can address a frame — or a device register — without an alias in
@@ -458,15 +496,12 @@ fn build_kernel_map() {
         unsafe { *entry(pdpt_direct, w as u32) = v2p(table) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
     }
 
-    // 0xFFFFFFFF80000000 is PML4[511], PDPT[510] — the entry that puts physical
-    // zero at the address the kernel is linked at.  The image and its static
-    // tables live in the first few MiB, well inside the boot reservation, so the
-    // window reuses the identity map's page directory (and inherits its hole
-    // above the reservation, which the image never reaches).  PML4[256] carries
-    // the direct map (0xFFFF800000000000).
-    // SAFETY: the PDA entries are in bounds and initialised above.
+    // 0xFFFFFFFF80000000 is PML4[511] (the image); PML4[256] carries the direct
+    // map (0xFFFF800000000000); PML4[0] keeps the low half — the trampoline page
+    // plus the kernel MMIO windows installed later by `vmm_map`.
+    // SAFETY: the PML4 entries are in bounds and their tables are initialised
+    // above.
     unsafe {
-        *entry(pdpt_high, 510) = entry_val(pdpt_low, 0);
         *entry(pml4, 0) = v2p(pdpt_low) | PAGE_PRESENT as u64 | PAGE_RW as u64;
         *entry(pml4, 256) = v2p(pdpt_direct) | PAGE_PRESENT as u64 | PAGE_RW as u64;
         *entry(pml4, 511) = v2p(pdpt_high) | PAGE_PRESENT as u64 | PAGE_RW as u64;
