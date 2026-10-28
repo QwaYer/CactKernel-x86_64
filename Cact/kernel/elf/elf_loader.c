@@ -305,7 +305,7 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
         }
     }
 
-    return (void*)hdr.e_entry;
+    return (void*)(uintptr_t)hdr.e_entry;
 }
 
 int elf_get_interp_path(const char* path, char* out, int out_max)
@@ -380,7 +380,7 @@ void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
     }
     info->interp_base = i_min;
 
-    return (void*)i_entry;
+    return (void*)(uintptr_t)i_entry;
 }
 
 uint32_t elf_get_brk_start(struct vfs_node* file) {

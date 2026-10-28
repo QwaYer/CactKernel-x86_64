@@ -262,7 +262,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
                     kfree(elf_data);
                     return -7;
                 }
-                S = (uint32_t)(image + sym_sh->sh_addr + sym->st_value);
+                S = (uint32_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
             }
             if (rels[r].r_offset + sizeof(uint32_t) > target_sh->sh_size) {
                 pr_err("pciloader: relocation offset 0x%x >= section size 0x%x: %s\n",
@@ -275,7 +275,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
                                 + target_sh->sh_addr
                                 + rels[r].r_offset);
             if      (type == R_386_32)   *patch += S;
-            else if (type == R_386_PC32) *patch += S - (uint32_t)patch;
+            else if (type == R_386_PC32) *patch += S - (uint32_t)(uintptr_t)patch;
         }
     }
 

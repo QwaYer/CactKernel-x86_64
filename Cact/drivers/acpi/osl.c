@@ -82,27 +82,24 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
     }
 
     if (m) {
-        m->virt  = (void*)(UINT32)virt;
+        m->virt  = (void*)(uintptr_t)virt;
         m->phys  = phys_page;
         m->pages = pages;
         m->refs  = 1;
     }
     spin_unlock(&acpi_mappings_lock);
-    return (void*)(UINT32)(virt + offset);
+    return (void*)(uintptr_t)(virt + offset);
 }
 
 void acpi_temp_unmap(void *virt, UINT32 size)
 {
     UINT32 va      = (UINT32)(uint32_t)(uintptr_t)virt & ~0xFFF;
-    /* The teardown walk below still uses the legacy two-level layout
-     * (10-bit PD/PT indices); view the PML4 as the 32-bit table it indexes. */
-    UINT32 *pd     = (UINT32 *)(uintptr_t)get_current_pd();
 
     spin_lock(&acpi_mappings_lock);
 
     struct acpi_mapping *m = NULL;
     for (int i = 0; i < ACPI_OSL_MAX_MAPPINGS; i++) {
-        if ((UINT32)(UINT32)acpi_mappings[i].virt == va && acpi_mappings[i].refs) {
+        if ((UINT32)(uintptr_t)acpi_mappings[i].virt == va && acpi_mappings[i].refs) {
             m = &acpi_mappings[i];
             break;
         }
@@ -114,12 +111,10 @@ void acpi_temp_unmap(void *virt, UINT32 size)
             /* Last reference: tear the mapping down, but keep phys so the VA
              * is reused for the same physical page (stable header). */
             for (UINT32 i = 0; i < m->pages; i++) {
-                UINT32 pde_idx = ((va + i * 4096) >> 22) & 0x3FF;
-                UINT32 pte_idx = ((va + i * 4096) >> 12) & 0x3FF;
-                UINT32 *pt = (UINT32*)(UINT32)(pd[pde_idx] & ~0xFFF);
-                if (pt) pt[pte_idx] = 0;
+                /* Clear through the memory layer's four-level walk instead of
+                 * indexing the tables with a two-level layout. */
+                vmm_unmap(get_current_pd(), (uint64_t)va + (uint64_t)i * 4096);
             }
-            asm volatile("invlpg (%0)" :: "r"(va) : "memory");
             m->pages = 0;
             m->refs  = 0;
         }

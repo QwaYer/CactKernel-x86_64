@@ -9,8 +9,6 @@ use crate::pmm::{kalloc, free_page};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
 
 pub type SwapSlot = u32;
-/// Entries in one page table at any level — the tables are 512 × 8-byte entries.
-const TABLE_ENTRIES: u32 = 512;
 pub type SwapReadFn = Option<unsafe extern "C" fn(u32, *mut u8, u32) -> i32>;
 pub type SwapWriteFn = Option<unsafe extern "C" fn(u32, *const u8, u32) -> i32>;
 
@@ -27,8 +25,10 @@ static G_STATS: KStatic<SwapStats> = KStatic::new(SwapStats {
     swap_failures: 0,
 });
 static G_SWAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
-static G_CLOCK_PDI: KStatic<u32> = KStatic::new(32);
-static G_CLOCK_PTJ: KStatic<u32> = KStatic::new(0);
+/// Clock hand for the eviction scan: the user virtual address the next scan
+/// starts from (page-aligned, inside the user window).  Only advanced by
+/// `swap_evict_page`; a torn read across CPUs merely restarts the scan earlier.
+static G_CLOCK_VA: KStatic<u32> = KStatic::new(USER_SPACE_START);
 
 fn bitmap_alloc() -> SwapSlot {
     // SAFETY: `G_TOTAL_SLOTS` is written once by `swap_init` at boot; `bitmap_alloc`
@@ -164,9 +164,7 @@ pub extern "C" fn swap_enable(slots: u32) -> i32 {
     // so no swapper can see capacity with a stale slot count.
     *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } = total;
     // SAFETY: restart the eviction clock hand on a new backing store.
-    *unsafe { KStatic::get_mut(G_CLOCK_PDI.as_ptr()) } = 32;
-    // SAFETY: restart the eviction clock hand on a new backing store.
-    *unsafe { KStatic::get_mut(G_CLOCK_PTJ.as_ptr()) } = 0;
+    *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) } = USER_SPACE_START;
     // SAFETY: enabling, last, so no concurrent reader sees `G_ENABLED` set
     // before the tables above are ready.
     *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 1;
@@ -311,115 +309,73 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     let mut iterations: u32 = 0;
     let max_iter: u32 = 2 * 1024 * 992;
 
-    // SAFETY: `G_CLOCK_PDI` is the clock-hand page-directory index, only advanced by
+    // SAFETY: `G_CLOCK_VA` is the clock hand's virtual address, only advanced by
     // `swap_evict_page`; a torn read across CPUs merely restarts the scan earlier.
-    let mut pdi = *unsafe { KStatic::get_mut(G_CLOCK_PDI.as_ptr()) };
-    // SAFETY: `G_CLOCK_PTJ`, the clock hand's page-table index, under the same
-    // caveat as `G_CLOCK_PDI`: it is a heuristic scan position, not shared state.
-    let mut ptj = *unsafe { KStatic::get_mut(G_CLOCK_PTJ.as_ptr()) };
+    let mut va = *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) };
+    if va < USER_SPACE_START || va >= USER_STACK_TOP {
+        va = USER_SPACE_START;
+    }
 
     while iterations < max_iter {
         iterations += 1;
-        if pdi >= TABLE_ENTRIES {
-            pdi = 32;
-            ptj = 0;
-        }
 
-        // SAFETY: `pd` is valid and `pdi < TABLE_ENTRIES`, so this PD entry
-        // pointer is in bounds.
-        let pde_entry = unsafe { pd.add(pdi as usize) };
-        // SAFETY: `pde_entry` points at one initialised PD entry.
-        let pde = unsafe { *pde_entry };
-        if pde & PAGE_PRESENT as u64 == 0 {
-            pdi += 1;
-            ptj = 0;
-            continue;
-        }
+        // Resolve `va` to its page-table entry through the real four-level walk
+        // (reading only, `create` false), so the scan follows exactly the tables
+        // the CPU walks rather than assuming a two-level layout.
+        // SAFETY: `pd` is the caller's live page map and the walk only reads it.
+        let w = unsafe { crate::vmm::paging::walk(pd, va as u64, false, false) };
+        if !w.pte_entry.is_null() {
+            let pte_entry = w.pte_entry as *mut AtomicU64;
+            // SAFETY: `pte_entry` points at one live atomic PTE; a relaxed load is
+            // a single atomic access, so no torn value can be observed.
+            let pte = unsafe { (*pte_entry).load(Ordering::Relaxed) };
 
-        if pde & PDE_PRIVATE as u64 == 0 {
-            pdi += 1;
-            ptj = 0;
-            continue;
-        }
+            if pte & PAGE_PRESENT as u64 != 0
+                && !swap_pte_is_swapped(pte)
+                && pte & PAGE_USER as u64 != 0
+            {
+                if pte & PTE_ACCESSED as u64 != 0 {
+                    // Second chance: give an accessed page another lap and clear
+                    // Accessed so the next pass sees it as a candidate.
+                    // SAFETY: `pte_entry` points at one live atomic PTE; the
+                    // fetch_and is a single atomic RMW, so no torn value is seen.
+                    unsafe { (*pte_entry).fetch_and(!(PTE_ACCESSED as u64), Ordering::AcqRel) };
+                    flush_tlb(va as u64);
+                } else {
+                    let phys = pte & !0xFFF;
+                    let mut slot: SwapSlot = 0;
+                    // SAFETY: `phys` is the page-aligned frame selected by the scan
+                    // and `slot` is a live local receiving the assigned swap slot.
+                    if unsafe { swap_out_page(phys, &mut slot) } != 0 {
+                        return -1;
+                    }
 
-        let pt_atomic = (pde & !0xFFF) as *mut AtomicU64;
-        // SAFETY: `pt_atomic` is the live page table named by the present private
-        // PDE and `ptj < TABLE_ENTRIES`, so this entry pointer is in bounds.
-        let pte_entry = unsafe { pt_atomic.add(ptj as usize) };
-        // SAFETY: `pte_entry` points at one live atomic PTE; a relaxed load is a
-        // single atomic access, so no torn value can be observed.
-        let pte = unsafe { (*pte_entry).load(Ordering::Relaxed) };
+                    let mut new_pte = swap_encode_pte(slot);
+                    new_pte |= (pte & ((PAGE_RW | PAGE_USER) as u64)) & !(PAGE_PRESENT as u64);
+                    // SAFETY: `pte_entry` is the live PTE for `va`; the store
+                    // publishes the swapped-out entry.
+                    unsafe { (*pte_entry).store(new_pte, Ordering::Release) };
 
-        if pte & PAGE_PRESENT as u64 == 0 || swap_pte_is_swapped(pte) {
-            ptj += 1;
-            if ptj >= TABLE_ENTRIES {
-                ptj = 0;
-                pdi += 1;
+                    flush_tlb(va as u64);
+
+                    // SAFETY: the frame is live and PMM-managed; this call releases
+                    // exactly one reference to it.
+                    unsafe { free_page(phys as *mut u8) };
+
+                    let next = va + PAGE_SIZE;
+                    // SAFETY: saving the clock hand after a successful eviction;
+                    // best-effort scan position shared between CPUs, see above.
+                    *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) } =
+                        if next >= USER_STACK_TOP { USER_SPACE_START } else { next };
+                    return 0;
+                }
             }
-            continue;
-        }
-        if pte & PAGE_USER as u64 == 0 {
-            ptj += 1;
-            if ptj >= TABLE_ENTRIES {
-                ptj = 0;
-                pdi += 1;
-            }
-            continue;
         }
 
-        if pte & PTE_ACCESSED as u64 != 0 {
-            // SAFETY: `pt_atomic` is the page table referenced by the present,
-            // private PDE just read from `pd` and `ptj < TABLE_ENTRIES`, so this
-            // entry pointer is in bounds.
-            let access_entry = unsafe { pt_atomic.add(ptj as usize) };
-            // SAFETY: `access_entry` points at one live atomic PTE; the fetch_and is
-            // a single atomic RMW, so a concurrent accessor cannot observe a torn
-            // value.
-            unsafe { (*access_entry).fetch_and(!(PTE_ACCESSED as u64), Ordering::AcqRel) };
-            let vaddr = (pdi << 22) | (ptj << 12);
-            flush_tlb(vaddr as u64);
-            ptj += 1;
-            if ptj >= TABLE_ENTRIES {
-                ptj = 0;
-                pdi += 1;
-            }
-            continue;
+        va += PAGE_SIZE;
+        if va >= USER_STACK_TOP {
+            va = USER_SPACE_START;
         }
-
-        let phys = pte & !0xFFF;
-        let mut slot: SwapSlot = 0;
-        // SAFETY: `phys` is the page-aligned frame selected by the clock scan and
-        // `slot` is a live local receiving the assigned swap slot.
-        if unsafe { swap_out_page(phys, &mut slot) } != 0 {
-            return -1;
-        }
-
-        let mut new_pte = swap_encode_pte(slot);
-        new_pte |= (pte & ((PAGE_RW | PAGE_USER) as u64)) & !(PAGE_PRESENT as u64);
-        // SAFETY: `pt_atomic` is the same live page table addressed above and
-        // `ptj < TABLE_ENTRIES`, so this entry pointer is in bounds.
-        let publish_entry = unsafe { pt_atomic.add(ptj as usize) };
-        // SAFETY: `publish_entry` points at one live atomic PTE; the store is a
-        // single atomic access, publishing the swapped-out PTE.
-        unsafe { (*publish_entry).store(new_pte, Ordering::Release) };
-
-        let vaddr = (pdi << 22) | (ptj << 12);
-        flush_tlb(vaddr as u64);
-
-        // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-        unsafe { free_page(phys as *mut u8) };
-
-        ptj += 1;
-        if ptj >= TABLE_ENTRIES {
-            ptj = 0;
-            pdi += 1;
-        }
-        // SAFETY: saving the clock hand after a successful eviction; best-effort scan
-        // position shared between CPUs, see above.
-        *unsafe { KStatic::get_mut(G_CLOCK_PDI.as_ptr()) } = pdi;
-        // SAFETY: saving the clock hand's PT index; best-effort scan position.
-        *unsafe { KStatic::get_mut(G_CLOCK_PTJ.as_ptr()) } = ptj;
-        return 0;
     }
 
     klog_msg(LOG_WARN, c"swap evict failed: no candidate page".as_ptr() as *const u8);

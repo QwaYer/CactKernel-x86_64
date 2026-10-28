@@ -73,10 +73,6 @@ typedef enum {
 #define PAGE_RW      0x2
 #define PAGE_USER    0x4
 
-// Page directory / table index extraction
-#define PD_INDEX(vaddr) ((vaddr >> 22) & 0x3FF)
-#define PT_INDEX(vaddr) ((vaddr >> 12) & 0x3FF)
-
 // I/O port operations (inline assembly)
 extern void     outb(uint16_t port, uint8_t data);
 extern uint8_t  inb (uint16_t port);
@@ -233,6 +229,8 @@ void      init_paging            (void);
 void      switch_paging          (uint64_t* pd);
 void      vmm_map                (uint64_t* pd, uint64_t virt, uint64_t phys, int flags);
 uint64_t  vmm_get_phys           (uint64_t* pd, uint64_t virt);
+uint32_t  vmm_pte_flags          (uint64_t* pd, uint64_t virt);
+uint64_t  vmm_unmap              (uint64_t* pd, uint64_t virt);
 uint64_t* vmm_create_address_space(void);
 uint32_t  get_free_heap_memory   (void);
 void      slab_init              (void);

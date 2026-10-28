@@ -58,7 +58,7 @@ extern void sched_task_exit(int exit_code);
  * selects the key: the physical address of the word, or (this address space,
  * uaddr). */
 static int futex_do_wait(uint32_t uaddr, int32_t val, int32_t timeout_ms, int shared) {
-    uint32_t* word = (uint32_t*)uaddr;
+    uint32_t* word = (uint32_t*)(uintptr_t)uaddr;
     if (!validate_user_ptr(word, sizeof(uint32_t))) return -EFAULT;
     if (!current_task || !current_task->proc) return -EINVAL;
 
@@ -227,10 +227,10 @@ int proc_thread_create(const void* arg) {
     if (a.user_esp < USER_SPACE_START || a.user_esp >= KERNEL_BASE)
         return -EINVAL;
     if (a.set_child_tid &&
-        !validate_user_ptr((void*)a.set_child_tid, sizeof(uint32_t)))
+        !validate_user_ptr((void*)(uintptr_t)a.set_child_tid, sizeof(uint32_t)))
         return -EINVAL;
     if (a.clear_child_tid &&
-        !validate_user_ptr((void*)a.clear_child_tid, sizeof(uint32_t)))
+        !validate_user_ptr((void*)(uintptr_t)a.clear_child_tid, sizeof(uint32_t)))
         return -EINVAL;
     if (a.tls && (a.tls < USER_SPACE_START || a.tls >= KERNEL_BASE))
         return -EINVAL;

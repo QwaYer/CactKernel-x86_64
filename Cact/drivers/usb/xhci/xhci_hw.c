@@ -84,7 +84,7 @@ static int xhci_program_regs(xhci_priv_t *priv) {
     return 0;
 }
 
-int xhci_init_one(uint32_t phys_base, uint32_t quirks) {
+int xhci_init_one(uint64_t phys_base, uint32_t quirks) {
     extern uint64_t page_directory[512];
     uint32_t map_size = 0x10000;
     /* Map xHCI MMIO as uncacheable (PCD|PWT). */
@@ -100,7 +100,7 @@ int xhci_init_one(uint32_t phys_base, uint32_t quirks) {
     priv->quirks = quirks;
 
     priv->cap_phys = phys_base;
-    priv->cap = (volatile uint32_t *)phys_base;
+    priv->cap = (volatile uint32_t *)(uintptr_t)phys_base;
 
     uint8_t  cap_len    = (uint8_t)(xhci_cap_read32(priv, XHCI_CAP_CAPLENGTH) & 0xFF);
     uint32_t hcsparams1 = xhci_cap_read32(priv, XHCI_CAP_HCSPARAMS1);
@@ -115,17 +115,17 @@ int xhci_init_one(uint32_t phys_base, uint32_t quirks) {
     if (priv->max_ports > XHCI_MAX_PORTS) priv->max_ports = XHCI_MAX_PORTS;
 
     priv->op_off = cap_len;
-    priv->op     = (volatile uint32_t *)(phys_base + cap_len);
+    priv->op     = (volatile uint32_t *)(uintptr_t)(phys_base + cap_len);
     priv->rt_off = xhci_cap_read32(priv, XHCI_CAP_RTSOFF) & ~0x1F;
-    priv->rt     = (volatile uint32_t *)(phys_base + priv->rt_off);
+    priv->rt     = (volatile uint32_t *)(uintptr_t)(phys_base + priv->rt_off);
     priv->db_off = xhci_cap_read32(priv, XHCI_CAP_DBOFF) & ~0x3;
-    priv->db     = (volatile uint32_t *)(phys_base + priv->db_off);
+    priv->db     = (volatile uint32_t *)(uintptr_t)(phys_base + priv->db_off);
 
     uint32_t xecp_off = ((hccparams1 >> 16) & 0xFFFF) << 2;
     if (xecp_off) {
         uint32_t cur = xecp_off;
         for (int i = 0; i < 32 && cur; i++) {
-            volatile uint32_t *ecap = (volatile uint32_t *)(phys_base + cur);
+            volatile uint32_t *ecap = (volatile uint32_t *)(uintptr_t)(phys_base + cur);
             uint8_t ecap_id = (uint8_t)(ecap[0] & 0xFF);
             if (ecap_id == 1) {
                 ecap[0] |= (1u << 24);

@@ -26,18 +26,19 @@ static int xhci_pci_probe(pci_device_t *pdev) {
     if (pdev->prog_if != 0x30) return -1;
     if (pdev->drv_probe_state >= 2) return 0;   /* already probed — no double probe */
 
-    uint32_t mmio = 0;
+    uint64_t mmio = 0;
     for (int i = 0; i < 6; i++) {
         pci_bar_t *bar = &pdev->bars[i];
         if (!bar->is_io && bar->base) {
-            /* 64-bit BAR decoded above 4 GiB cannot be reached by the
-             * 32-bit identity MMIO map — refuse instead of truncating. */
+            /* The driver reaches MMIO through its own identity VA, so a BAR
+             * decoded above 4 GiB — where the kernel's identity map of RAM/MMIO
+             * ends — is refused rather than truncated. */
             if (bar->base >= 0x100000000ULL) {
                 pr_warn("%s: BAR%d above 4 GiB (0x%llx) not supported\n",
                         "xhci", i, (unsigned long long)bar->base);
                 return -1;
             }
-            mmio = (uint32_t)bar->base;
+            mmio = bar->base;
             break;
         }
     }

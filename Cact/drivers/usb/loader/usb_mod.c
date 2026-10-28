@@ -163,7 +163,7 @@ static uint32_t find_func_sym(Elf32_Ehdr *eh, Elf32_Sym *syms, uint32_t sym_cnt,
         if (!sym_name || strcmp((char *)sym_name, (char *)want) != 0) continue;
         Elf32_Shdr *sym_sh = get_shdr(eh, syms[s].st_shndx);
         if (!sym_sh) continue;
-        return (uint32_t)(image + sym_sh->sh_addr + syms[s].st_value);
+        return (uint32_t)(uintptr_t)(image + sym_sh->sh_addr + syms[s].st_value);
     }
     return 0;
 }
@@ -302,7 +302,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                     kfree(image); kfree(elf_data);
                     return -7;
                 }
-                S = (uint32_t)(image + sym_sh->sh_addr + sym->st_value);
+                S = (uint32_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
             }
             if (rels[r].r_offset + sizeof(uint32_t) > target_sh->sh_size) {
                 pr_err("usbmod: relocation offset 0x%x >= section size 0x%x: %s\n",
@@ -312,7 +312,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
             }
             uint32_t *patch = (uint32_t *)(image + target_sh->sh_addr + rels[r].r_offset);
             if      (type == R_386_32)   *patch += S;
-            else if (type == R_386_PC32) *patch += S - (uint32_t)patch;
+            else if (type == R_386_PC32) *patch += S - (uint32_t)(uintptr_t)patch;
         }
     }
 
@@ -329,8 +329,8 @@ static int load_module_image(const char *path, uint8_t **image_out,
     kfree(elf_data);
     *image_out = image;
     *size_out  = total;
-    *init_out  = (usb_init_fn_t)init_addr;
-    *exit_out  = exit_addr ? (usb_exit_fn_t)exit_addr : NULL;
+    *init_out  = (usb_init_fn_t)(uintptr_t)init_addr;
+    *exit_out  = exit_addr ? (usb_exit_fn_t)(uintptr_t)exit_addr : NULL;
     return 0;
 }
 

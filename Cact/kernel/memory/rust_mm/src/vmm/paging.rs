@@ -534,6 +534,68 @@ pub extern "C" fn vmm_get_phys(pd: *mut u64, virtual_addr: u64) -> u64 {
     (pte & !0xFFF) | page_offset(virtual_addr)
 }
 
+/// Report the low flag bits of the mapping for `virtual_addr` under `pd` (0 when
+/// the address is unmapped).  The fault and diagnostic paths need the permission
+/// bits — is it present, user, writable — not the frame the mapping names.
+#[unsafe(no_mangle)]
+pub extern "C" fn vmm_pte_flags(pd: *mut u64, virtual_addr: u64) -> u32 {
+    let pml4 = if pd.is_null() { get_kernel_pd() } else { pd };
+    if pml4.is_null() {
+        return 0;
+    }
+    // SAFETY: `pml4` is a live page map and the walk only reads it (`create`
+    // false), so nothing is allocated or mutated.
+    let w = unsafe { walk(pml4, virtual_addr, false, false) };
+    if !w.pd_entry.is_null() {
+        // SAFETY: `w.pd_entry` is an in-bounds PD entry.
+        let pd_val = unsafe { *w.pd_entry };
+        if pd_val & PAGE_PRESENT as u64 != 0 && pd_val & PAGE_PS as u64 != 0 {
+            return (pd_val & 0xFFF) as u32;
+        }
+    }
+    if w.pte_entry.is_null() {
+        return 0;
+    }
+    // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+    let pte = unsafe { *w.pte_entry };
+    if pte & PAGE_PRESENT as u64 == 0 {
+        return 0;
+    }
+    (pte & 0xFFF) as u32
+}
+
+/// Clear the 4 KiB mapping for `virtual_addr` under `pd` and return the physical
+/// address that was mapped (0 when the address was not mapped, or when it is
+/// covered by a 2 MiB page rather than a page table).
+///
+/// # Safety
+///
+/// `pd` must be a live page map the caller owns and may mutate, and no other CPU
+/// may be walking the same tables concurrently.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vmm_unmap(pd: *mut u64, virtual_addr: u64) -> u64 {
+    if pd.is_null() {
+        return 0;
+    }
+    // SAFETY: `pd` is a live page map and the walk only reads it (`create`
+    // false), so nothing is allocated.
+    let w = unsafe { walk(pd, virtual_addr, false, false) };
+    if w.pte_entry.is_null() {
+        return 0;
+    }
+    // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+    let pte = unsafe { *w.pte_entry };
+    if pte & PAGE_PRESENT as u64 == 0 {
+        return 0;
+    }
+    // SAFETY: `w.pte_entry` is the live entry for this address; clearing it
+    // removes the mapping.
+    unsafe { *w.pte_entry = 0 };
+    // SAFETY: invalidating one TLB entry is side-effect-free otherwise.
+    crate::safe::flush_tlb(virtual_addr);
+    pte & !0xFFF
+}
+
 /// Set and clear cache-attribute bits on the kernel mapping for `va`.
 ///
 /// The kernel's own window is mapped with 2 MiB pages, so the entry that carries

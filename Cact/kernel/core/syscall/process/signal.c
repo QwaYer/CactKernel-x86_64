@@ -42,23 +42,20 @@ static int sys_sigreturn_impl(struct syscall_frame* regs) {
 
     // Read frame with double-check of page tables to prevent TOCTOU
     for (int attempt = 0; attempt < 2; attempt++) {
-        // The walk below still uses the legacy two-level layout; view the PML4
-        // as the 32-bit table it indexes (see kernel_exc.c's print_code_bytes).
-        uint32_t* pd = (uint32_t*)(uintptr_t)current_task->page_directory;
+        // Resolve the frame's page through the memory layer's four-level walk
+        // rather than indexing the tables with a two-level layout.
+        uint64_t* pd = current_task->page_directory;
         if (!pd) return -1;
-        uint32_t pdi = PD_INDEX(user_esp);
-        uint32_t pti = PT_INDEX(user_esp);
-        if (!(pd[pdi] & PAGE_PRESENT)) return -1;
+        if (!(vmm_pte_flags(pd, user_esp) & PAGE_PRESENT)) return -1;
 
-        uint32_t* pt = (uint32_t*)(pd[pdi] & ~0xFFFu);
-        if (!(pt[pti] & PAGE_PRESENT)) return -1;
+        uint64_t frame = vmm_get_phys(pd, user_esp);
+        if (!frame) return -1;
+        uint64_t phys = frame & ~0xFFFULL;
 
-        uint32_t phys = pt[pti] & ~0xFFFu;
+        memory_copy(&frame_buf, (signal_frame_t*)(uintptr_t)(phys + page_off), sizeof(frame_buf));
 
-        memory_copy(&frame_buf, (signal_frame_t*)(phys + page_off), sizeof(frame_buf));
-
-        // Re-validate: PTE must still point to the same physical page
-        if ((pt[pti] & ~0xFFFu) == phys && (pt[pti] & PAGE_PRESENT))
+        // Re-validate: the mapping must still resolve to the same frame
+        if ((vmm_get_phys(pd, user_esp) & ~0xFFFULL) == phys)
             break;
 
         if (attempt == 1) return -1;

@@ -298,7 +298,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                     kfree(image); kfree(elf_data);
                     return -7;
                 }
-                S = (uint32_t)(image + sym_sh->sh_addr + sym->st_value);
+                S = (uint32_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
             }
             if (rels[r].r_offset + sizeof(uint32_t) > target_sh->sh_size) {
                 pr_err("fsmod: relocation offset 0x%x >= section size 0x%x: %s\n",
@@ -308,7 +308,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
             }
             uint32_t *patch = (uint32_t *)(image + target_sh->sh_addr + rels[r].r_offset);
             if      (type == R_386_32)   *patch += S;
-            else if (type == R_386_PC32) *patch += S - (uint32_t)patch;
+            else if (type == R_386_PC32) *patch += S - (uint32_t)(uintptr_t)patch;
         }
     }
 
@@ -323,7 +323,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
         if (!sym_name) continue;
         Elf32_Shdr *sym_sh = get_shdr(eh, syms[s].st_shndx);
         if (!sym_sh) continue;
-        uint32_t addr = (uint32_t)(image + sym_sh->sh_addr + syms[s].st_value);
+        uintptr_t addr = (uintptr_t)(image + sym_sh->sh_addr + syms[s].st_value);
         if (strcmp((char *)sym_name, "fs_mount") == 0)
             mnt = (fs_mount_fn_t)addr;
         else if (strcmp((char *)sym_name, "fs_unmount") == 0)

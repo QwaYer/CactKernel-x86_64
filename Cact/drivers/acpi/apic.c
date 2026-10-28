@@ -304,7 +304,7 @@ static void lapic_init(uint32_t lapic_base)
 
         vmm_map(get_current_pd(), APIC_MMIO_VADDR, lapic_base & ~0xFFF,
                 PAGE_PRESENT | PAGE_RW | PAGE_PCD);
-        lapic = (volatile uint32_t *)(APIC_MMIO_VADDR + (lapic_base & 0xFFF));
+        lapic = (volatile uint32_t *)(uintptr_t)(APIC_MMIO_VADDR + (lapic_base & 0xFFF));
 
         msr_val = (msr_val & ~APIC_BASE_ADDR_MASK) |
                   (uint64_t)(lapic_base & APIC_BASE_ADDR_MASK) | APIC_ENABLE;
@@ -377,8 +377,8 @@ int apic_init(void)
 
     vmm_map(get_current_pd(), IOAPIC_MMIO_VADDR, ioapic_base & ~0xFFF,
             PAGE_PRESENT | PAGE_RW | PAGE_PCD);
-    ioapic_regsel = (volatile uint32_t *)(IOAPIC_MMIO_VADDR + (ioapic_base & 0xFFF));
-    ioapic_win    = (volatile uint32_t *)(IOAPIC_MMIO_VADDR + (ioapic_base & 0xFFF) + 0x10);
+    ioapic_regsel = (volatile uint32_t *)(uintptr_t)(IOAPIC_MMIO_VADDR + (ioapic_base & 0xFFF));
+    ioapic_win    = (volatile uint32_t *)(uintptr_t)(IOAPIC_MMIO_VADDR + (ioapic_base & 0xFFF) + 0x10);
 
     ioapic_max_redir = (ioapic_read(IOAPIC_VER) >> 16) & 0xFF;
     ioapic_global_irq_base = global_irq_base;

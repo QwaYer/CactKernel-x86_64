@@ -93,6 +93,11 @@ uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
 void      vmm_map(uint64_t* pd, uint64_t virtual_addr, uint64_t physical_addr, int flags);
 uint64_t  vmm_get_phys(uint64_t* pd, uint64_t virtual_addr);
+/* Low flag bits of the mapping for `virt` (0 when unmapped); the fault and
+ * diagnostic paths need the permission bits, not the frame. */
+uint32_t  vmm_pte_flags(uint64_t* pd, uint64_t virt);
+/* Clear the 4 KiB mapping for `virt`; returns the frame it named (0 if none). */
+uint64_t  vmm_unmap(uint64_t* pd, uint64_t virt);
 void      vmm_sync_kernel_mmio_mappings(uint64_t* pd);
 /* Set/clear cache-attribute bits on the kernel's own mapping for `va`
  * (rust_mm: paging.rs).  The kernel maps with 2 MiB pages, so this reaches the

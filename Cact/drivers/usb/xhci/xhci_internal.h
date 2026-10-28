@@ -15,8 +15,8 @@ extern irq_spinlock_t xhci_evt_lock;
 
 /* MMIO access helpers — shared by all xHCI modules. */
 
-static inline uint32_t xhci_va_to_pa(void *va) {
-    return vmm_get_phys(page_directory, (uint32_t)va);
+static inline uint64_t xhci_va_to_pa(void *va) {
+    return vmm_get_phys(page_directory, (uint64_t)(uintptr_t)va);
 }
 
 static inline void xhci_udelay(uint32_t us) {
@@ -129,7 +129,7 @@ int  xhci_port_get_status(usb_hc_t *hc, uint8_t port);
 void xhci_device_removed(usb_hc_t *hc, usb_device_t *dev);
 
 /* Host bring-up + root-port hotplug (xhci_hw.c). */
-int  xhci_init_one(uint32_t phys_base, uint32_t quirks);
+int  xhci_init_one(uint64_t phys_base, uint32_t quirks);
 /* Handle one root port's connect/disconnect after a status change. */
 void xhci_handle_port_event(xhci_priv_t *priv, usb_hc_t *hc, uint8_t port);
 /* Record a port whose change latches need servicing (IRQ-safe). */

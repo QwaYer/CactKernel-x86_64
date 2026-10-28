@@ -28,20 +28,13 @@ static int frame_fits(uint32_t esp) {
 
 // Is the page holding `esp` a present, user, writable page of this task?
 static int frame_mapped(struct task_struct *t, uint32_t esp) {
-    // The walk below still uses the legacy two-level layout (PD_INDEX/PT_INDEX);
-    // view the PML4 as the 32-bit table it indexes so the byte-level access is
-    // unchanged until the walk is re-typed for four levels (see the note in
-    // kernel_exc.c's print_code_bytes).
-    uint32_t *pd = (uint32_t *)(uintptr_t)t->page_directory;
+    uint64_t *pd = t->page_directory;
     if (!pd) return 0;
-    uint32_t pdi = PD_INDEX(esp);
-    uint32_t pti = PT_INDEX(esp);
-    if (!(pd[pdi] & PAGE_PRESENT)) return 0;
-    uint32_t *pt = (uint32_t *)(pd[pdi] & ~0xFFFu);
-    uint32_t pte = pt[pti];
-    if (!(pte & PAGE_PRESENT)) return 0;
-    if (!(pte & PAGE_USER))    return 0;
-    if (!(pte & PAGE_RW))      return 0;
+    // The permission bits come straight from the memory layer's four-level walk.
+    uint32_t flags = vmm_pte_flags(pd, esp);
+    if (!(flags & PAGE_PRESENT)) return 0;
+    if (!(flags & PAGE_USER))    return 0;
+    if (!(flags & PAGE_RW))      return 0;
     return 1;
 }
 
@@ -106,7 +99,7 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
             if (!frame_mapped(t, new_esp)) continue;
         }
 
-        signal_frame_t *frame = (signal_frame_t *)new_esp;
+        signal_frame_t *frame = (signal_frame_t *)(uintptr_t)new_esp;
         uint32_t frame_base = new_esp;
 
         frame->ret_addr = t->proc->sigreturn_trampoline;

@@ -38,14 +38,14 @@ static int in_kernel_space(uintptr_t addr) {
 
 // Read a u32 from a user address through the task's page tables.  The mapping
 // is checked first, so a wild user EBP cannot re-fault the handler.
-static int peek_user_u32(uint32_t* pd, uint32_t addr, uint32_t* out) {
+static int peek_user_u32(uint64_t* pd, uint32_t addr, uint32_t* out) {
     if (!pd) return -1;
-    uint32_t pdi = PD_INDEX(addr);
-    uint32_t pti = PT_INDEX(addr);
-    if (!(pd[pdi] & PAGE_PRESENT)) return -1;
-    uint32_t* pt = (uint32_t*)(pd[pdi] & ~0xFFFu);
-    if (!(pt[pti] & PAGE_PRESENT)) return -1;
-    *out = *(volatile uint32_t*)((pt[pti] & ~0xFFFu) + (addr & 0xFFFu));
+    // Resolve through the memory layer's four-level walk.  The mapping is
+    // checked first, so a wild user EBP cannot re-fault the handler.
+    if (!(vmm_pte_flags(pd, addr) & PAGE_PRESENT)) return -1;
+    uint64_t phys = vmm_get_phys(pd, addr);
+    if (!phys) return -1;
+    *out = *(volatile uint32_t*)(uintptr_t)phys;
     return 0;
 }
 
@@ -142,10 +142,7 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
             rbp = next_rbp;
         }
     } else {
-        // The walk below still uses the legacy two-level layout
-        // (PD_INDEX/PT_INDEX); view the PML4 as the 32-bit table it indexes
-        // (see print_code_bytes) so the byte-level access is unchanged.
-        uint32_t* pd = current_task ? (uint32_t*)(uintptr_t)current_task->page_directory : 0;
+        uint64_t* pd = current_task ? current_task->page_directory : 0;
         uint32_t ebp = (uint32_t)rbp;
         while (frames < TRACE_FRAMES_MAX && (ebp & 3u) == 0) {
             uint32_t ret_eip, next_ebp;
@@ -164,8 +161,7 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
         // where a corrupted return address / pointer ends up.
         printk_color_level(KLOG_LEVEL_CRIT, "Stack: ", COLOR_DARK_GREY);
         if (priv_change) {
-            // Legacy two-level view of the PML4, as in frame_mapped() above.
-            uint32_t* pd = current_task ? (uint32_t*)(uintptr_t)current_task->page_directory : 0;
+            uint64_t* pd = current_task ? current_task->page_directory : 0;
             for (int i = 0; i < 12; i++) {
                 uint32_t v;
                 if (peek_user_u32(pd, (uint32_t)(regs->rsp + (uint64_t)i * 4u), &v) != 0) {
@@ -185,17 +181,31 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
 // The instruction bytes around RIP — the faulting instruction, or where a wild
 // jump landed.
 //
-// Re-reading them goes through the page tables, and this still indexes the
-// four-level PML4 with the legacy two-level PD_INDEX/PT_INDEX layout: walking a
-// four-level mapping that way would dereference whatever the PML4 entry happens
-// to be — a nested fault inside the fault handler.  Until this walker is
-// re-typed for four levels, the dump says so instead of guessing.
+// Re-reading them goes through the page tables, resolved by the memory layer's
+// four-level walk: a user RIP is read through the task's own map, a kernel RIP
+// caught in ring 0 through the kernel map.  The frame is checked for presence
+// first, so a bad RIP cannot re-fault inside the fault handler.
 static void print_code_bytes(uintptr_t rip) {
     printk_color_level(KLOG_LEVEL_CRIT, "Code: ", COLOR_LIGHT_BROWN);
     put_hex(rip, COLOR_LIGHT_BROWN);
-    printk_color_level(KLOG_LEVEL_CRIT,
-                       " (bytes not shown: legacy two-level walk)",
-                       COLOR_DARK_GREY);
+
+    uint64_t* pd = (current_task && current_task->page_directory)
+                       ? current_task->page_directory
+                       : get_current_pd();
+    uint64_t page = pd ? vmm_get_phys(pd, (uint64_t)rip) : 0;
+    if (page) {
+        uint64_t base = page & ~0xFFFULL;
+        unsigned off  = (unsigned)(rip & 0xFFFu);
+        printk_color_level(KLOG_LEVEL_CRIT, ":", COLOR_DARK_GREY);
+        char b[4];
+        for (unsigned i = 0; i < 16u && off + i < 4096u; i++) {
+            uint8_t byte = *(volatile uint8_t*)(uintptr_t)(base + off + i);
+            snprintf(b, sizeof(b), " %02x", byte);
+            printk_color_level(KLOG_LEVEL_CRIT, b, COLOR_LIGHT_BROWN);
+        }
+    } else {
+        printk_color_level(KLOG_LEVEL_CRIT, " (not mapped)", COLOR_DARK_GREY);
+    }
     printk("\n");
 }
 

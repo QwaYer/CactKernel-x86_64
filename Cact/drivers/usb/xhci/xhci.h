@@ -216,7 +216,7 @@ typedef struct {
     volatile uint32_t    *op;
     volatile uint32_t    *rt;
     volatile uint32_t    *db;
-    uint32_t              cap_phys;
+    uint64_t              cap_phys;
     uint32_t              op_off;
     uint32_t              rt_off;
     uint32_t              db_off;

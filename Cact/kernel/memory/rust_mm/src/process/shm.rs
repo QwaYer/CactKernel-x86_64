@@ -2,7 +2,7 @@
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page};
-use crate::safe::{KStatic, lock_acquire, lock_release, zero_page, flush_tlb};
+use crate::safe::{KStatic, lock_acquire, lock_release, zero_page};
 
 #[repr(C)]
 pub(crate) struct ShmSeg {
@@ -125,25 +125,13 @@ pub(crate) fn find_shm_va(num_pages: u32) -> u32 {
 }
 
 pub(crate) fn shm_unmap_from(pd: *mut u64, va: u32, num_pages: u32) {
+    // The four-level walk lives in the memory layer; let it resolve and clear
+    // each page instead of indexing the tables with a two-level layout here.
     for i in 0..num_pages {
-        let addr = va + i * PAGE_SIZE;
-        let pdi = (addr >> 22) & 0x1FF;
-        // SAFETY: `pd` is valid and `pdi` is masked to 9 bits (one table's worth),
-        // so this PD entry pointer is in bounds.
-        let pde_entry = unsafe { pd.add(pdi as usize) };
-        // SAFETY: `pde_entry` points at one initialised PD entry.
-        let pde = unsafe { *pde_entry };
-        if pde & PAGE_PRESENT as u64 == 0 {
-            continue;
-        }
-        let pt = (pde & !0xFFF) as *mut u64;
-        let pti = (addr >> 12) & 0x1FF;
-        // SAFETY: `pt` is the live page table named by the present PDE and `pti` is
-        // masked to 9 bits, so this entry pointer is in bounds.
-        let pte_entry = unsafe { pt.add(pti as usize) };
-        // SAFETY: `pte_entry` points at one PTE, which this unmap clears.
-        unsafe { *pte_entry = 0 };
-        flush_tlb(addr as u64);
+        let addr = (va as u64) + (i as u64) * PAGE_SIZE as u64;
+        // SAFETY: `pd` is the caller's live page map; `vmm_unmap` only walks and
+        // clears the one entry for `addr`.
+        unsafe { crate::vmm::paging::vmm_unmap(pd, addr) };
     }
 }
 
