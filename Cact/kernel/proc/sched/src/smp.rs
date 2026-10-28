@@ -380,6 +380,11 @@ pub extern "C" fn smp_ap_entry() -> ! {
     // SAFETY: `sel` is this CPU's TSS selector (`TSS_SLOT + TSS_SLOTS * cpu`) and that TSS is
     // initialised.
     unsafe { core::arch::asm!("ltr {0:x}", in(reg) sel, options(nomem, nostack)) };
+    // Program this AP's per-CPU `%gs` base now that its GDT/TSS are live: from
+    // here on `current_task`/`this_cpu()` resolve through `%gs`, and this AP can
+    // already take a fault.  The index comes straight from the trampoline, so no
+    // TR search (and no reliance on `%gs` itself) is needed.
+    crate::percpu::percpu_gs_init(cpu as u32);
     // SAFETY: the shared kernel IDT is already built and loaded on the BSP; reloading it makes
     // this AP use it too.
     unsafe { ffi::idt_reload() };

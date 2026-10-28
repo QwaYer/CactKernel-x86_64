@@ -19,7 +19,7 @@ section .text
 %macro msidev_entry 1
 global msidev_stub_%1
 msidev_stub_%1:
-    SWAPGS_IN
+    SWAPGS_IN 8
     push qword 0
     push qword %1
     jmp msidev_common_dispatch

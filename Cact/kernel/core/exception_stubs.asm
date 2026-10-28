@@ -46,7 +46,7 @@ section .text
 %macro ISR_NOERR 1
 global isr%1
 isr%1:
-    SWAPGS_IN
+    SWAPGS_IN 8
     push qword 0
     push qword %1
     jmp isr_common_stub
@@ -55,7 +55,7 @@ isr%1:
 %macro ISR_ERR 1
 global isr%1
 isr%1:
-    SWAPGS_IN
+    SWAPGS_IN 16
     push qword %1
     jmp isr_common_stub
 %endmacro
@@ -93,7 +93,7 @@ ISR_NOERR 31
 
 ; #PF has a handler of its own (it resolves the fault instead of reporting it).
 isr14:
-    SWAPGS_IN
+    SWAPGS_IN 16
     push qword 14
     jmp isr_pf_stub
 

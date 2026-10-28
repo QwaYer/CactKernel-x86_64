@@ -27,7 +27,7 @@ section .text
 ; mode: DS/ES are ignored for data access.
 
 %macro IRQ_BEGIN 0
-    SWAPGS_IN
+    SWAPGS_IN 8
     ISR_SAVE
     mov rbp, rsp
     and rsp, -16

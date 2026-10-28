@@ -239,9 +239,10 @@ void syscall_set_esp0(uint64_t esp);
 // the calling CPU's slot). Called by the scheduler next to syscall_set_esp0().
 void syscall_set_cpu_esp0(uint32_t cpu, uint64_t esp0);
 
-// Program the calling CPU's per-CPU %gs base (IA32_GS_BASE = the kernel block,
-// IA32_KERNEL_GS_BASE = 0).  Called from cpu_syscall_commit() on the BSP and on
-// every AP, so each core can take a SYSCALL or a ring-3 fault with swapgs.
-void percpu_gs_init(void);
+// Program `cpu`'s per-CPU %gs base (IA32_GS_BASE = its kernel block,
+// IA32_KERNEL_GS_BASE = 0).  Called from kernel_setup_hardware for the BSP and
+// during AP bring-up, before anything reads per-CPU state, since current_task /
+// this_cpu now resolve through %gs.
+void percpu_gs_init(uint32_t cpu);
 
 #endif

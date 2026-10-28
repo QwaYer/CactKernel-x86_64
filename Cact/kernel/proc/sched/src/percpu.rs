@@ -85,12 +85,22 @@ unsafe impl Sync for CpuSched {}
 static CPU_SCHED: SyncUnsafeCell<[CpuSched; MAX_CPUS]> =
     SyncUnsafeCell::new([const { CpuSched::new() }; MAX_CPUS]);
 
-/// Index of the calling CPU, clamped into `[0, MAX_CPUS)`.
+/// Index of the calling CPU, read from this CPU's `%gs` block (`self_index` at
+/// `%gs:0`) and clamped into `[0, MAX_CPUS)`.  `%gs` is programmed by
+/// `percpu_gs_init` on every core before this state is touched, so no TR search
+/// is needed on this path.
 #[inline]
 pub fn this_cpu() -> usize {
-    let c = crate::smp::smp_self_cpu();
-    if c > 0 && (c as usize) < MAX_CPUS {
-        c as usize
+    let idx: u32;
+    // SAFETY: reads `%gs:0` (this CPU's `self_index`) into `idx` and touches no
+    // other state; `readonly` tells the compiler the load does not modify memory.
+    unsafe {
+        core::arch::asm!("mov {0:e}, gs:[0]", out(reg) idx,
+                         options(nostack, readonly));
+    }
+    let i = idx as usize;
+    if i < MAX_CPUS {
+        i
     } else {
         0
     }
@@ -268,15 +278,19 @@ pub extern "C" fn syscall_set_esp0(esp: u64) {
     unsafe { (*slot(this_cpu())).esp0 = esp };
 }
 
-/// Program the calling CPU's per-CPU `%gs` base and clear `IA32_KERNEL_GS_BASE`.
-/// Must run on every core before it can take a SYSCALL or a ring-3 fault;
-/// `cpu_syscall_commit` (the BSP and each AP) calls it next to the SYSCALL MSRs.
+/// Program `cpu`'s per-CPU `%gs` base (`IA32_GS_BASE`) and clear
+/// `IA32_KERNEL_GS_BASE`, and stamp its `self_index`.  Takes an explicit index
+/// because it runs *before* `%gs` exists on that core (so `this_cpu()` cannot be
+/// used); must run before the core can take a SYSCALL or a ring-3 fault.
 #[no_mangle]
-pub extern "C" fn percpu_gs_init() {
-    let cpu = this_cpu();
-    // SAFETY: `cpu < MAX_CPUS` (clamped by `this_cpu`), so the store lands inside `CPU_SCHED`.
-    unsafe { (*slot(cpu)).self_index = cpu as u32 };
-    // SAFETY: `block_ptr` is this CPU's live block and `gdt_write_gs_base` writes only the two
-    // GS-base MSRs of the calling core.
-    unsafe { crate::ffi::gdt_write_gs_base(block_ptr(cpu) as u64) };
+pub extern "C" fn percpu_gs_init(cpu: u32) {
+    if (cpu as usize) >= MAX_CPUS {
+        return;
+    }
+    // Set `self_index` before the MSR, so the first `%gs:0` read sees it.
+    // SAFETY: `cpu < MAX_CPUS`, so the store lands inside the live `CPU_SCHED` array.
+    unsafe { (*slot(cpu as usize)).self_index = cpu };
+    // SAFETY: `block_ptr` is that CPU's live block and `gdt_write_gs_base` writes only the two
+    // GS-base MSRs of the calling core (the core whose bring-up calls this).
+    unsafe { crate::ffi::gdt_write_gs_base(block_ptr(cpu as usize) as u64) };
 }

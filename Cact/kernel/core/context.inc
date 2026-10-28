@@ -60,15 +60,18 @@
 ; entry that interrupted the kernel must not swap at all, so the swap is keyed
 ; on the interrupted CS.RPL.
 ;
-; These are used where the CPU-pushed frame is at the top of the stack, i.e.
-; [rsp] = RIP and [rsp+8] = CS: at a stub's first instruction, or right after
-; the frame has been popped back on the way out.  `test [rsp+8], 3` is therefore
-; "the interrupted code was ring 3".  (syscall_entry does not use these: it is
-; reached only from ring 3, so it swaps unconditionally.)
+; SWAPGS_IN takes the distance from rsp to the interrupted CS at the point it is
+; used: 8 for a plain frame (rip then cs), and 16 when the exception pushed an
+; error code first (errcode, rip, cs) — vectors 8, 10-14, 17, 21, 29, 30.  The
+; macros are expanded where that frame is at the top of the stack: at a stub's
+; first instruction, or right after the frame has been popped back on the way
+; out.  `test [rsp+disp], 3` is therefore "the interrupted code was ring 3".
+; (syscall_entry does not use these: it is reached only from ring 3, so it swaps
+; unconditionally.)
 ; ---------------------------------------------------------------------------
 
-%macro SWAPGS_IN 0
-    test byte [rsp+8], 3
+%macro SWAPGS_IN 1
+    test byte [rsp+%1], 3
     jz %%keep
     swapgs
 %%keep:

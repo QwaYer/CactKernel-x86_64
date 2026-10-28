@@ -182,6 +182,11 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
 
     // Memory management (order matters!)
     init_gdt();                     // Global Descriptor Table
+    /* Program the BSP's per-CPU %gs base once the GDT is up and before anything
+     * can read per-CPU state (current_task / this_cpu resolve through %gs).  Kept
+     * after init_gdt() so gdt_flush()'s segment reloads cannot disturb it, and
+     * because its block is in kernel .bss, already mapped.  The BSP is cpu 0. */
+    percpu_gs_init(0);
     pr_info("%s: loaded\n", "gdt");
 
     /* Exception gates go in before anything that can fault: from here on a

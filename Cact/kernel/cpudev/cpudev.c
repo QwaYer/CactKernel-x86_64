@@ -310,12 +310,6 @@ int cpu_syscall_commit(void) {
         syscall_set_cpu_esp0((uint32_t)(me < 0 ? 0 : me), boot_rsp);
     }
 
-    // Establish this CPU's per-CPU %gs base: the kernel block in IA32_GS_BASE
-    // and zero (the always-zero user base) in IA32_KERNEL_GS_BASE, so the
-    // `syscall_entry` `%gs` access and the swapgs discipline in every ring-3
-    // entry stub are valid on this core.
-    percpu_gs_init();
-
     // Long-mode fast syscall: EFER.SCE enables SYSCALL/SYSRET, LSTAR is the
     // 64-bit entry point, and STAR carries the segment bases —
     //   STAR[47:32] = SYSCALL CS base (kernel code 0x08; SS = CS + 8 = 0x10)

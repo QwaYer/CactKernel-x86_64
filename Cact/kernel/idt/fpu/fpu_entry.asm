@@ -8,7 +8,7 @@ extern handle_lazy_fpu
 ; #NM: the lazy-FPU handler needs no frame of its own — it works from
 ; current_task — so this stub only has to preserve the interrupted registers.
 isr7_nm_stub:
-    SWAPGS_IN
+    SWAPGS_IN 8
     ISR_SAVE
     mov rbp, rsp
     and rsp, -16
