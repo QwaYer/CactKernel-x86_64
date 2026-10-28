@@ -335,7 +335,7 @@ uint32_t drm_gem_size(struct drm_gem_object *obj);
  * object (scanout, a GPU translation table) walks indices
  * 0..drm_gem_page_count() and gets 0 for an out-of-range or unmapped frame. */
 uint32_t drm_gem_page_count(struct drm_gem_object *obj);
-uint32_t drm_gem_page_phys (struct drm_gem_object *obj, uint32_t index);
+uint64_t drm_gem_page_phys (struct drm_gem_object *obj, uint32_t index);
 int   drm_gem_ref(struct drm_gem_object *obj);
 int   drm_gem_unref(struct drm_gem_object *obj);
 /* memfd handle backing the object — used by PRIME and by drivers that need to

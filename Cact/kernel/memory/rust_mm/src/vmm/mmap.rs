@@ -106,15 +106,15 @@ fn alloc_region_slot(tbl: *mut MmapTable) -> *mut MmapRegion {
 }
 
 /// Present physical frame backing `va` in `pd`, or 0 if absent.
-fn pte_phys(pd: *mut u32, va: u32) -> u32 {
+fn pte_phys(pd: *mut u64, va: u32) -> u64 {
     // SAFETY: `pd` is a live page map and the walk only reads it (`create`
     // false), so nothing is allocated or mutated.
-    let w = unsafe { walk(pd, va, false, false) };
+    let w = unsafe { walk(pd, va as u64, false, false) };
     if !w.pd_entry.is_null() {
         // SAFETY: `w.pd_entry` is an in-bounds PD entry.
         let pde = unsafe { *w.pd_entry };
-        if pde & PAGE_PRESENT != 0 && pde & PAGE_PS != 0 {
-            return large_page_phys(pde, va) & !0xFFF;
+        if pde & PAGE_PRESENT as u64 != 0 && pde & PAGE_PS as u64 != 0 {
+            return large_page_phys(pde, va as u64) & !0xFFF;
         }
     }
     if w.pte_entry.is_null() {
@@ -122,28 +122,28 @@ fn pte_phys(pd: *mut u32, va: u32) -> u32 {
     }
     // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
     let pte = unsafe { *w.pte_entry };
-    if pte & PAGE_PRESENT == 0 {
+    if pte & PAGE_PRESENT as u64 == 0 {
         return 0;
     }
     pte & !0xFFF
 }
 
 /// Drop the PTE for a user virtual address, releasing its frame reference.
-fn clear_user_pte(pd: *mut u32, va: u32) {
+fn clear_user_pte(pd: *mut u64, va: u32) {
     // SAFETY: `pd` is a live page map and the walk only reads it.
-    let w = unsafe { walk(pd, va, false, false) };
+    let w = unsafe { walk(pd, va as u64, false, false) };
     if w.pte_entry.is_null() {
         return;
     }
     // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
     let pte = unsafe { *w.pte_entry };
-    if pte & PAGE_PRESENT != 0 && pte & PAGE_USER != 0 {
+    if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
         unsafe { free_page((pte & !0xFFF) as *mut u8) };
     }
     // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
     unsafe { *w.pte_entry = 0 };
-    flush_tlb(va);
+    flush_tlb(va as u64);
 }
 
 /// # Safety
@@ -197,7 +197,7 @@ pub unsafe extern "C" fn mmap_find_region(tbl: *mut MmapTable, addr: u32) -> *mu
 /// duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_mmap(
-    pd: *mut u32,
+    pd: *mut u64,
     tbl: *mut MmapTable,
     hint: u32,
     mut length: u32,
@@ -260,7 +260,7 @@ pub unsafe extern "C" fn do_mmap(
     if flags & MAP_ANON != 0 {
         // SAFETY: `pd` is valid (checked at entry), `va` was chosen inside the mmap
         // window and `length` is a whole number of pages.
-        if unsafe { vmm_map_zero(pd, va, length, page_flags) } != 0 {
+        if unsafe { vmm_map_zero(pd, va as u64, length, page_flags) } != 0 {
             kprint_str(c"[MMAP] do_mmap: vmm_map_zero failed\n".as_ptr() as *const u8);
             return MAP_FAILED as *mut u8;
         }
@@ -307,8 +307,8 @@ pub unsafe extern "C" fn do_mmap(
                 let va_i = va + installed * PAGE_SIZE;
                 // SAFETY: `pd` is valid, `va_i` lies inside the region reserved
                 // above, and `page` is a live memfd frame.
-                unsafe { vmm_map(pd, va_i, page as u32, page_flags); }
-                if pte_phys(pd, va_i) != page as u32 {
+                unsafe { vmm_map(pd, va_i as u64, page as u64, page_flags); }
+                if pte_phys(pd, va_i) != page as u64 {
                     break;
                 }
                 page_ref_inc(page);
@@ -343,7 +343,7 @@ pub unsafe extern "C" fn do_mmap(
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
                 // reserved above, and `phys` is the frame just allocated for it.
-                unsafe { vmm_map(pd, va + i * PAGE_SIZE, phys as u32, page_flags); }
+                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, phys as u64, page_flags); }
             }
         } else {
             let node = fd_to_node(fd);
@@ -364,7 +364,7 @@ pub unsafe extern "C" fn do_mmap(
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
                 // reserved above, and `phys` is the frame just allocated for it.
-                unsafe { vmm_map(pd, va + i * PAGE_SIZE, phys as u32, page_flags); }
+                unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, phys as u64, page_flags); }
                 file_off += PAGE_SIZE;
             }
         }
@@ -400,7 +400,7 @@ pub unsafe extern "C" fn do_mmap(
 /// caller, and neither may be mutated concurrently for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_munmap(
-    pd: *mut u32,
+    pd: *mut u64,
     tbl: *mut MmapTable,
     addr: u32,
     mut length: u32,
@@ -441,7 +441,7 @@ pub unsafe extern "C" fn do_munmap(
         let va = addr + i * PAGE_SIZE;
 
         // SAFETY: `pd` is the caller's live page map and the walk only reads it.
-        let w = unsafe { walk(pd, va, false, false) };
+        let w = unsafe { walk(pd, va as u64, false, false) };
         if w.pte_entry.is_null() {
             continue;
         }
@@ -450,13 +450,13 @@ pub unsafe extern "C" fn do_munmap(
 
         // Only release frames that were allocated for user mappings. Supervisor
         // identity PTEs (present, no PAGE_USER) must not be passed to free_page.
-        if pte & PAGE_PRESENT != 0 && pte & PAGE_USER != 0 {
+        if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
             // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
             unsafe { free_page((pte & !0xFFF) as *mut u8) };
         }
         // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
         unsafe { *w.pte_entry = 0 };
-        flush_tlb(va);
+        flush_tlb(va as u64);
     }
 
     // SAFETY: `region` is the live region slot located by the scan above and it is
@@ -504,7 +504,7 @@ pub unsafe extern "C" fn do_munmap(
 /// caller, and neither may be mutated concurrently for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn do_mprotect(
-    pd: *mut u32,
+    pd: *mut u64,
     tbl: *mut MmapTable,
     addr: u32,
     mut length: u32,
@@ -536,19 +536,19 @@ pub unsafe extern "C" fn do_mprotect(
 
         // SAFETY: `pd` is the caller's live page map; the walk creates the
         // private tables this entry needs.
-        let w = unsafe { walk(pd, va, true, true) };
+        let w = unsafe { walk(pd, va as u64, true, true) };
         if w.pte_entry.is_null() {
             return -1;
         }
         let pte_entry = w.pte_entry;
         // SAFETY: `pte_entry` points at one initialised PTE.
         let pte = unsafe { *pte_entry };
-        if pte & PAGE_PRESENT == 0 {
+        if pte & PAGE_PRESENT as u64 == 0 {
             continue;
         }
         // SAFETY: `pte_entry` points at one PTE, which receives the new flags.
-        unsafe { *pte_entry = (pte & !0xFFF) | page_flags };
-        flush_tlb(va);
+        unsafe { *pte_entry = (pte & !0xFFF) | page_flags as u64 };
+        flush_tlb(va as u64);
     }
 
     if !in_brk {
@@ -564,7 +564,7 @@ pub unsafe extern "C" fn do_mprotect(
 /// caller, and neither may be mutated concurrently for the duration of the call.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn mmap_handle_fault(
-    pd: *mut u32,
+    pd: *mut u64,
     tbl: *mut MmapTable,
     fault_addr: u32,
 ) -> i32 {
@@ -582,14 +582,14 @@ pub unsafe extern "C" fn mmap_handle_fault(
 
     // SAFETY: `pd` is the caller's live page map; the walk creates the private
     // tables the demand mapping needs.
-    let w = unsafe { walk(pd, page_va, true, true) };
+    let w = unsafe { walk(pd, page_va as u64, true, true) };
     if w.pte_entry.is_null() {
         return -1;
     }
     let pte_entry = w.pte_entry;
     // SAFETY: `pte_entry` points at one initialised PTE.
     let pte = unsafe { *pte_entry };
-    if pte & PAGE_PRESENT != 0 {
+    if pte & PAGE_PRESENT as u64 != 0 {
         return -1;
     }
 
@@ -618,8 +618,8 @@ pub unsafe extern "C" fn mmap_handle_fault(
     let page_flags = prot_to_page_flags(unsafe { (*region).prot as i32 }, true) as u32;
     // SAFETY: `pte_entry` is the in-bounds PTE pointer computed above, which
     // receives the freshly-allocated frame.
-    unsafe { *pte_entry = (phys as u32 & !0xFFF) | page_flags };
-    flush_tlb(page_va);
+    unsafe { *pte_entry = (phys as u64 & !0xFFF) | page_flags as u64 };
+    flush_tlb(page_va as u64);
     0
 }
 

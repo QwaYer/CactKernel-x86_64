@@ -47,7 +47,7 @@ int sys_brk(struct syscall_frame* regs) {
             if (!phys) return -1;
             uint8_t* p = (uint8_t*)phys;
             for (int i = 0; i < (int)PAGE_SIZE; i++) p[i] = 0;
-            vmm_map(current_task->page_directory, va, (uint32_t)phys,
+            vmm_map(current_task->page_directory, va, (uint64_t)phys,
                     PAGE_USER | PAGE_RW | PAGE_PRESENT);
             proc_tracker_add(&ps->mm, phys);   // track for cleanup on exit
         }
@@ -60,11 +60,11 @@ int sys_brk(struct syscall_frame* regs) {
 // mmap() — map files or anonymous memory into the process address space
 int sys_mmap(struct syscall_frame* regs) {
     mmap_args_t* args = (mmap_args_t*)regs->rdi;
-    if (!validate_user_ptr(args, sizeof(mmap_args_t))) return (int)MAP_FAILED;
-    if (!current_task) return (int)MAP_FAILED;
+    if (!validate_user_ptr(args, sizeof(mmap_args_t))) return (int)(intptr_t)MAP_FAILED;
+    if (!current_task) return (int)(intptr_t)MAP_FAILED;
 
     mmap_args_t args_buf;
-    if (copy_from_user(&args_buf, args, sizeof(args_buf)) != 0) return (int)MAP_FAILED;
+    if (copy_from_user(&args_buf, args, sizeof(args_buf)) != 0) return (int)(intptr_t)MAP_FAILED;
 
     void* result = do_mmap(
         current_task->page_directory,
@@ -76,7 +76,7 @@ int sys_mmap(struct syscall_frame* regs) {
         args_buf.fd,
         args_buf.offset
     );
-    return (int)result;
+    return (int)(intptr_t)result;
 }
 
 // munmap() — unmap a previously mapped region

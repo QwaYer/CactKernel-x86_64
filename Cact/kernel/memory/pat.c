@@ -7,7 +7,7 @@
 static int g_pat_present = 0;
 
 /* Kernel page directory (defined by the Rust mm crate as #[no_mangle]). */
-extern uint32_t page_directory[1024];
+extern uint64_t page_directory[512];
 
 static inline void cpuid_raw(uint32_t leaf,
                              uint32_t* eax, uint32_t* ebx,

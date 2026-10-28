@@ -77,7 +77,7 @@ pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
         // SAFETY: `pd` is the CR3 root of the live current task, `va + i *
         // PAGE_SIZE` is inside the SHM window chosen above, and the segment's
         // frames stay live while `SHM_LOCK` is held.
-        unsafe { vmm_map(pd, va + i * PAGE_SIZE, seg.pages[i as usize] as u32, page_flags) };
+        unsafe { vmm_map(pd, (va + i * PAGE_SIZE) as u64, seg.pages[i as usize] as u64, page_flags) };
     }
 
     // SAFETY: `proc_meta` is the live `ProcMeta` and `slot` is in bounds
@@ -212,7 +212,7 @@ pub extern "C" fn shm_ctl(shmid: i32, cmd: i32, buf: *mut u8) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn shm_detach_all(pid: u32, page_directory: *mut u32) {
+pub extern "C" fn shm_detach_all(pid: u32, page_directory: *mut u64) {
     shm_ensure_init();
     if page_directory.is_null() {
         return;

@@ -12,8 +12,8 @@ use crate::safe::{zero_page, flush_tlb, lock_acquire, lock_release};
 /// mutate; the caller must serialise concurrent page-table changes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vmm_map_demand(
-    pd: *mut u32,
-    virtual_addr: u32,
+    pd: *mut u64,
+    virtual_addr: u64,
     size: u32,
     flags: i32,
 ) -> i32 {
@@ -22,9 +22,12 @@ pub unsafe extern "C" fn vmm_map_demand(
     }
     let flags = flags as u32;
     let start = virtual_addr & !0xFFF;
-    let end = virtual_addr.saturating_add(size).saturating_add(0xFFF) & !0xFFF;
-    
-    if start >= USER_STACK_TOP || end > USER_STACK_TOP {
+    let end = virtual_addr
+        .saturating_add(size as u64)
+        .saturating_add(0xFFF)
+        & !0xFFF;
+
+    if start >= USER_STACK_TOP as u64 || end > USER_STACK_TOP as u64 {
         return -1;
     }
 
@@ -37,8 +40,8 @@ pub unsafe extern "C" fn vmm_map_demand(
             return -1;
         }
         // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = PAGE_DEMAND | (flags & PAGE_USER) };
-        va += PAGE_SIZE;
+        unsafe { *entry = (PAGE_DEMAND | (flags & PAGE_USER)) as u64 };
+        va += PAGE_SIZE as u64;
     }
     0
 }
@@ -49,8 +52,8 @@ pub unsafe extern "C" fn vmm_map_demand(
 /// mutate; the caller must serialise concurrent page-table changes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn vmm_map_zero(
-    pd: *mut u32,
-    virtual_addr: u32,
+    pd: *mut u64,
+    virtual_addr: u64,
     size: u32,
     flags: i32,
 ) -> i32 {
@@ -61,10 +64,13 @@ pub unsafe extern "C" fn vmm_map_zero(
     let start = virtual_addr & !0xFFF;
     // Use saturating arithmetic so an overflowing range is caught by the
     // kernel-space boundary check below rather than wrapping to a low address.
-    let end = virtual_addr.saturating_add(size).saturating_add(0xFFF) & !0xFFF;
+    let end = virtual_addr
+        .saturating_add(size as u64)
+        .saturating_add(0xFFF)
+        & !0xFFF;
     // C-08: never install demand entries inside kernel space (≥ 0xC000_0000).
     // A saturated end will be ≥ USER_STACK_TOP and is therefore also rejected.
-    if start >= USER_STACK_TOP || end > USER_STACK_TOP {
+    if start >= USER_STACK_TOP as u64 || end > USER_STACK_TOP as u64 {
         return -1;
     }
 
@@ -77,35 +83,35 @@ pub unsafe extern "C" fn vmm_map_zero(
             return -1;
         }
         // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = PAGE_DEMAND | PAGE_ZERO | (flags & PAGE_USER) };
-        va += PAGE_SIZE;
+        unsafe { *entry = (PAGE_DEMAND | PAGE_ZERO | (flags & PAGE_USER)) as u64 };
+        va += PAGE_SIZE as u64;
     }
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vmm_map_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
+pub extern "C" fn vmm_map_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // SAFETY: `pte` is the result of `pte_get` and is non-null on the left of `||`,
     // so the present-bit test reads a valid PTE.
-    if pte.is_null() || unsafe { *pte & PAGE_PRESENT == 0 } {
+    if pte.is_null() || unsafe { *pte & PAGE_PRESENT as u64 == 0 } {
         return -1;
     }
     // SAFETY: `pte` is the non-null live PTE returned by `pte_get`.
     let val = unsafe { *pte };
     // SAFETY: `pte` is non-null (checked above), so storing the COW-marked value
     // back is in bounds.
-    unsafe { *pte = (val & !PAGE_RW) | PAGE_COW };
+    unsafe { *pte = (val & !(PAGE_RW as u64)) | PAGE_COW as u64 };
     flush_tlb(virtual_addr & !0xFFF);
     0
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vmm_is_cow_page(pd: *mut u32, virtual_addr: u32) -> i32 {
+pub extern "C" fn vmm_is_cow_page(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // SAFETY: `pte` is non-null on the left of `&&`; its COW bit is read from a live
     // PTE.
-    if !pte.is_null() && unsafe { *pte & PAGE_COW != 0 } {
+    if !pte.is_null() && unsafe { *pte & PAGE_COW as u64 != 0 } {
         1
     } else {
         0
@@ -113,10 +119,10 @@ pub extern "C" fn vmm_is_cow_page(pd: *mut u32, virtual_addr: u32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn vmm_handle_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
+pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // SAFETY: `pte` is non-null on the left of `||`; a live PTE's COW bit is read.
-    if pte.is_null() || unsafe { *pte & PAGE_COW == 0 } {
+    if pte.is_null() || unsafe { *pte & PAGE_COW as u64 == 0 } {
         return -1;
     }
 
@@ -124,7 +130,7 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
     let old_phys = unsafe { *pte & !0xFFF } as *mut u8;
     // SAFETY: `pte` is non-null and COW-flagged; reading its value is valid.
     let pte_val = unsafe { *pte };
-    let flags = ((pte_val & 0xFFF) & !PAGE_COW) | PAGE_RW | PAGE_PRESENT;
+    let flags = ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_RW as u64 | PAGE_PRESENT as u64;
 
     // ── Sole-owner fast path ─────────────────────────────────────────────────
     // Hold PAGE_LOCK for the entire check + PTE-update so that no other CPU
@@ -134,7 +140,7 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
     if page_ref_get_locked(old_phys) == 1 {
         // SAFETY: writing the private copy's frame into the live COW PTE addressed by
         // `pte`.
-        unsafe { *pte = (old_phys as u32 & !0xFFF) | flags; }
+        unsafe { *pte = (old_phys as u64 & !0xFFF) | flags; }
         lock_release(PAGE_LOCK.as_ptr());
         flush_tlb(virtual_addr & !0xFFF);
         return 0;
@@ -153,7 +159,7 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
     unsafe { core::ptr::copy_nonoverlapping(old_phys as *const u8, new_phys, PAGE_SIZE as usize) };
     // SAFETY: `pte` is non-null (checked above), so storing the private copy's
     // frame back is in bounds.
-    unsafe { *pte = (new_phys as u32 & !0xFFF) | flags };
+    unsafe { *pte = (new_phys as u64 & !0xFFF) | flags };
 
     // Release our reference to the shared frame.
     // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
@@ -168,7 +174,7 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u32, virtual_addr: u32) -> i32 {
 /// `pd` must be a valid page directory for the current address space; the
 /// function writes PTEs into it and allocates frames for the user stack window.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u32, initial_size: u32) -> u32 {
+pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -> u32 {
     if pd.is_null() {
         return 0;
     }
@@ -178,10 +184,10 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u32, initial_size: u32) -
         initial_size = PAGE_SIZE;
     }
 
-    let bottom = USER_STACK_TOP - initial_size;
+    let bottom = USER_STACK_TOP as u64 - initial_size as u64;
 
     let mut va = bottom;
-    while va < USER_STACK_TOP {
+    while va < USER_STACK_TOP as u64 {
         let phys = kalloc();
         if phys.is_null() {
             return 0;
@@ -193,11 +199,11 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u32, initial_size: u32) -
             vmm_map(
                 pd,
                 va,
-                phys as u32,
+                phys as u64,
                 (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
             );
         }
-        va += PAGE_SIZE;
+        va += PAGE_SIZE as u64;
     }
 
     USER_STACK_TOP

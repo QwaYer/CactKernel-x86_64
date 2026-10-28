@@ -245,7 +245,7 @@ pub unsafe extern "C" fn create_user_task(entry_point: *const c_void) -> *mut Ta
 #[no_mangle]
 pub unsafe extern "C" fn create_task_with_entry(
     entry:   *const c_void,
-    pd:      *mut u32,
+    pd:      *mut u64,
     tracker: *mut ProcPageTracker,
 ) -> *mut TaskStruct {
     let t = create_user_task_internal(entry, false);

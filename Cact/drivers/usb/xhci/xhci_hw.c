@@ -85,7 +85,7 @@ static int xhci_program_regs(xhci_priv_t *priv) {
 }
 
 int xhci_init_one(uint32_t phys_base, uint32_t quirks) {
-    extern uint32_t page_directory[1024];
+    extern uint64_t page_directory[512];
     uint32_t map_size = 0x10000;
     /* Map xHCI MMIO as uncacheable (PCD|PWT). */
     for (uint32_t off = 0; off < map_size; off += 0x1000)

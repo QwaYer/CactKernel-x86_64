@@ -37,14 +37,14 @@ struct context_frame;
 
 void       page_fault_init(void);
 void       page_fault_handler(struct context_frame* regs);
-int        vmm_map_cow(uint32_t* pd, uint32_t virtual_addr);
-int        vmm_map_demand(uint32_t* pd, uint32_t virtual_addr, uint32_t size, int flags);
-int        vmm_map_zero(uint32_t* pd, uint32_t virtual_addr, uint32_t size, int flags);
-uint32_t   vmm_setup_user_stack(uint32_t* pd, uint32_t initial_size);
+int        vmm_map_cow(uint64_t* pd, uint64_t virtual_addr);
+int        vmm_map_demand(uint64_t* pd, uint64_t virtual_addr, uint32_t size, int flags);
+int        vmm_map_zero(uint64_t* pd, uint64_t virtual_addr, uint32_t size, int flags);
+uint32_t   vmm_setup_user_stack(uint64_t* pd, uint32_t initial_size);
 pf_stats_t pf_get_stats(void);
 void       pf_print_stats(void);
-int        vmm_is_cow_page(uint32_t* pd, uint32_t virtual_addr);
-int        vmm_handle_cow(uint32_t* pd, uint32_t virtual_addr);
+int        vmm_is_cow_page(uint64_t* pd, uint64_t virtual_addr);
+int        vmm_handle_cow(uint64_t* pd, uint64_t virtual_addr);
 
 static inline int vmm_is_user_address(uint32_t addr) {
     return addr >= 0x08000000U && addr < USER_STACK_TOP;

@@ -57,11 +57,12 @@ static void print_trace_frame(int idx, uintptr_t ret_ip) {
     printk_color_level(KLOG_LEVEL_CRIT, "] ", COLOR_LIGHT_BROWN);
     put_hex(ret_ip, COLOR_LIGHT_BROWN);
 
-    /* The symbol table still holds 32-bit addresses (the ELF loaders are
-     * ported in Phase 5/6 of PORTING-x86_64.md), so the name lookup truncates
-     * for now — the raw address above is always printed in full. */
-    uint32_t sym_off;
-    const char* sym = sym_resolve_addr((uint32_t)ret_ip, &sym_off);
+    /* The symbol table still holds 32-bit symbol values (the ELF loaders are
+     * ported in Phase 5/6 of PORTING-x86_64.md), but the lookup is handed the
+     * full 64-bit RIP: a kernel address is rejected by its window check instead
+     * of being truncated into the user window. */
+    uint64_t sym_off;
+    const char* sym = sym_resolve_addr(ret_ip, &sym_off);
     if (sym) {
         printk_color_level(KLOG_LEVEL_CRIT, " (", COLOR_DARK_GREY);
         printk((char*)sym);
@@ -141,7 +142,10 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
             rbp = next_rbp;
         }
     } else {
-        uint32_t* pd = current_task ? current_task->page_directory : 0;
+        // The walk below still uses the legacy two-level layout
+        // (PD_INDEX/PT_INDEX); view the PML4 as the 32-bit table it indexes
+        // (see print_code_bytes) so the byte-level access is unchanged.
+        uint32_t* pd = current_task ? (uint32_t*)(uintptr_t)current_task->page_directory : 0;
         uint32_t ebp = (uint32_t)rbp;
         while (frames < TRACE_FRAMES_MAX && (ebp & 3u) == 0) {
             uint32_t ret_eip, next_ebp;
@@ -160,7 +164,8 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
         // where a corrupted return address / pointer ends up.
         printk_color_level(KLOG_LEVEL_CRIT, "Stack: ", COLOR_DARK_GREY);
         if (priv_change) {
-            uint32_t* pd = current_task ? current_task->page_directory : 0;
+            // Legacy two-level view of the PML4, as in frame_mapped() above.
+            uint32_t* pd = current_task ? (uint32_t*)(uintptr_t)current_task->page_directory : 0;
             for (int i = 0; i < 12; i++) {
                 uint32_t v;
                 if (peek_user_u32(pd, (uint32_t)(regs->rsp + (uint64_t)i * 4u), &v) != 0) {
@@ -180,17 +185,16 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
 // The instruction bytes around RIP — the faulting instruction, or where a wild
 // jump landed.
 //
-// Re-reading them goes through the page tables, which are still the 32-bit
-// two-level ones here: walking a four-level mapping with PD_INDEX/PT_INDEX
-// would dereference whatever the PML4 entry happens to be — a nested fault
-// inside the fault handler.  The walk comes back with the memory layer in
-// Phase 2 of PORTING-x86_64.md; until then the dump says so instead of
-// guessing.
+// Re-reading them goes through the page tables, and this still indexes the
+// four-level PML4 with the legacy two-level PD_INDEX/PT_INDEX layout: walking a
+// four-level mapping that way would dereference whatever the PML4 entry happens
+// to be — a nested fault inside the fault handler.  Until this walker is
+// re-typed for four levels, the dump says so instead of guessing.
 static void print_code_bytes(uintptr_t rip) {
     printk_color_level(KLOG_LEVEL_CRIT, "Code: ", COLOR_LIGHT_BROWN);
     put_hex(rip, COLOR_LIGHT_BROWN);
     printk_color_level(KLOG_LEVEL_CRIT,
-                       " (bytes not shown: page-table walk is 32-bit)",
+                       " (bytes not shown: legacy two-level walk)",
                        COLOR_DARK_GREY);
     printk("\n");
 }
@@ -211,7 +215,7 @@ void dump_registers(const char *tag, struct context_frame *regs, uintptr_t esp) 
 }
 
 // CPU exception handler — signals for user tasks, panic for kernel
-void dump_context_frame(struct context_frame* regs, uint32_t fault_addr, uint32_t signal) {
+void dump_context_frame(struct context_frame* regs, uint64_t fault_addr, uint32_t signal) {
     char buf[32];
     const char* exc_names[32] = {
         "DE", "DB", "NMI", "BP", "OF", "BR", "UD", "NM",

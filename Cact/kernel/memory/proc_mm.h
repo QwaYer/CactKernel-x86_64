@@ -11,7 +11,7 @@ typedef struct proc_page_tracker_t {
     void**   pages;
     uint32_t count;
     uint32_t capacity;
-    uint32_t* page_dir;
+    uint64_t* page_dir;
 } proc_page_tracker_t;
 
 static inline void proc_tracker_init(proc_page_tracker_t* t)

@@ -62,14 +62,14 @@ unsafe extern "C" {
 
     pub fn load_elf(
         path:    *const u8,
-        pd:      *mut u32,
+        pd:      *mut u64,
         tracker: *mut ProcPageTracker,
     ) -> *mut c_void;
     pub fn elf_get_interp_path(path: *const u8, out: *mut u8, out_max: i32) -> i32;
     pub fn load_elf_interp(
         path:        *const u8,
         interp_path: *const u8,
-        pd:          *mut u32,
+        pd:          *mut u64,
         tracker:     *mut ProcPageTracker,
         info:        *mut InterpInfo,
     ) -> *mut c_void;
@@ -93,7 +93,7 @@ unsafe extern "C" {
 
 
     pub fn switch_to(old_esp: *mut u64, new_esp: u64);
-    pub fn switch_paging(pd: *mut u32);
+    pub fn switch_paging(pd: *mut u64);
 
     pub fn kernel_task_trampoline();
     pub fn user_task_trampoline();
@@ -104,7 +104,7 @@ unsafe extern "C" {
     pub fn itoa(n: i32, buf: *mut u8);
     pub fn hex_to_ascii(n: u32, buf: *mut u8);
 
-    pub static page_directory: SyncUnsafeCell<u32>;       
+    pub static page_directory: SyncUnsafeCell<u64>;
     pub static tss_entry: SyncUnsafeCell<TssEntry>;
     pub static vfs_root: SyncUnsafeCell<*mut VfsNode>;
     pub static sys_sigreturn_num: u32;

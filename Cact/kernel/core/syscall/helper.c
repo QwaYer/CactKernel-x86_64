@@ -28,7 +28,11 @@ static int frame_fits(uint32_t esp) {
 
 // Is the page holding `esp` a present, user, writable page of this task?
 static int frame_mapped(struct task_struct *t, uint32_t esp) {
-    uint32_t *pd = t->page_directory;
+    // The walk below still uses the legacy two-level layout (PD_INDEX/PT_INDEX);
+    // view the PML4 as the 32-bit table it indexes so the byte-level access is
+    // unchanged until the walk is re-typed for four levels (see the note in
+    // kernel_exc.c's print_code_bytes).
+    uint32_t *pd = (uint32_t *)(uintptr_t)t->page_directory;
     if (!pd) return 0;
     uint32_t pdi = PD_INDEX(esp);
     uint32_t pti = PT_INDEX(esp);

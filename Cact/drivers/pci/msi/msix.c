@@ -17,7 +17,7 @@
 /* MMIO (BAR/MSI-X) mappings must live in the global kernel page directory,
  * never in whatever process PD happens to be active when the deferred driver
  * probe runs — otherwise the IRQ handler faults under a user CR3. */
-extern uint32_t page_directory[1024];
+extern uint64_t page_directory[512];
 
 /* Byte 0x34 is the head of the standard capability list.  Print the chain
  * entry by entry: "no 0x11 in the chain" is then a fact about the device
@@ -202,10 +202,10 @@ int pci_msix_table_map(pci_device_t *dev,
     }
 
     for (uint64_t p = page_base; p < page_end; p += 0x1000)
-        vmm_map(page_directory, (uint32_t)p, (uint32_t)p,
+        vmm_map(page_directory, p, p,
                 PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT);
 
-    *table_out     = (volatile struct msix_table_entry *)(uintptr_t)(uint32_t)table_addr;
+    *table_out     = (volatile struct msix_table_entry *)(uintptr_t)table_addr;
     *table_size_out = table_size;
     return 0;
 }
@@ -230,10 +230,10 @@ int pci_msix_pba_map(pci_device_t *dev,
     if (pba_addr >= 0x100000000ULL) return -1;
     uint64_t pba_page = pba_addr & ~0xFFFULL;
 
-    vmm_map(page_directory, (uint32_t)pba_page, (uint32_t)pba_page,
+    vmm_map(page_directory, pba_page, pba_page,
             PAGE_PRESENT | PAGE_RW | PAGE_PCD | PAGE_PWT);
 
-    *pba_out = (volatile uint32_t *)(uintptr_t)(uint32_t)pba_addr;
+    *pba_out = (volatile uint32_t *)(uintptr_t)pba_addr;
     return 0;
 }
 

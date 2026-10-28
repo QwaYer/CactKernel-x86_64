@@ -43,13 +43,13 @@ int          swap_is_enabled(void);
 struct blkdev;
 int          swap_enable_device(struct blkdev *part);
 void         swap_notify_device_gone(struct blkdev *part);
-int          swap_out_page(uint32_t phys_addr, swap_slot_t* out_slot);
-int          swap_in_page(swap_slot_t slot, uint32_t phys_addr);
+int          swap_out_page(uint64_t phys_addr, swap_slot_t* out_slot);
+int          swap_in_page(swap_slot_t slot, uint64_t phys_addr);
 void         swap_free_slot(swap_slot_t slot);
 swap_stats_t swap_get_stats(void);
 void         swap_print_stats(void);
-int          swap_evict_page(uint32_t* pd);
-int          swap_handle_fault(uint32_t* pd, uint32_t fault_addr);
+int          swap_evict_page(uint64_t* pd);
+int          swap_handle_fault(uint64_t* pd, uint64_t fault_addr);
 
 static inline uint32_t swap_encode_pte(swap_slot_t slot)
 {

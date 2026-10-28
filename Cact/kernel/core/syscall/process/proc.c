@@ -52,7 +52,7 @@ int sys_exec(struct syscall_frame* regs) {
     // argv sitting near the top of the user stack (which ends at KERNEL_BASE).
     if (argv) {
         for (int i = 0; i < EXEC_VALIDATE_MAX; i++) {
-            if ((uint32_t)&argv[i] < USER_SPACE_START || (uint32_t)&argv[i] >= KERNEL_BASE) return -1;
+            if ((uintptr_t)&argv[i] < USER_SPACE_START || (uintptr_t)&argv[i] >= KERNEL_BASE) return -1;
             if (!argv[i]) break;
             if (!validate_user_str(argv[i])) return -1;
         }
@@ -61,7 +61,7 @@ int sys_exec(struct syscall_frame* regs) {
     // Validate envp array and each string pointer (same NULL-terminated rule).
     if (envp) {
         for (int i = 0; i < EXEC_VALIDATE_MAX; i++) {
-            if ((uint32_t)&envp[i] < USER_SPACE_START || (uint32_t)&envp[i] >= KERNEL_BASE) return -1;
+            if ((uintptr_t)&envp[i] < USER_SPACE_START || (uintptr_t)&envp[i] >= KERNEL_BASE) return -1;
             if (!envp[i]) break;
             if (!validate_user_str(envp[i])) return -1;
         }

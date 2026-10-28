@@ -3,6 +3,6 @@
 
 #include <stdint.h>
 
-const char* sym_resolve_addr(uint32_t addr, uint32_t* offset);
+const char* sym_resolve_addr(uint64_t addr, uint64_t* offset);
 
 #endif

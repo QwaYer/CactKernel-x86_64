@@ -91,18 +91,18 @@ void      kfree(void* ptr);
 uint32_t  get_free_heap_memory(void);
 uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
-void      vmm_map(uint32_t* pd, uint32_t virtual_addr, uint32_t physical_addr, int flags);
-uint32_t  vmm_get_phys(uint32_t* pd, uint32_t virtual_addr);
-void      vmm_sync_kernel_mmio_mappings(uint32_t* pd);
+void      vmm_map(uint64_t* pd, uint64_t virtual_addr, uint64_t physical_addr, int flags);
+uint64_t  vmm_get_phys(uint64_t* pd, uint64_t virtual_addr);
+void      vmm_sync_kernel_mmio_mappings(uint64_t* pd);
 /* Set/clear cache-attribute bits on the kernel's own mapping for `va`
  * (rust_mm: paging.rs).  The kernel maps with 2 MiB pages, so this reaches the
  * page-directory entry when there is no PTE; pat.c uses it for write-combining
  * framebuffer pages. */
-void      vmm_set_kernel_cache(uint32_t va, uint32_t set, uint32_t clear);
-uint32_t* vmm_create_address_space(void);
-void      vmm_free_address_space(uint32_t* pd);
-void      vmm_copy_address_space(uint32_t* src_pd, uint32_t* dst_pd);
-extern void load_page_directory(uint32_t* directory);
+void      vmm_set_kernel_cache(uint64_t va, uint64_t set, uint64_t clear);
+uint64_t* vmm_create_address_space(void);
+void      vmm_free_address_space(uint64_t* pd);
+void      vmm_copy_address_space(uint64_t* src_pd, uint64_t* dst_pd);
+extern void load_page_directory(uint64_t* directory);
 extern void enable_paging(void);
 
 #endif

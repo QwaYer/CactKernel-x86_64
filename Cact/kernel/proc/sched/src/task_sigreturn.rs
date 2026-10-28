@@ -23,7 +23,7 @@ pub unsafe extern "C" fn task_setup_sigreturn(t: *mut TaskStruct) {
     map_sigreturn_trampoline_on_pd(t, pd);
 }
 
-pub(crate) fn map_sigreturn_trampoline_on_pd(t: *mut TaskStruct, pd: *mut u32) {
+pub(crate) fn map_sigreturn_trampoline_on_pd(t: *mut TaskStruct, pd: *mut u64) {
     if t.is_null() || pd.is_null() {
         return;
     }
@@ -95,7 +95,7 @@ pub(crate) fn map_sigreturn_trampoline_on_pd(t: *mut TaskStruct, pd: *mut u32) {
     };
     // SAFETY: `pd` is a valid page directory (checked at entry) and `phys` is a freshly
     // allocated page, so mapping it at `tramp_vaddr` is the documented operation.
-    unsafe { cact_mm::vmm_map(pd, tramp_vaddr, phys as u32, vmm_flags as i32) };
+    unsafe { cact_mm::vmm_map(pd, tramp_vaddr as u64, phys as u64, vmm_flags as i32) };
 
     if !t_proc.is_null() {
         // SAFETY: `t_proc` is the task's live `ProcMeta` (non-null checked here), so storing the

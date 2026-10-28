@@ -36,7 +36,7 @@ pub struct TaskShmAttach {
 #[repr(C)]
 pub struct TaskStruct {
     pub esp:            u64,              //  0
-    pub page_directory: *mut u32,         //  8
+    pub page_directory: *mut u64,         //  8
     pub fpu_context_ptr: *mut c_void,     // 16
     pub pid:            u32,              // 24
     pub state:          TaskState,        // 28 (u32)

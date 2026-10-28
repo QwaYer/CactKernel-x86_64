@@ -47,17 +47,17 @@ typedef struct mmap_table {
 
 void           mmap_table_init(mmap_table_t* tbl);
 void           mmap_table_clone(mmap_table_t* src, mmap_table_t* dst,
-                                uint32_t* src_pd, uint32_t* dst_pd);
-void           mmap_table_free(mmap_table_t* tbl, uint32_t* pd);
-void*          do_mmap(uint32_t* pd, mmap_table_t* tbl,
+                                uint64_t* src_pd, uint64_t* dst_pd);
+void           mmap_table_free(mmap_table_t* tbl, uint64_t* pd);
+void*          do_mmap(uint64_t* pd, mmap_table_t* tbl,
                        uint32_t hint, uint32_t length,
                        int prot, int flags, int fd, uint32_t offset);
-int            do_munmap(uint32_t* pd, mmap_table_t* tbl,
+int            do_munmap(uint64_t* pd, mmap_table_t* tbl,
                          uint32_t addr, uint32_t length);
-int            do_mprotect(uint32_t* pd, mmap_table_t* tbl,
+int            do_mprotect(uint64_t* pd, mmap_table_t* tbl,
                            uint32_t addr, uint32_t length, int prot,
                            uint32_t brk_start, uint32_t brk_end);
-int            mmap_handle_fault(uint32_t* pd, mmap_table_t* tbl, uint32_t fault_addr);
+int            mmap_handle_fault(uint64_t* pd, mmap_table_t* tbl, uint32_t fault_addr);
 mmap_region_t* mmap_find_region(mmap_table_t* tbl, uint32_t addr);
 void           mmap_print_regions(const mmap_table_t* tbl);
 

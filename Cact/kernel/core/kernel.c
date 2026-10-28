@@ -36,8 +36,8 @@
 #include "ksym.h"
 
 
-// Kernel page directory (defined in paging.c)
-extern uint32_t page_directory[1024];
+// Kernel page directory (defined by the Rust mm crate as #[no_mangle]).
+extern uint64_t page_directory[512];
 
 // Terminal window size for ioctl() calls
 struct winsize terminal_winsize;

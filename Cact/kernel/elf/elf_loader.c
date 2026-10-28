@@ -40,7 +40,7 @@ static int _elf_seg_ok(uint32_t seg_start, uint32_t seg_end) {
 /* Loads only the PT_LOAD segments (no relocation/dynlink pass) for a file.
  * out_phdr is the user-space address of a mapped program-header table
  * (0 when the phdrs are already covered by a segment mapping). */
-static int _map_image(struct vfs_node* file, uint32_t* pd,
+static int _map_image(struct vfs_node* file, uint64_t* pd,
                       proc_page_tracker_t* tracker,
                       uint32_t* out_entry, uint32_t* out_min_vaddr,
                       uint32_t* out_phdr, uint32_t* out_phnum)
@@ -115,7 +115,7 @@ static int _map_image(struct vfs_node* file, uint32_t* pd,
                                      (char*)phys + page_offset) <= 0) return -1;
                     }
                 }
-                vmm_map(pd, va, (uint32_t)phys,
+                vmm_map(pd, va, (uint64_t)phys,
                         PAGE_USER | PAGE_RW | PAGE_PRESENT);
             }
 
@@ -149,7 +149,7 @@ static int _map_image(struct vfs_node* file, uint32_t* pd,
 
         if (min_vaddr < PAGE_SIZE) return -1;
         uint32_t page_va = min_vaddr - 0x1000u;
-        vmm_map(pd, page_va, (uint32_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+        vmm_map(pd, page_va, (uint64_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
         phdr_vaddr = page_va + page_off;
     }
 
@@ -159,10 +159,10 @@ static int _map_image(struct vfs_node* file, uint32_t* pd,
 }
 
 int elf_get_interp_path(const char* path, char* out, int out_max);
-void* load_elf_interp(char* path, char* interp_path, uint32_t* pd,
+void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
                       proc_page_tracker_t* tracker, elf_interp_info_t* info);
 
-void* load_elf(char* path, uint32_t* pd, proc_page_tracker_t* tracker)
+void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
 {
     tracker->page_dir = pd;
 
@@ -283,7 +283,7 @@ void* load_elf(char* path, uint32_t* pd, proc_page_tracker_t* tracker)
                     }
                 }
 
-                vmm_map(pd, va, (uint32_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+                vmm_map(pd, va, (uint64_t)phys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
             } else {
                 /* p_memsz > p_filesz: .bss / zero tail — need present mappings (not demand-only). */
                 void* zphys = kalloc();
@@ -300,7 +300,7 @@ void* load_elf(char* path, uint32_t* pd, proc_page_tracker_t* tracker)
                 }
                 uint8_t* zp = (uint8_t*)zphys;
                 for (int k = 0; k < (int)PAGE_SIZE; k++) zp[k] = 0;
-                vmm_map(pd, va, (uint32_t)zphys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
+                vmm_map(pd, va, (uint64_t)zphys, PAGE_USER | PAGE_RW | PAGE_PRESENT);
             }
         }
     }
@@ -344,7 +344,7 @@ int elf_get_interp_path(const char* path, char* out, int out_max)
     return -1;
 }
 
-void* load_elf_interp(char* path, char* interp_path, uint32_t* pd,
+void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
                       proc_page_tracker_t* tracker, elf_interp_info_t* info)
 {
     if (!path || !interp_path || !pd || !tracker || !info) return 0;

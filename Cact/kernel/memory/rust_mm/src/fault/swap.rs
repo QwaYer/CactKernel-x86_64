@@ -2,13 +2,15 @@
 //!
 //! Encodes swapped-out PTEs with `PAGE_SWAPPED`; cooperates with the page-fault path.
 
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
 
 pub type SwapSlot = u32;
+/// Entries in one page table at any level — the tables are 512 × 8-byte entries.
+const TABLE_ENTRIES: u32 = 512;
 pub type SwapReadFn = Option<unsafe extern "C" fn(u32, *mut u8, u32) -> i32>;
 pub type SwapWriteFn = Option<unsafe extern "C" fn(u32, *const u8, u32) -> i32>;
 
@@ -69,16 +71,16 @@ fn slot_to_lba(slot: SwapSlot) -> u32 {
     SWAP_DATA_START_LBA + slot * (PAGE_SIZE / 512)
 }
 
-fn swap_encode_pte(slot: SwapSlot) -> u32 {
-    ((slot << 12) & 0xFFFFF000) | PAGE_SWAPPED
+fn swap_encode_pte(slot: SwapSlot) -> u64 {
+    ((slot as u64) << 12 & 0xFFFFF000) | PAGE_SWAPPED as u64
 }
 
-fn swap_decode_pte(pte: u32) -> SwapSlot {
-    (pte & 0xFFFFF000) >> 12
+fn swap_decode_pte(pte: u64) -> SwapSlot {
+    ((pte & 0xFFFFF000) >> 12) as SwapSlot
 }
 
-pub fn swap_pte_is_swapped(pte: u32) -> bool {
-    (pte & PAGE_PRESENT == 0) && (pte & PAGE_SWAPPED != 0)
+pub fn swap_pte_is_swapped(pte: u64) -> bool {
+    (pte & PAGE_PRESENT as u64 == 0) && (pte & PAGE_SWAPPED as u64 != 0)
 }
 
 pub fn swap_is_enabled() -> bool {
@@ -198,12 +200,12 @@ pub extern "C" fn swap_is_enabled_ffi() -> i32 {
 /// `out_slot` must be null or point to a writable `SwapSlot` valid for the
 /// call, and `phys_addr` must be a page-aligned physical frame address.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_out_page(phys_addr: u32, out_slot: *mut SwapSlot) -> i32 {
+pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) -> i32 {
     // SAFETY: `G_ENABLED` is immutable after `swap_init`.
     if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 {
         return -1;
     }
-    if !phys_addr.is_multiple_of(PAGE_SIZE) {
+    if !phys_addr.is_multiple_of(PAGE_SIZE as u64) {
         return -1;
     }
 
@@ -246,7 +248,7 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u32, out_slot: *mut SwapSlot) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u32) -> i32 {
+pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
     // SAFETY: `G_ENABLED` immutable after boot init.
     if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 {
         return -1;
@@ -256,7 +258,7 @@ pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u32) -> i32 {
     if slot >= *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } {
         return -1;
     }
-    if !phys_addr.is_multiple_of(PAGE_SIZE) {
+    if !phys_addr.is_multiple_of(PAGE_SIZE as u64) {
         return -1;
     }
 
@@ -300,7 +302,7 @@ pub extern "C" fn swap_free_slot(slot: SwapSlot) {
 /// `pd` must be null or a valid page directory whose user PTEs the caller is
 /// allowed to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_evict_page(pd: *mut u32) -> i32 {
+pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     // SAFETY: `G_ENABLED` immutable after boot init.
     if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 || pd.is_null() {
         return -1;
@@ -318,66 +320,66 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u32) -> i32 {
 
     while iterations < max_iter {
         iterations += 1;
-        if pdi >= 1024 {
+        if pdi >= TABLE_ENTRIES {
             pdi = 32;
             ptj = 0;
         }
 
-        // SAFETY: `pd` is valid and `pdi < 1024`, so this PD entry pointer is in
-        // bounds.
+        // SAFETY: `pd` is valid and `pdi < TABLE_ENTRIES`, so this PD entry
+        // pointer is in bounds.
         let pde_entry = unsafe { pd.add(pdi as usize) };
         // SAFETY: `pde_entry` points at one initialised PD entry.
         let pde = unsafe { *pde_entry };
-        if pde & PAGE_PRESENT == 0 {
+        if pde & PAGE_PRESENT as u64 == 0 {
             pdi += 1;
             ptj = 0;
             continue;
         }
 
-        if pde & PDE_PRIVATE == 0 {
+        if pde & PDE_PRIVATE as u64 == 0 {
             pdi += 1;
             ptj = 0;
             continue;
         }
 
-        let pt_atomic = (pde & !0xFFF) as *mut AtomicU32;
+        let pt_atomic = (pde & !0xFFF) as *mut AtomicU64;
         // SAFETY: `pt_atomic` is the live page table named by the present private
-        // PDE and `ptj < 1024`, so this entry pointer is in bounds.
+        // PDE and `ptj < TABLE_ENTRIES`, so this entry pointer is in bounds.
         let pte_entry = unsafe { pt_atomic.add(ptj as usize) };
         // SAFETY: `pte_entry` points at one live atomic PTE; a relaxed load is a
         // single atomic access, so no torn value can be observed.
         let pte = unsafe { (*pte_entry).load(Ordering::Relaxed) };
 
-        if pte & PAGE_PRESENT == 0 || swap_pte_is_swapped(pte) {
+        if pte & PAGE_PRESENT as u64 == 0 || swap_pte_is_swapped(pte) {
             ptj += 1;
-            if ptj >= 1024 {
+            if ptj >= TABLE_ENTRIES {
                 ptj = 0;
                 pdi += 1;
             }
             continue;
         }
-        if pte & PAGE_USER == 0 {
+        if pte & PAGE_USER as u64 == 0 {
             ptj += 1;
-            if ptj >= 1024 {
+            if ptj >= TABLE_ENTRIES {
                 ptj = 0;
                 pdi += 1;
             }
             continue;
         }
 
-        if pte & PTE_ACCESSED != 0 {
+        if pte & PTE_ACCESSED as u64 != 0 {
             // SAFETY: `pt_atomic` is the page table referenced by the present,
-            // private PDE just read from `pd` and `ptj < 1024`, so this entry
-            // pointer is in bounds.
+            // private PDE just read from `pd` and `ptj < TABLE_ENTRIES`, so this
+            // entry pointer is in bounds.
             let access_entry = unsafe { pt_atomic.add(ptj as usize) };
             // SAFETY: `access_entry` points at one live atomic PTE; the fetch_and is
             // a single atomic RMW, so a concurrent accessor cannot observe a torn
             // value.
-            unsafe { (*access_entry).fetch_and(!PTE_ACCESSED, Ordering::AcqRel) };
+            unsafe { (*access_entry).fetch_and(!(PTE_ACCESSED as u64), Ordering::AcqRel) };
             let vaddr = (pdi << 22) | (ptj << 12);
-            flush_tlb(vaddr);
+            flush_tlb(vaddr as u64);
             ptj += 1;
-            if ptj >= 1024 {
+            if ptj >= TABLE_ENTRIES {
                 ptj = 0;
                 pdi += 1;
             }
@@ -393,22 +395,22 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u32) -> i32 {
         }
 
         let mut new_pte = swap_encode_pte(slot);
-        new_pte |= (pte & (PAGE_RW | PAGE_USER)) & !PAGE_PRESENT;
+        new_pte |= (pte & ((PAGE_RW | PAGE_USER) as u64)) & !(PAGE_PRESENT as u64);
         // SAFETY: `pt_atomic` is the same live page table addressed above and
-        // `ptj < 1024`, so this entry pointer is in bounds.
+        // `ptj < TABLE_ENTRIES`, so this entry pointer is in bounds.
         let publish_entry = unsafe { pt_atomic.add(ptj as usize) };
         // SAFETY: `publish_entry` points at one live atomic PTE; the store is a
         // single atomic access, publishing the swapped-out PTE.
         unsafe { (*publish_entry).store(new_pte, Ordering::Release) };
 
         let vaddr = (pdi << 22) | (ptj << 12);
-        flush_tlb(vaddr);
+        flush_tlb(vaddr as u64);
 
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
         unsafe { free_page(phys as *mut u8) };
 
         ptj += 1;
-        if ptj >= 1024 {
+        if ptj >= TABLE_ENTRIES {
             ptj = 0;
             pdi += 1;
         }
@@ -429,7 +431,7 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u32) -> i32 {
 /// `pd` must be null or a valid page directory whose user PTEs the caller is
 /// allowed to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_handle_fault(pd: *mut u32, fault_addr: u32) -> i32 {
+pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32 {
     if pd.is_null() {
         return -1;
     }
@@ -444,7 +446,7 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u32, fault_addr: u32) -> i32
     }
     // The page table exists, so the walk found one: the entry the swap markers
     // live in.
-    let pte_entry = w.pte_entry as *mut AtomicU32;
+    let pte_entry = w.pte_entry as *mut AtomicU64;
     // SAFETY: `pte_entry` points at one live atomic PTE; an acquire load is a
     // single atomic access.
     let pte = unsafe { (*pte_entry).load(Ordering::Acquire) };
@@ -468,18 +470,18 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u32, fault_addr: u32) -> i32
         }
     }
 
-    if swap_in_page(slot, phys as u32) != 0 {
+    if swap_in_page(slot, phys as u64) != 0 {
         // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
         unsafe { free_page(phys) };
         return -1;
     }
 
-    let old_flags = pte & (PAGE_RW | PAGE_USER);
+    let old_flags = pte & ((PAGE_RW | PAGE_USER) as u64);
     // SAFETY: `pte_entry` points at one live atomic PTE; the store publishes the
     // restored mapping.
     unsafe {
         (*pte_entry).store(
-            (phys as u32 & !0xFFF) | old_flags | PAGE_PRESENT,
+            (phys as u64 & !0xFFF) | old_flags | PAGE_PRESENT as u64,
             Ordering::Release,
         )
     };

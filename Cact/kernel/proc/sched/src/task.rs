@@ -287,7 +287,7 @@ pub(crate) fn ustack_write_u32(p: &ProcMeta, uva: u32, val: u32) {
     }
 }
 
-pub(crate) fn map_user_stack_in_pd(pd: *mut u32, p: &ProcMeta) {
+pub(crate) fn map_user_stack_in_pd(pd: *mut u64, p: &ProcMeta) {
     if pd.is_null() {
         return;
     }
@@ -297,8 +297,8 @@ pub(crate) fn map_user_stack_in_pd(pd: *mut u32, p: &ProcMeta) {
     unsafe {
         for i in 0..USER_STACK_PAGES {
             let vaddr = p.ustack_virt.wrapping_add(i.wrapping_mul(PAGE_SIZE));
-            let phys = ustack_phys_by_idx(p, i as usize) as u32;
-            cact_mm::vmm_map(pd, vaddr, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
+            let phys = ustack_phys_by_idx(p, i as usize) as u64;
+            cact_mm::vmm_map(pd, vaddr as u64, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
         }
     }
 }
@@ -375,7 +375,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
 ///
 /// `page_dir` must be null or a live address space owned by the new thread group.
 #[no_mangle]
-pub unsafe extern "C" fn proc_shared_alloc(page_dir: *mut u32) -> *mut ProcShared {
+pub unsafe extern "C" fn proc_shared_alloc(page_dir: *mut u64) -> *mut ProcShared {
     let s = cact_mm::kmalloc(core::mem::size_of::<ProcShared>() as u32) as *mut ProcShared;
     if s.is_null() {
         return ptr::null_mut();
@@ -522,27 +522,27 @@ pub unsafe extern "C" fn init_scheduler() -> i32 {
     0
 }
 
-pub(crate) fn calc_highest_mapped_va(pd: *mut u32) -> u32 {
+pub(crate) fn calc_highest_mapped_va(pd: *mut u64) -> u32 {
     if pd.is_null() {
         return 0;
     }
-    for pdi in (0..1024).rev() {
-        // SAFETY: `pd` is a live page directory and `pdi < 1024`, so this PDE offset is in
+    for pdi in (0..512).rev() {
+        // SAFETY: `pd` is a live page directory and `pdi < 512`, so this PDE offset is in
         // bounds.
         let pde_ptr = unsafe { pd.add(pdi) };
         // SAFETY: `pde_ptr` is a live PDE slot.
         let pde = unsafe { *pde_ptr };
-        if pde & PAGE_PRESENT == 0 {
+        if pde & PAGE_PRESENT as u64 == 0 {
             continue;
         }
-        let pt = (pde & !0xFFF) as *mut u32;
-        for pti in (0..1024).rev() {
-            // SAFETY: `pt` is a live page table and `pti < 1024`, so this PTE offset is in
+        let pt = (pde & !0xFFF) as *mut u64;
+        for pti in (0..512).rev() {
+            // SAFETY: `pt` is a live page table and `pti < 512`, so this PTE offset is in
             // bounds.
             let pte_ptr = unsafe { pt.add(pti) };
             // SAFETY: `pte_ptr` is a live PTE slot.
             let pte = unsafe { *pte_ptr };
-            if pte & PAGE_PRESENT != 0 {
+            if pte & PAGE_PRESENT as u64 != 0 {
                 let va = ((pdi << 22) | (pti << 12)) as u32;
                 if va < 0xBF00_0000 {
                     return va + PAGE_SIZE;

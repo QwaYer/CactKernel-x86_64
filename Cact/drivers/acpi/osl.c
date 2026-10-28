@@ -51,14 +51,15 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
     if (m) {
         if (pages > m->pages) {
             for (UINT32 i = m->pages; i < pages; i++) {
-                vmm_map(get_current_pd(), (UINT32)m->virt + i * 4096,
+                vmm_map(get_current_pd(),
+                        (uint64_t)(uintptr_t)m->virt + (uint64_t)i * 4096,
                         phys_page + i * 4096, PAGE_PRESENT | PAGE_RW | PAGE_PWT);
             }
             m->pages = pages;
         }
         m->refs++;
         spin_unlock(&acpi_mappings_lock);
-        return (void*)(UINT32)((UINT32)m->virt + offset);
+        return (void*)(uintptr_t)((uintptr_t)m->virt + offset);
     }
 
     /* Otherwise claim a free slot. */
@@ -92,8 +93,10 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
 
 void acpi_temp_unmap(void *virt, UINT32 size)
 {
-    UINT32 va      = (UINT32)(UINT32)virt & ~0xFFF;
-    UINT32 *pd     = get_current_pd();
+    UINT32 va      = (UINT32)(uint32_t)(uintptr_t)virt & ~0xFFF;
+    /* The teardown walk below still uses the legacy two-level layout
+     * (10-bit PD/PT indices); view the PML4 as the 32-bit table it indexes. */
+    UINT32 *pd     = (UINT32 *)(uintptr_t)get_current_pd();
 
     spin_lock(&acpi_mappings_lock);
 
@@ -248,7 +251,8 @@ ACPI_STATUS AcpiOsGetPhysicalAddress(
 {
     if (!PhysicalAddress)
         return AE_BAD_PARAMETER;
-    *PhysicalAddress = vmm_get_phys(get_current_pd(), (UINT32)(UINT32)LogicalAddress);
+    *PhysicalAddress = vmm_get_phys(get_current_pd(),
+                                    (uint64_t)(uintptr_t)LogicalAddress);
     return AE_OK;
 }
 

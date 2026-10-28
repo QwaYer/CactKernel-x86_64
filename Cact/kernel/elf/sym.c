@@ -3,7 +3,7 @@
 #include "task.h"
 #include "validate.h"
 
-const char* sym_resolve_addr(uint32_t addr, uint32_t* offset) {
+const char* sym_resolve_addr(uint64_t addr, uint64_t* offset) {
     if (offset) *offset = 0;
 
     if (!current_task || current_task->is_kernel || !current_task->proc)
@@ -13,7 +13,9 @@ const char* sym_resolve_addr(uint32_t addr, uint32_t* offset) {
     // address (a fault caught in ring 0, a syscall return address) has nothing
     // to do with that symbol table; matching one here used to print nonsense
     // like `_GLOBAL_OFFSET_TABLE_+0xf0103166`, because the lookup kept the last
-    // symbol at or below the wrapped offset.
+    // symbol at or below the wrapped offset.  The full 64-bit address is tested
+    // here, so the kernel's higher half is rejected rather than truncated into
+    // the user window.
     if (addr < USER_SPACE_START || addr >= KERNEL_BASE)
         return 0;
 
@@ -21,12 +23,12 @@ const char* sym_resolve_addr(uint32_t addr, uint32_t* offset) {
     Elf32_Sym* symtab = (Elf32_Sym*)current_task->proc->exec_symtab;
     char*      strtab = current_task->proc->exec_strtab;
     int        count  = current_task->proc->exec_symtab_count;
-    uint32_t   base   = current_task->proc->exec_base;
+    uint64_t   base   = current_task->proc->exec_base;
 
     if (symtab && strtab && count > 0) {
-        uint32_t rel = addr - base;
+        uint64_t rel = addr - base;
         int best = -1;
-        uint32_t best_val = 0;
+        uint64_t best_val = 0;
 
         for (int j = 0; j < count; j++) {
             uint32_t sym_val = symtab[j].st_value;

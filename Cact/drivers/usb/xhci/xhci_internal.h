@@ -8,7 +8,7 @@
 #include "sync.h"
 #include "msi.h"
 
-extern uint32_t page_directory[1024];
+extern uint64_t page_directory[512];
 
 extern usb_hc_t *xhci_hc_list;
 extern irq_spinlock_t xhci_evt_lock;

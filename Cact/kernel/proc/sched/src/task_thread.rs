@@ -207,7 +207,7 @@ pub unsafe extern "C" fn sched_create_thread(
 
 unsafe extern "C" {
     /// Provided by `syscall/process/thread.c`; wakes waiters on a futex word.
-    fn cact_futex_wake_addr(pd: *mut u32, uaddr: *mut u32, count: i32) -> i32;
+    fn cact_futex_wake_addr(pd: *mut u64, uaddr: *mut u32, count: i32) -> i32;
 }
 
 /// Clear the exiting thread's join word and wake its joiners (Linux's

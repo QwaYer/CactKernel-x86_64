@@ -178,7 +178,7 @@ void hex_to_ascii  (uint32_t n, char str[]);
 
 // CPU exception dispatcher
 void exception_handler(struct context_frame* regs);
-void dump_context_frame(struct context_frame* regs, uint32_t fault_addr, uint32_t signal);
+void dump_context_frame(struct context_frame* regs, uint64_t fault_addr, uint32_t signal);
 void dump_registers(const char* tag, struct context_frame* regs, uintptr_t esp);
 uintptr_t context_frame_esp(struct context_frame* regs);
 
@@ -192,20 +192,19 @@ void irq_apic_eoi(void);
 // Read CR2 (page fault linear address)
 //
 // CR2/CR3 are 64-bit registers in long mode and only the 64-bit form is
-// encodable there, so both accessors move the value through a pointer-sized
-// temporary.  The 32-bit shape of the memory API (and of get_current_pd's
-// pointee) is what Phase 2 of PORTING-x86_64.md re-types.
-static inline uint32_t read_cr2(void) {
+// encodable there, so both accessors move the full 64-bit value (through a
+// pointer-sized temporary).
+static inline uint64_t read_cr2(void) {
     void* val;
     __asm__ __volatile__("mov %%cr2, %0" : "=r"(val));
-    return (uint32_t)(uintptr_t)val;
+    return (uint64_t)(uintptr_t)val;
 }
 
 // Get current page directory pointer (CR3)
-static inline uint32_t* get_current_pd(void) {
+static inline uint64_t* get_current_pd(void) {
     void* val;
     __asm__ __volatile__("mov %%cr3, %0" : "=r"(val));
-    return (uint32_t*)val;
+    return (uint64_t*)val;
 }
 
 // Hardware detection helpers
@@ -231,10 +230,10 @@ void fpu_cleanup_task(struct task_struct* task);
 
 // Paging / memory management
 void      init_paging            (void);
-void      switch_paging          (uint32_t* pd);
-void      vmm_map                (uint32_t* pd, uint32_t virt, uint32_t phys, int flags);
-uint32_t  vmm_get_phys           (uint32_t* pd, uint32_t virt);
-uint32_t* vmm_create_address_space(void);
+void      switch_paging          (uint64_t* pd);
+void      vmm_map                (uint64_t* pd, uint64_t virt, uint64_t phys, int flags);
+uint64_t  vmm_get_phys           (uint64_t* pd, uint64_t virt);
+uint64_t* vmm_create_address_space(void);
 uint32_t  get_free_heap_memory   (void);
 void      slab_init              (void);
 void      page_fault_init        (void);
@@ -249,7 +248,7 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap);
 // ELF loader types
 struct proc_page_tracker_t;
 struct vfs_node;
-void* load_elf(char* path, uint32_t* pd, struct proc_page_tracker_t* tracker);
+void* load_elf(char* path, uint64_t* pd, struct proc_page_tracker_t* tracker);
 void  elf_load_exec_symtab(const char* path, struct proc_metadata* proc);
 uint32_t elf_get_brk_start(struct vfs_node* file);
 

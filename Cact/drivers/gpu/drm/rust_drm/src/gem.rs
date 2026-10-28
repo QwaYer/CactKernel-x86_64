@@ -36,7 +36,7 @@ extern "C" {
 
     /* kernel/memory/rust_mm — page-table walk.  A null directory selects the
      * kernel's, which is the one the memfd frames are mapped in. */
-    fn vmm_get_phys(pd: *mut u32, va: u32) -> u32;
+    fn vmm_get_phys(pd: *mut u64, va: u64) -> u64;
 }
 
 /// Address of the device's bookkeeping lock.
@@ -276,14 +276,14 @@ pub extern "C" fn drm_gem_page_count(obj: *mut GemObject) -> u32 {
 /// needs physical addresses: memfd frames are allocated individually, so a
 /// caller walks indices `0..drm_gem_page_count(obj)` to collect them.
 #[no_mangle]
-pub extern "C" fn drm_gem_page_phys(obj: *mut GemObject, index: u32) -> u32 {
+pub extern "C" fn drm_gem_page_phys(obj: *mut GemObject, index: u32) -> u64 {
     if obj.is_null() || index >= drm_gem_page_count(obj) {
         return 0;
     }
     // SAFETY: `drm_gem_vaddr`'s contract: `obj` is the caller's live object and
     // `index * 4096` is inside its size (checked above), so the page base is
     // returned (the low 12 bits of the offset are zero).
-    let page = drm_gem_vaddr(obj, index * 4096) as u32;
+    let page = drm_gem_vaddr(obj, index * 4096) as u64;
     if page == 0 {
         return 0;
     }

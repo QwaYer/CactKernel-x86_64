@@ -595,9 +595,9 @@ void apic_dump_state(const char *tag)
     pr_info("%s:   TPR=0x%x PPR=0x%x SVR=0x%x LVT=0x%x mask=%u periodic=%u\n",
             "apic", (unsigned)tpr, (unsigned)ppr, (unsigned)svr, (unsigned)lvt,
             (unsigned)((lvt >> 16) & 1u), (unsigned)((lvt >> 17) & 1u));
-    pr_info("%s:   INIT=0x%x CUR=0x%x->0x%x TDCR=0x%x isr=%d irr=%d gate=0x%x\n",
+    pr_info("%s:   INIT=0x%x CUR=0x%x->0x%x TDCR=0x%x isr=%d irr=%d gate=0x%llx\n",
             "apic", (unsigned)init, (unsigned)cur, (unsigned)cur2, (unsigned)tdcr,
-            in_service, pending, (unsigned)gate);
+            in_service, pending, (unsigned long long)gate);
 
     if (!(base & APIC_ENABLE))
         pr_warn("%s:   -> APIC_BASE[11] clear: LAPIC globally disabled\n", "apic");
@@ -625,9 +625,10 @@ void apic_dump_state(const char *tag)
     else if (pending == LAPIC_TIMER_VECTOR)
         pr_info("%s:   -> tick sits in IRR: the timer fires, delivery is "
                 "what is blocked\n", "apic");
-    if (gate != (uint32_t)timer_isr)
-        pr_warn("%s:   -> IDT gate 0x%x is not timer_isr 0x%x\n", "apic",
-                (unsigned)gate, (unsigned)(uint32_t)timer_isr);
+    if (gate != (uint64_t)(uintptr_t)timer_isr)
+        pr_warn("%s:   -> IDT gate 0x%llx is not timer_isr 0x%llx\n", "apic",
+                (unsigned long long)gate,
+                (unsigned long long)(uintptr_t)timer_isr);
 }
 
 /* One-line live snapshot for the boot watchdog: is the counter moving, is the

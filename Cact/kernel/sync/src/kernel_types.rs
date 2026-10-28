@@ -15,7 +15,7 @@ pub struct ProcPageTracker {
     pub pages:    *mut *mut u8,
     pub count:    u32,
     pub capacity: u32,
-    pub page_dir: *mut u32,
+    pub page_dir: *mut u64,
 }
 
 /// One `mmap` region (C `mmap_region_t`).

@@ -42,7 +42,9 @@ static int sys_sigreturn_impl(struct syscall_frame* regs) {
 
     // Read frame with double-check of page tables to prevent TOCTOU
     for (int attempt = 0; attempt < 2; attempt++) {
-        uint32_t* pd = current_task->page_directory;
+        // The walk below still uses the legacy two-level layout; view the PML4
+        // as the 32-bit table it indexes (see kernel_exc.c's print_code_bytes).
+        uint32_t* pd = (uint32_t*)(uintptr_t)current_task->page_directory;
         if (!pd) return -1;
         uint32_t pdi = PD_INDEX(user_esp);
         uint32_t pti = PT_INDEX(user_esp);

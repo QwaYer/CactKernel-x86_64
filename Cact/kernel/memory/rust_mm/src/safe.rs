@@ -85,13 +85,13 @@ use crate::ffi::{
     read_cr2, tlb_flush, tlb_flush_all, get_current_pd,
 };
 
-/// Read the CR2 register (page-fault linear address).
-pub fn read_cr2_val() -> u32 {
+/// Read the CR2 register (page-fault linear address).  CR2 is 64-bit in long mode.
+pub fn read_cr2_val() -> u64 {
     read_cr2()
 }
 
 /// Flush a single TLB entry for `vaddr`.
-pub fn flush_tlb(vaddr: u32) {
+pub fn flush_tlb(vaddr: u64) {
     tlb_flush(vaddr)
 }
 
@@ -100,8 +100,8 @@ pub fn flush_tlb_all() {
     tlb_flush_all()
 }
 
-/// Return the current page-directory pointer from CR3.
-pub fn current_page_dir() -> *mut u32 {
+/// Return the current page-directory pointer (the PML4 in long mode) from CR3.
+pub fn current_page_dir() -> *mut u64 {
     get_current_pd()
 }
 

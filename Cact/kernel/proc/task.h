@@ -282,7 +282,7 @@ typedef char _proc_metadata_tail_check[
 
 struct task_struct {
     uint64_t esp;   /* saved RSP; field 0 so &task->esp == task (see task.asm) */
-    uint32_t* page_directory;
+    uint64_t* page_directory;   /* PML4 root (the kernel's own page map is the C global) */
     void* fpu_context_ptr;
     uint32_t pid;
     task_state state;
@@ -405,7 +405,7 @@ int  sched_create_thread(void* entry, uint32_t user_esp, uint32_t tls,
 int  sched_set_tls(uint32_t base);
 /* Wake up to `count` futex waiters on `uaddr` in address space `pd` (kernel FFI
  * used by the scheduler's thread-exit path). */
-int  cact_futex_wake_addr(uint32_t* pd, uint32_t* uaddr, int count);
+int  cact_futex_wake_addr(uint64_t* pd, uint32_t* uaddr, int count);
 /* Send `signal` to every task of the calling task's group except `except_pid`. */
 void task_signal_group(uint32_t except_pid, uint32_t signal);
 void task_signal_pgid(uint32_t pgid, uint32_t signal);
@@ -419,11 +419,11 @@ int  proc_futex(const void* arg);
 int  proc_set_tls(uint32_t base);
 
 struct task_struct* create_task_with_entry(void*                entry,
-                                             uint32_t*            pd,
+                                             uint64_t*            pd,
                                              proc_page_tracker_t* tracker);
 
-uint32_t* vmm_create_address_space();
-void vmm_free_address_space(uint32_t* pd);
+uint64_t* vmm_create_address_space(void);
+void vmm_free_address_space(uint64_t* pd);
 
 /* Each core keeps its own running-task pointer; this resolves to the calling
  * CPU's slot (sched/src/percpu.rs). */

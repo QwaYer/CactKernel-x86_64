@@ -234,26 +234,23 @@ pub const PROC_GROW_STEP: u32 = 256;
 /// 4 KiB mapping inside one.
 
 #[inline(always)]
-pub fn pml4_index(vaddr: u32) -> u32 {
-    // Every virtual address this kernel uses is below 4 GiB, so the PML4 index
-    // is always zero; the shift goes through u64 so that the arithmetic says so
-    // rather than overflowing.
-    ((vaddr as u64 >> 39) & 0x1FF) as u32
+pub fn pml4_index(vaddr: u64) -> u32 {
+    ((vaddr >> 39) & 0x1FF) as u32
 }
 
 #[inline(always)]
-pub fn pdpt_index(vaddr: u32) -> u32 {
-    (vaddr >> 30) & 0x1FF
+pub fn pdpt_index(vaddr: u64) -> u32 {
+    ((vaddr >> 30) & 0x1FF) as u32
 }
 
 #[inline(always)]
-pub fn pd_index(vaddr: u32) -> u32 {
-    (vaddr >> 21) & 0x1FF
+pub fn pd_index(vaddr: u64) -> u32 {
+    ((vaddr >> 21) & 0x1FF) as u32
 }
 
 #[inline(always)]
-pub fn pt_index(vaddr: u32) -> u32 {
-    (vaddr >> 12) & 0x1FF
+pub fn pt_index(vaddr: u64) -> u32 {
+    ((vaddr >> 12) & 0x1FF) as u32
 }
 
 /// Bit 7 of a PD or PDPT entry: the entry maps a *large* page (2 MiB at the PD
@@ -264,15 +261,15 @@ pub const PAGE_PS: u32 = 0x080;
 
 /// Physical address a 2 MiB large-paged PD entry maps `vaddr` to.
 #[inline(always)]
-pub fn large_page_phys(entry: u32, vaddr: u32) -> u32 {
-    (entry & !(LARGE_PAGE_SIZE - 1)) | (vaddr & (LARGE_PAGE_SIZE - 1))
+pub fn large_page_phys(entry: u64, vaddr: u64) -> u64 {
+    (entry & !(LARGE_PAGE_SIZE as u64 - 1)) | (vaddr & (LARGE_PAGE_SIZE as u64 - 1))
 }
 
 /// Size of the kernel's large pages, and of one page-directory entry's span.
 pub const LARGE_PAGE_SIZE: u32 = 0x20_0000;
 
 #[inline(always)]
-pub fn page_offset(vaddr: u32) -> u32 {
+pub fn page_offset(vaddr: u64) -> u64 {
     vaddr & 0xFFF
 }
 
@@ -348,7 +345,7 @@ pub struct TaskFdTable {
 #[repr(C)]
 pub struct TaskStruct {
     pub esp:            u32,
-    pub page_directory: *mut u32,
+    pub page_directory: *mut u64,
     pub fpu_context_ptr: *mut u8,
     pub pid:            u32,
     pub state:          u32,
@@ -503,7 +500,7 @@ unsafe extern "C" {
     pub fn irq_spinlock_acquire(lock: *mut IrqSpinlock);
     pub fn irq_spinlock_release(lock: *mut IrqSpinlock);
 
-    pub fn load_page_directory(dir: *mut u32);
+    pub fn load_page_directory(dir: *mut u64);
     pub fn enable_paging();
 
     pub fn read_vfs(node: *mut VfsNode, off: u32, size: u32, buf: *mut u8) -> i32;
@@ -534,38 +531,36 @@ unsafe extern "C" {
     pub fn schedule();
     pub fn task_reap();
 
-    pub fn dump_context_frame(regs: *const ContextFrame, fault_addr: u32, signal: u32);
+    pub fn dump_context_frame(regs: *const ContextFrame, fault_addr: u64, signal: u32);
 }
 
 // ---------------------------------------------------------------------------
 // Inline-asm helpers — encapsulated in safe functions
 // ---------------------------------------------------------------------------
 
-/// Read CR2 (page-fault address).
+/// Read CR2 (page-fault address).  CR2 is 64-bit in long mode.
 #[inline(always)]
-pub fn read_cr2() -> u32 {
-    // CR2 is 64-bit in long mode, and the 64-bit move is the only form the
-    // mode encodes; the outward width follows the memory layer (Phase 2).
+pub fn read_cr2() -> u64 {
     let val: u64;
     // SAFETY: reading CR2 is side-effect-free.
     unsafe { core::arch::asm!("mov {}, cr2", out(reg) val, options(nomem, nostack)) };
-    val as u32
+    val
 }
 
-/// Read CR3 (current page directory).
+/// Read CR3 (current page directory — the PML4 in long mode).
 #[inline(always)]
-pub fn get_current_pd() -> *mut u32 {
+pub fn get_current_pd() -> *mut u64 {
     let val: u64;
     // SAFETY: reading CR3 is side-effect-free.
     unsafe { core::arch::asm!("mov {}, cr3", out(reg) val, options(nomem, nostack)) };
-    val as *mut u32
+    val as *mut u64
 }
 
 /// Invalidate a single TLB entry.
 #[inline(always)]
-pub fn tlb_flush(vaddr: u32) {
+pub fn tlb_flush(vaddr: u64) {
     // SAFETY: INVLPG is safe for any address.
-    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr as u64, options(nostack)) };
+    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack)) };
 }
 
 /// Flush the entire TLB by reloading CR3.

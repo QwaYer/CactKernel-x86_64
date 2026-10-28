@@ -16,8 +16,8 @@ use crate::vmm::mmap::do_munmap;
 pub unsafe extern "C" fn mmap_table_clone(
     src: *mut MmapTable,
     dst: *mut MmapTable,
-    src_pd: *mut u32,
-    dst_pd: *mut u32,
+    src_pd: *mut u64,
+    dst_pd: *mut u64,
 ) {
     if src.is_null() || dst.is_null() {
         return;
@@ -60,7 +60,7 @@ pub unsafe extern "C" fn mmap_table_clone(
 
                 // SAFETY: `src_pd` is the caller's live page map and the walk
                 // only reads it, so nothing is allocated or mutated.
-                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va, false, false) };
+                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va as u64, false, false) };
                 if src_w.pte_entry.is_null() {
                     continue;
                 }
@@ -72,7 +72,7 @@ pub unsafe extern "C" fn mmap_table_clone(
 
                 // SAFETY: `dst_pd` is the child's live page map; the walk creates
                 // the private tables this shared page needs.
-                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va, true, true) };
+                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va as u64, true, true) };
                 if dst_w.pte_entry.is_null() {
                     continue;
                 }
@@ -80,7 +80,7 @@ pub unsafe extern "C" fn mmap_table_clone(
                 // mapping shared with the parent.
                 unsafe { *dst_w.pte_entry = pte };
 
-                if pte & PAGE_PRESENT != 0 {
+                if pte & PAGE_PRESENT as u64 != 0 {
                     page_ref_inc((pte & !0xFFF) as *const u8);
                 }
             }
@@ -90,7 +90,7 @@ pub unsafe extern "C" fn mmap_table_clone(
 
                 // SAFETY: `src_pd` is the caller's live page map and the walk
                 // only reads it.
-                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va, false, false) };
+                let src_w = unsafe { crate::vmm::paging::walk(src_pd, va as u64, false, false) };
                 if src_w.pte_entry.is_null() {
                     continue;
                 }
@@ -99,12 +99,12 @@ pub unsafe extern "C" fn mmap_table_clone(
 
                 // SAFETY: `dst_pd` is the child's live page map; the walk creates
                 // the private tables this page needs.
-                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va, true, true) };
+                let dst_w = unsafe { crate::vmm::paging::walk(dst_pd, va as u64, true, true) };
                 if dst_w.pte_entry.is_null() {
                     continue;
                 }
 
-                if pte & PAGE_PRESENT == 0 {
+                if pte & PAGE_PRESENT as u64 == 0 {
                     // Demand/swapped PTEs have no frame: copy the marker across.
                     // SAFETY: `dst_w.pte_entry` points at one PTE.
                     unsafe { *dst_w.pte_entry = pte };
@@ -113,7 +113,7 @@ pub unsafe extern "C" fn mmap_table_clone(
 
                 // User page: both maps point at the frame, read-only and marked
                 // COW, with one more reference on it.
-                let cow_pte = (pte & !PAGE_RW) | PAGE_COW;
+                let cow_pte = (pte & !(PAGE_RW as u64)) | PAGE_COW as u64;
                 // SAFETY: both entry pointers are in bounds and hold one PTE each.
                 unsafe {
                     *src_w.pte_entry = cow_pte;
@@ -133,7 +133,7 @@ pub unsafe extern "C" fn mmap_table_clone(
 /// `tbl` must be null or a live `MmapTable` whose regions are mapped into `pd`,
 /// and `pd` must be a valid page directory owned by the caller.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn mmap_table_free(tbl: *mut MmapTable, pd: *mut u32) {
+pub unsafe extern "C" fn mmap_table_free(tbl: *mut MmapTable, pd: *mut u64) {
     if tbl.is_null() || pd.is_null() {
         return;
     }

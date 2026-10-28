@@ -106,10 +106,10 @@ pub extern "C" fn drm_copy_out(user: *mut c_void, src: *const c_void, size: u32)
 
 /// A userspace pointer carried in a uapi struct (`__u64`), i.e. C's `UPTR()`.
 ///
-/// The kernel is 32-bit, so this truncates exactly the way `(void
-/// *)(uintptr_t)x` does on that C side.
+/// The kernel is 64-bit, so a `__u64` userspace address widens to a pointer
+/// without loss.
 pub(crate) fn uptru(x: u64) -> *mut c_void {
-    x as u32 as usize as *mut c_void
+    x as usize as *mut c_void
 }
 
 /// Copy a kernel buffer to an optional userspace pointer.

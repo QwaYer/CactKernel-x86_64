@@ -50,8 +50,8 @@ impl Drop for Cr3Guard {
 ///
 /// `pd` must point at a live page map that the caller owns and may mutate, and
 /// the caller must serialise page-table changes.
-pub(crate) unsafe fn ensure_private_pte(pd: *mut u32, va: u32, extra_flags: u32) -> *mut u32 {
-    if pd.is_null() || va >= USER_STACK_TOP {
+pub(crate) unsafe fn ensure_private_pte(pd: *mut u64, va: u64, extra_flags: u32) -> *mut u64 {
+    if pd.is_null() || va >= USER_STACK_TOP as u64 {
         return core::ptr::null_mut();
     }
     // SAFETY: the caller guarantees `pd` is a live page map it owns; `create`
@@ -65,11 +65,11 @@ pub(crate) unsafe fn ensure_private_pte(pd: *mut u32, va: u32, extra_flags: u32)
     // CPU would fault on a ring-3 access with #PF err=0x07.
     if !w.pd_entry.is_null() {
         // SAFETY: `w.pd_entry` is an in-bounds PD entry.
-        unsafe { *w.pd_entry |= extra_flags & (PAGE_USER | PAGE_RW) };
+        unsafe { *w.pd_entry |= (extra_flags & (PAGE_USER | PAGE_RW)) as u64 };
     }
     if !w.pdpt_entry.is_null() {
         // SAFETY: `w.pdpt_entry` is an in-bounds PDPT entry.
-        unsafe { *w.pdpt_entry |= extra_flags & (PAGE_USER | PAGE_RW) };
+        unsafe { *w.pdpt_entry |= (extra_flags & (PAGE_USER | PAGE_RW)) as u64 };
     }
     w.pte_entry
 }
@@ -89,7 +89,7 @@ const PF_PRESENT: u32 = 0x01;
 const PF_WRITE: u32 = 0x02;
 const PF_USER_BIT: u32 = 0x04;
 
-pub(crate) fn pte_get(pd: *mut u32, vaddr: u32) -> *mut u32 {
+pub(crate) fn pte_get(pd: *mut u64, vaddr: u64) -> *mut u64 {
     if pd.is_null() {
         return core::ptr::null_mut();
     }
@@ -98,7 +98,7 @@ pub(crate) fn pte_get(pd: *mut u32, vaddr: u32) -> *mut u32 {
     unsafe { crate::vmm::paging::walk(pd, vaddr, false, false).pte_entry }
 }
 
-fn kill_current(fault_addr: u32, _err: u32, _rip: u32, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
+fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
     cr3.dismiss();
 
     // SAFETY: regs is provided by the interrupt frame.
@@ -120,8 +120,10 @@ fn kill_current(fault_addr: u32, _err: u32, _rip: u32, regs: *mut ContextFrame, 
         (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).protection_faults += 1;
         // SAFETY: `task_signal_code` is a kernel FFI entry point and `pid` comes
         // from the live current task; we are in the #PF handler.  The fault
-        // address goes with it, so an SA_SIGINFO handler sees si_addr.
-        unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr) };
+        // address goes with it, so an SA_SIGINFO handler sees si_addr.  The
+        // signal ABI carries a 32-bit `si_addr`, so the (user) fault address is
+        // narrowed to its width here.
+        unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr as u32) };
         // SAFETY: `schedule` is a kernel FFI entry point; the faulting task has
         // just been signalled, so yielding here is valid.
         unsafe { schedule() };
@@ -168,8 +170,9 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
     // The error code itself is 32 bits wide (bits above 15 are reserved zero);
     // only the word that carries it in the frame is 64-bit.
     let err = unsafe { (*regs).err_code } as u32;
-    // SAFETY: `regs` is the interrupt frame handed to the #PF handler.
-    let eip = unsafe { (*regs).rip } as u32;
+    // SAFETY: `regs` is the interrupt frame handed to the #PF handler.  RIP is a
+    // full 64-bit address in long mode.
+    let eip = unsafe { (*regs).rip };
 
     // SAFETY: `G_STATS.total_faults` bumped from the #PF handler; interrupts are
     // disabled on this CPU, and a cross-CPU lost count is only cosmetic.
@@ -193,7 +196,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
         // COW handler: present + write + PAGE_COW in PTE.
         // SAFETY: `pte_ptr` is the result of `pte_get`, checked non-null on the left of
         // the `&&`; it points into the faulting address space's page table.
-        if !pte_ptr.is_null() && unsafe { *pte_ptr & PAGE_COW != 0 }
+        if !pte_ptr.is_null() && unsafe { *pte_ptr & PAGE_COW as u64 != 0 }
             && vmm_handle_cow(pd, fault_addr & !0xFFF) == 0 {
                 // SAFETY: `G_STATS.cow_copies` — unprotected diagnostic counter, see the note
                 // at the top of the handler.
@@ -206,11 +209,11 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
         // the kernel identity map (PAGE_PRESENT|PAGE_RW, no PAGE_USER).
         // Allocate a fresh zero user page and remap it properly.
         if (err & PF_USER_BIT != 0)
-            && (USER_STACK_LIMIT..USER_STACK_TOP).contains(&fault_addr)
+            && (USER_STACK_LIMIT as u64..USER_STACK_TOP as u64).contains(&fault_addr)
             && !pte_ptr.is_null()
             // SAFETY: `pte_ptr` is non-null (checked in the enclosing condition) and points
             // at the PTE for this fault address.
-            && unsafe { *pte_ptr & PAGE_USER == 0 }
+            && unsafe { *pte_ptr & PAGE_USER as u64 == 0 }
         {
             let page_va = fault_addr & !0xFFF;
             let mut phys = kalloc();
@@ -224,7 +227,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, phys as u32, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            unsafe { vmm_map(pd, page_va, phys as u64, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see the
             // note above.
@@ -241,11 +244,11 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
     // write case above: kernel identity-map entry without PAGE_USER.
     if (err & PF_PRESENT != 0)
         && (err & PF_USER_BIT != 0)
-        && (USER_STACK_LIMIT..USER_STACK_TOP).contains(&fault_addr)
+        && (USER_STACK_LIMIT as u64..USER_STACK_TOP as u64).contains(&fault_addr)
     {
         let pte_ptr = pte_get(pd, fault_addr);
         // SAFETY: `pte_ptr` is non-null on the left of `&&` and valid for this fault.
-        if !pte_ptr.is_null() && unsafe { *pte_ptr & PAGE_USER == 0 } {
+        if !pte_ptr.is_null() && unsafe { *pte_ptr & PAGE_USER as u64 == 0 } {
             let page_va = fault_addr & !0xFFF;
             let mut phys = kalloc();
             if phys.is_null() && oom_kill() == 0 {
@@ -258,7 +261,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, phys as u32, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            unsafe { vmm_map(pd, page_va, phys as u64, (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see above.
             (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).stack_grows += 1;
@@ -286,7 +289,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
 
         // SAFETY: `pte` is non-null on the left of `&&`; the demand bit lives in that
         // live PTE.
-        if !pte.is_null() && unsafe { *pte & PAGE_DEMAND != 0 } {
+        if !pte.is_null() && unsafe { *pte & PAGE_DEMAND as u64 != 0 } {
             let mut phys = kalloc();
             if phys.is_null() && oom_kill() == 0 {
                 phys = kalloc();
@@ -297,7 +300,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             }
 
             // SAFETY: `pte` is non-null (checked above) and its demand flag is set.
-            if unsafe { *pte & PAGE_ZERO != 0 } {
+            if unsafe { *pte & PAGE_ZERO as u64 != 0 } {
                 zero_page(phys);
                 // SAFETY: `G_STATS.zero_pages` — unprotected diagnostic counter; see above.
                 (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).zero_pages += 1;
@@ -305,11 +308,11 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
 
             // SAFETY: pte is valid.
             let pte_val = unsafe { *pte };
-            let flags = (pte_val & 0xFFF) & !(PAGE_DEMAND | PAGE_ZERO);
-            let flags = flags | PAGE_PRESENT | PAGE_RW;
+            let flags = (pte_val & 0xFFF) & !((PAGE_DEMAND | PAGE_ZERO) as u64);
+            let flags = flags | PAGE_PRESENT as u64 | PAGE_RW as u64;
             // SAFETY: `pte` is the live PTE for this demand page; the new frame `phys` was
             // just allocated and zeroed, so publishing it here is well-defined.
-            unsafe { *pte = (phys as u32 & !0xFFF) | flags; }
+            unsafe { *pte = (phys as u64 & !0xFFF) | flags; }
             flush_tlb(page_va);
 
             // SAFETY: `G_STATS.demand_allocs` — unprotected diagnostic counter; see above.
@@ -318,7 +321,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
         }
 
         // SAFETY: `pte` non-null on the left of `&&`, COW bit set in that live PTE.
-        if !pte.is_null() && unsafe { *pte & PAGE_COW != 0 } {
+        if !pte.is_null() && unsafe { *pte & PAGE_COW as u64 != 0 } {
             // SAFETY: `pte` is non-null and present; the low bits masked off give the
             // page-aligned physical frame it points at.
             let old_phys = unsafe { *pte & !0xFFF } as *mut u8;
@@ -330,10 +333,11 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                 // Sole owner — promote the existing frame to writable in-place.
                 // SAFETY: `pte` is a live PTE (non-null, checked above).
                 let pte_val = unsafe { *pte };
-                let flags = ((pte_val & 0xFFF) & !PAGE_COW) | PAGE_PRESENT | PAGE_RW;
+                let flags =
+                    ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_PRESENT as u64 | PAGE_RW as u64;
                 // SAFETY: promoting the existing frame to writable under `PAGE_LOCK`; `pte` is
                 // the valid PTE for this page.
-                unsafe { *pte = (old_phys as u32 & !0xFFF) | flags; }
+                unsafe { *pte = (old_phys as u64 & !0xFFF) | flags; }
                 crate::safe::lock_release(PAGE_LOCK.as_ptr());
                 flush_tlb(page_va);
                 // SAFETY: `G_STATS.cow_copies` — unprotected diagnostic counter; see above.
@@ -359,9 +363,10 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             // SAFETY: `pte` is non-null and present; its value is read to derive the new
             // PTE flags.
             let pte_val = unsafe { *pte };
-            let flags = ((pte_val & 0xFFF) & !PAGE_COW) | PAGE_PRESENT | PAGE_RW;
+            let flags =
+                ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_PRESENT as u64 | PAGE_RW as u64;
             // SAFETY: publishing the freshly copied frame `phys` into the live PTE.
-            unsafe { *pte = (phys as u32 & !0xFFF) | flags; }
+            unsafe { *pte = (phys as u64 & !0xFFF) | flags; }
             // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
             unsafe { free_page(old_phys) };
             flush_tlb(page_va);
@@ -371,15 +376,15 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             return;
         }
 
-        if (USER_STACK_LIMIT..USER_STACK_TOP).contains(&fault_addr) {
+        if (USER_STACK_LIMIT as u64..USER_STACK_TOP as u64).contains(&fault_addr) {
             // Stack grow: missing page OR present kernel-only page (no PAGE_USER).
             let existing = pte_get(pd, fault_addr);
             let need_alloc = existing.is_null()
                 // SAFETY: `existing` is the PTE returned by `pte_get` and checked non-null on
                 // the left of `||`.
-                || unsafe { *existing & PAGE_PRESENT == 0 }
+                || unsafe { *existing & PAGE_PRESENT as u64 == 0 }
                 // SAFETY: same non-null `existing` PTE as the previous condition.
-                || unsafe { *existing & PAGE_USER == 0 };
+                || unsafe { *existing & PAGE_USER as u64 == 0 };
 
             if need_alloc {
                 let mut phys = kalloc();
@@ -397,7 +402,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                     vmm_map(
                         pd,
                         page_va,
-                        phys as u32,
+                        phys as u64,
                         (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
                     );
                 }
