@@ -56,11 +56,29 @@ static int _needs_frame(uint32_t n) {
     }
 }
 
-// Entry point from the asm sysenter/syscall stubs.
+// The syscall frame is the exception frame field for field, so the entry's
+// epilogue and fork/exec/signal can treat them interchangeably.  A drift here
+// would be silent, so both sides pin it.
+_Static_assert(sizeof(struct syscall_frame) == sizeof(struct context_frame),
+               "syscall_frame must match context_frame");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rax) ==
+               __builtin_offsetof(struct context_frame, rax), "rax offset");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rdi) ==
+               __builtin_offsetof(struct context_frame, rdi), "rdi offset");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rsi) ==
+               __builtin_offsetof(struct context_frame, rsi), "rsi offset");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rdx) ==
+               __builtin_offsetof(struct context_frame, rdx), "rdx offset");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rip) ==
+               __builtin_offsetof(struct context_frame, rip), "rip offset");
+_Static_assert(__builtin_offsetof(struct syscall_frame, rsp) ==
+               __builtin_offsetof(struct context_frame, rsp), "rsp offset");
+
+// Entry point from the asm syscall stub.
 void syscall_handler(struct syscall_frame* regs) {
-    uint32_t num = regs->eax;
+    uint32_t num = (uint32_t)regs->rax;
     if (num >= SYSCALL_COUNT || !syscall_table[num]) {
-        regs->eax = (uint32_t)-1;
+        regs->rax = (uint64_t)-1;
         return;
     }
 
@@ -69,19 +87,19 @@ void syscall_handler(struct syscall_frame* regs) {
         ret = ((int(*)(struct syscall_frame*))syscall_table[num])(regs);
     } else {
         ret = syscall_table[num](
-            (void*)regs->ebx,
-            (void*)regs->ecx,
-            (void*)regs->edx
+            (void*)regs->rdi,
+            (void*)regs->rsi,
+            (void*)regs->rdx
         );
     }
 
     // exit() does not return a value to userspace
     if (num == SYS_EXIT) return;
-    // sigreturn() restored eax from the signal frame — that saved value (the
+    // sigreturn() restored rax from the signal frame — that saved value (the
     // return of the syscall the handler interrupted) is what userspace must
-    // see, so the generic "eax = return value" write below would destroy it.
+    // see, so the generic "rax = return value" write below would destroy it.
     if (num != SYS_SIGRETURN)
-        regs->eax = (uint32_t)ret;
+        regs->rax = (uint64_t)(int64_t)ret;
 
     // Deliver any pending signal before returning to Ring 3
     if (current_task && !current_task->is_kernel)

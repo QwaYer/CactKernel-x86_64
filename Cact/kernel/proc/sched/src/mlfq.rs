@@ -585,7 +585,7 @@ pub unsafe extern "C" fn schedule() {
         // SAFETY: `next_proc` is the live `ProcMeta` of the incoming task.
         let stack_base = unsafe { (*next_proc).stack_base };
         if !stack_base.is_null() {
-            let esp0 = stack_base as u32 + crate::task::KERNEL_STACK_SIZE as u32;
+            let esp0 = stack_base as u64 + crate::task::KERNEL_STACK_SIZE as u64;
             // The ring-0 stack for the next task, set on THIS core: the BSP's TSS
             // is the C `tss_entry`, each AP's is its own `SmpCpu` slot.  Both are
             // used by the CPU on ring3->ring0 transitions (interrupts, faults),
@@ -595,15 +595,14 @@ pub unsafe extern "C" fn schedule() {
                 let tss_ptr = unsafe { ffi::tss_entry.get() };
                 // SAFETY: `tss_ptr` is that global's address, used only here.
                 let tss = unsafe { &mut *tss_ptr };
-                tss.esp0 = esp0;
+                tss.rsp0 = esp0;
             } else {
                 crate::smp::set_tss_esp0(me, esp0);
             }
-            // SAFETY: sets the ring-0 stack for the upcoming user entry in this
-            // core's own SYSENTER ESP MSR.
+            // SAFETY: sets the ring-0 stack the incoming task will trap onto in
+            // this core's slot of the per-CPU SYSCALL entry-stack table.
             unsafe { ffi::syscall_set_esp0(esp0) };
-            // SAFETY: value-only setter for this CPU's slot in the per-CPU
-            // AMD-SYSCALL entry-stack table.
+            // SAFETY: same slot, addressed by explicit CPU index.
             unsafe { ffi::syscall_set_cpu_esp0(me as u32, esp0) };
         }
 

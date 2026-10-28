@@ -155,9 +155,9 @@ int sys_close(int fd) {
 }
 
 int sys_lseek(struct syscall_frame *regs) {
-    int fd     = (int)regs->ebx;
-    int offset = (int)regs->ecx;
-    int whence = (int)regs->edx;
+    int fd     = (int)regs->rdi;
+    int offset = (int)regs->rsi;
+    int whence = (int)regs->rdx;
 
     file_t *f = _get_file(fd);
     if (!f || !f->node) return -1;
@@ -664,9 +664,9 @@ static int _dirctl_handle(vfs_node_t *dir, uint32_t cmd, void *arg) {
 }
 
 int sys_ioctl(struct syscall_frame *regs) {
-    int      fd  = (int)regs->ebx;
-    uint32_t cmd = regs->ecx;
-    void    *arg = (void *)regs->edx;
+    int      fd  = (int)regs->rdi;
+    uint32_t cmd = (uint32_t)regs->rsi;
+    void    *arg = (void *)regs->rdx;
 
     file_t *f = _get_file(fd);
 
@@ -774,8 +774,8 @@ int sys_dup(int oldfd) {
 }
 
 int sys_dup2(struct syscall_frame *regs) {
-    int oldfd = (int)regs->ebx;
-    int newfd = (int)regs->ecx;
+    int oldfd = (int)regs->rdi;
+    int newfd = (int)regs->rsi;
 
     file_t *f = _get_file(oldfd);
     if (!f) return -1;

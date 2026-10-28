@@ -229,17 +229,13 @@ const char* cpu_brand_str(void);
 
 int cpu_syscall_commit(void);
 
-// Syscall return-path selector (1 = SYSEXIT, 0 = IRET). Read by sysenter_entry.
-uint8_t cpu_syscall_use_sysexit(void);
-void    cpu_syscall_set_use_sysexit(uint8_t v);
+// Update the calling CPU's entry in the per-CPU syscall_esp0[] table, which is
+// the kernel stack the SYSCALL entry loads (SYSCALL does not switch stacks).
+// Called by the scheduler on every context switch, next to tss_entry.esp0.
+void syscall_set_esp0(uint64_t esp);
 
-// Update IA32_SYSENTER_ESP to the current task's kernel-stack top. Called by
-// the scheduler on every context switch (mirrors tss_entry.esp0).
-void syscall_set_esp0(uint32_t esp);
-
-// Update `cpu`'s entry in the per-CPU syscall_esp0[] table that the AMD SYSCALL
-// entry path indexes. Called by the scheduler on every context switch, next to
-// syscall_set_esp0() and the per-CPU TSS esp0 update.
-void syscall_set_cpu_esp0(uint32_t cpu, uint32_t esp0);
+// Same, for an explicit `cpu` (used during bring-up before the scheduler sets
+// the calling CPU's slot). Called by the scheduler next to syscall_set_esp0().
+void syscall_set_cpu_esp0(uint32_t cpu, uint64_t esp0);
 
 #endif

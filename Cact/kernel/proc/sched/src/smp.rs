@@ -716,18 +716,14 @@ pub fn smp_cpu_online_sipi(cpu: u32) -> i32 {
 /// `tss_entry` (owned by the scheduler); each AP's TSS lives in `CPU_TABLE`.
 /// Called by the scheduler per context switch so ring3→ring0 transitions
 /// (interrupts, faults) land on the running task's kernel stack on that core.
-///
-/// The parameter stays 32-bit because the kernel stacks are still heap
-/// addresses from a 32-bit-era allocator; Phase 3 of PORTING-x86_64.md widens
-/// the whole task-stack path.
-pub fn set_tss_esp0(cpu: usize, esp0: u32) {
+pub fn set_tss_esp0(cpu: usize, esp0: u64) {
     if cpu == 0 || cpu >= MAX_CPUS {
         return;
     }
     let p = cpu_ptr(cpu);
     // SAFETY: `cpu` is bounds-checked against `MAX_CPUS` above, so `p` addresses a live
     // `CPU_TABLE` entry and the `tss.rsp0` store is in bounds.
-    unsafe { (*p).tss.rsp0 = esp0 as u64 };
+    unsafe { (*p).tss.rsp0 = esp0 };
 }
 
 /// Point the running core's thread pointer at `base` — the `%gs` base the task

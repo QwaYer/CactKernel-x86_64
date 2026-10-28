@@ -109,10 +109,10 @@ unsafe extern "C" {
     pub static vfs_root: SyncUnsafeCell<*mut VfsNode>;
     pub static sys_sigreturn_num: u32;
     
-    pub fn syscall_set_esp0(esp: u32);
+    pub fn syscall_set_esp0(esp: u64);
     /// Set `cpu`'s entry stack in the per-CPU `syscall_esp0[]` table that the
-    /// AMD SYSCALL entry path indexes (`syscall_entries.asm`).
-    pub fn syscall_set_cpu_esp0(cpu: u32, esp0: u32);
+    /// SYSCALL entry path indexes (`syscall_entries.asm`).
+    pub fn syscall_set_cpu_esp0(cpu: u32, esp0: u64);
     pub fn elf_load_exec_symtab(path: *const u8, proc: *mut c_void);
 
     pub fn apic_lapic_id() -> u32;
@@ -163,11 +163,21 @@ unsafe extern "C" {
 }
 
 
-#[repr(C)]
+/// Mirror of `struct tss_entry_struct` in gdt.h: the 64-bit TSS, which keeps
+/// only the stacks (no saved register image and no `ss0` — the ring-transition
+/// stack segment is fixed in long mode).  Packed because the C struct is, so
+/// `rsp0` sits at offset 4 as the hardware reads it.
+#[repr(C, packed)]
 pub struct TssEntry {
-    pub prev_tss: u32,
-    pub esp0:     u32,   
-    pub ss0:      u32,
+    pub reserved0:  u32,
+    pub rsp0:       u64,
+    pub rsp1:       u64,
+    pub rsp2:       u64,
+    pub reserved1:  u64,
+    pub ist:        [u64; 7],
+    pub reserved2:  u64,
+    pub reserved3:  u16,
+    pub iomap_base: u16,
 }
 
 pub const PAGE_PRESENT: u32 = 1 << 0;

@@ -245,12 +245,12 @@ pub unsafe extern "C" fn task_exec(
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let stack_base = unsafe { (*p).stack_base };
-    let esp0 = stack_base as u32 + KERNEL_STACK_SIZE as u32;
+    let esp0 = stack_base as u64 + KERNEL_STACK_SIZE as u64;
     // SAFETY: `tss_entry` is the kernel TSS global.
     let tss_ptr = unsafe { ffi::tss_entry.get() };
     // SAFETY: `tss_ptr` points at the kernel TSS.
-    unsafe { (*tss_ptr).esp0 = esp0 };
-    // SAFETY: sets the ring-0 stack for the upcoming user entry.
+    unsafe { (*tss_ptr).rsp0 = esp0 };
+    // SAFETY: sets the ring-0 stack the upcoming user entry will trap onto.
     unsafe { ffi::syscall_set_esp0(esp0) };
 
     // SAFETY: `p` is the live current task's `ProcMeta`.

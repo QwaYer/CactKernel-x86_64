@@ -32,7 +32,7 @@ void task_signal_code(uint32_t pid, uint32_t signal, uint32_t code, uint32_t add
 static int sys_sigreturn_impl(struct syscall_frame* regs) {
     if (!current_task || current_task->is_kernel) return -1;
 
-    uint32_t user_esp = regs->useresp;
+    uint32_t user_esp = (uint32_t)regs->rsp;
     if (user_esp < USER_SPACE_START || user_esp >= KERNEL_BASE) return -1;
 
     uint32_t page_off = user_esp & 0xFFFu;
@@ -62,16 +62,19 @@ static int sys_sigreturn_impl(struct syscall_frame* regs) {
         if (attempt == 1) return -1;
     }
 
-    regs->eax     = frame_buf.eax;
-    regs->ecx     = frame_buf.ecx;
-    regs->edx     = frame_buf.edx;
-    regs->ebx     = frame_buf.ebx;
-    regs->ebp     = frame_buf.ebp;
-    regs->esi     = frame_buf.esi;
-    regs->edi     = frame_buf.edi;
-    regs->eip     = frame_buf.eip;
-    regs->eflags  = frame_buf.eflags;
-    regs->useresp = frame_buf.esp;
+    // The saved register slots map back to the 64-bit ABI: the legacy frame's
+    // arg slots (ebx/ecx/edx) and its duplicate register slots (esi/edi) carry
+    // the same values, so the later assignment for a register is consistent.
+    regs->rax     = frame_buf.eax;
+    regs->rsi     = frame_buf.ecx;
+    regs->rdx     = frame_buf.edx;
+    regs->rdi     = frame_buf.ebx;
+    regs->rbp     = frame_buf.ebp;
+    regs->rsi     = frame_buf.esi;
+    regs->rdx     = frame_buf.edi;
+    regs->rip     = frame_buf.eip;
+    regs->rflags  = frame_buf.eflags;
+    regs->rsp     = frame_buf.esp;
 
     // Put back the mask the handler interrupted — delivery blocked the signal
     // itself (unless SA_NODEFER), and any signal that arrived meanwhile must

@@ -20,20 +20,17 @@ int sys_getppid(void) {
 
 // fork() — create a child process that is a copy of the caller
 int sys_fork(struct syscall_frame* regs) {
-    // Copy the syscall frame into a context_frame for task_fork.  The user ABI
-    // is still the 32-bit one (the 32-bit user world is rebuilt in Phase 6 of
-    // PORTING-x86_64.md), so each value moves into its 64-bit slot unchanged —
-    // and the registers the 32-bit ABI does not carry at all (r8-r15) come out
-    // zero in the child.  The syscall frame itself is re-laid-out with the
-    // SYSCALL entry in Phase 3.
+    // The syscall frame is field for field a context_frame (mod.c asserts it),
+    // so the child's saved context is the parent's, with `rax` zeroed later by
+    // task_fork so fork() returns 0 in the child.
     struct context_frame cf = { 0 };
-    cf.rdi    = regs->edi;      cf.rsi      = regs->esi;
-    cf.rbp    = regs->ebp;      cf.rbx      = regs->ebx;
-    cf.rdx    = regs->edx;      cf.rcx      = regs->ecx;
-    cf.rax    = regs->eax;
-    cf.rip    = regs->eip;      cf.cs       = regs->cs;
-    cf.rflags = regs->eflags;
-    cf.rsp    = regs->useresp;  cf.ss       = regs->ss;
+    cf.rdi    = regs->rdi;      cf.rsi      = regs->rsi;
+    cf.rbp    = regs->rbp;      cf.rbx      = regs->rbx;
+    cf.rdx    = regs->rdx;      cf.rcx      = regs->rcx;
+    cf.rax    = regs->rax;
+    cf.rip    = regs->rip;      cf.cs       = regs->cs;
+    cf.rflags = regs->rflags;
+    cf.rsp    = regs->rsp;      cf.ss       = regs->ss;
     struct task_struct* child = task_fork(&cf);
     if (!child) {
         return -1;
@@ -44,10 +41,10 @@ int sys_fork(struct syscall_frame* regs) {
 
 // exec() — replace the current process image with a new program
 int sys_exec(struct syscall_frame* regs) {
-    char* path = (char*)regs->ebx;
+    char* path = (char*)regs->rdi;
 
-    char** argv = (char**)regs->ecx;
-    char** envp = (char**)regs->edx;
+    char** argv = (char**)regs->rsi;
+    char** envp = (char**)regs->rdx;
 
     // Validate argv array and each string pointer. The array ends at its first
     // NULL entry, so only the slots up to that terminator may be required to
@@ -81,10 +78,10 @@ int sys_exec(struct syscall_frame* regs) {
     }
 
     struct context_frame cf = { 0 };
-    cf.rip    = regs->eip;
+    cf.rip    = regs->rip;
     cf.cs     = regs->cs;
-    cf.rflags = regs->eflags;
-    cf.rsp    = regs->useresp;
+    cf.rflags = regs->rflags;
+    cf.rsp    = regs->rsp;
     cf.ss     = regs->ss;
     task_comm_set_path(current_task->pid, kpath);
     int ret = task_exec(kpath, argv, envp, &cf);   // never returns on success
@@ -118,7 +115,7 @@ int sys_exit(struct syscall_frame* regs) {
     // CACT_PROCCTL_THREAD_EXIT path, which ends only the caller.
     task_signal_group(current_task->pid, SIGKILL);
 
-    sched_task_exit((int)regs->ebx);   // sets zombie state, reschedules
+    sched_task_exit((int)regs->rdi);   // sets zombie state, reschedules
 
     // Safety net: if schedule() returns, spin forever in HLT
     for (;;)
@@ -127,9 +124,9 @@ int sys_exit(struct syscall_frame* regs) {
 
 // waitpid() — wait for a child process to change state
 int sys_waitpid(struct syscall_frame* regs) {
-    int  target_pid = (int)regs->ebx;
-    int* status     = (int*)regs->ecx;
-    int  options    = (int)regs->edx;
+    int  target_pid = (int)regs->rdi;
+    int* status     = (int*)regs->rsi;
+    int  options    = (int)regs->rdx;
 
     if (!current_task) return -1;
     if (status && !validate_user_ptr(status, sizeof(int))) return -1;
@@ -139,7 +136,7 @@ int sys_waitpid(struct syscall_frame* regs) {
 
 // sleep() — sleep for a given number of milliseconds
 int sys_sleep(struct syscall_frame* regs) {
-    uint32_t ms = regs->ebx;
+    uint32_t ms = (uint32_t)regs->rdi;
     if (!current_task) return -1;
     if (ms == 0) return 0;
 

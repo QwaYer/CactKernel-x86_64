@@ -16,7 +16,7 @@ extern void sched_sleep_ticks(uint32_t ticks);
 #define SC_JC_MASK (~((1u << 6) | (1u << 9)))
 
 int sys_pipe(struct syscall_frame *regs) {
-    int *user_fds = (int *)regs->ebx;
+    int *user_fds = (int *)regs->rdi;
     if (!validate_user_ptr(user_fds, sizeof(int) * 2)) return -1;
     if (!current_task) return -1;
 
@@ -54,7 +54,7 @@ int sys_pipe(struct syscall_frame *regs) {
 }
 
 int sys_select(struct syscall_frame *regs) {
-    sel_args_t *ua = (sel_args_t *)regs->ebx;
+    sel_args_t *ua = (sel_args_t *)regs->rdi;
     if (!validate_user_ptr(ua, sizeof(sel_args_t))) return -1;
     if (!current_task) return -1;
 
@@ -137,9 +137,9 @@ int sys_select(struct syscall_frame *regs) {
 }
 
 int sys_poll(struct syscall_frame *regs) {
-    struct pollfd *fds_user   = (struct pollfd *)regs->ebx;
-    int            nfds       = (int)regs->ecx;
-    int            timeout_ms = (int)regs->edx;
+    struct pollfd *fds_user   = (struct pollfd *)regs->rdi;
+    int            nfds       = (int)regs->rsi;
+    int            timeout_ms = (int)regs->rdx;
 
     if (!current_task) return -1;
 

@@ -19,7 +19,7 @@ static proc_shared_t *cur_shared(void) {
 
 // brk() — change the program break (heap end)
 int sys_brk(struct syscall_frame* regs) {
-    uint32_t new_brk = regs->ebx;
+    uint32_t new_brk = (uint32_t)regs->rdi;
     if (!current_task) return -1;
 
     proc_shared_t *ps = cur_shared();
@@ -59,7 +59,7 @@ int sys_brk(struct syscall_frame* regs) {
 
 // mmap() — map files or anonymous memory into the process address space
 int sys_mmap(struct syscall_frame* regs) {
-    mmap_args_t* args = (mmap_args_t*)regs->ebx;
+    mmap_args_t* args = (mmap_args_t*)regs->rdi;
     if (!validate_user_ptr(args, sizeof(mmap_args_t))) return (int)MAP_FAILED;
     if (!current_task) return (int)MAP_FAILED;
 
@@ -81,8 +81,8 @@ int sys_mmap(struct syscall_frame* regs) {
 
 // munmap() — unmap a previously mapped region
 int sys_munmap(struct syscall_frame* regs) {
-    uint32_t addr   = regs->ebx;
-    uint32_t length = regs->ecx;
+    uint32_t addr   = (uint32_t)regs->rdi;
+    uint32_t length = (uint32_t)regs->rsi;
     if (!current_task) return -1;
     return do_munmap(
         current_task->page_directory,
@@ -93,9 +93,9 @@ int sys_munmap(struct syscall_frame* regs) {
 
 // mprotect() — change protection flags on a mapped region
 int sys_mprotect(struct syscall_frame* regs) {
-    uint32_t addr   = regs->ebx;
-    uint32_t length = regs->ecx;
-    int      prot   = (int)regs->edx;
+    uint32_t addr   = (uint32_t)regs->rdi;
+    uint32_t length = (uint32_t)regs->rsi;
+    int      prot   = (int)regs->rdx;
     if (!current_task) return -1;
     proc_shared_t *ps = cur_shared();
     if (!ps) return -1;

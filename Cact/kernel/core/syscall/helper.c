@@ -78,7 +78,7 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
         }
 
         if (!on_alt) {
-            new_esp = regs->useresp - sizeof(signal_frame_t);
+            new_esp = (uint32_t)regs->rsp - sizeof(signal_frame_t);
 
             // The handler is entered with `new_esp` as its stack pointer (iretd, no
             // call), and clang may emit aligned SSE stores into its frame, so place
@@ -95,7 +95,7 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
                 // overrun it.  Bailing out here instead would strand the signal:
                 // the tty read path returns -EINTR while a catchable signal is
                 // pending, so the interrupted syscall could never progress again.
-                new_esp = (regs->useresp & ~0xFFFu) - sizeof(signal_frame_t);
+                new_esp = ((uint32_t)regs->rsp & ~0xFFFu) - sizeof(signal_frame_t);
                 new_esp = ((new_esp - 12u) & ~0xFu) + 12u;
                 if (!frame_fits(new_esp)) continue;
             }
@@ -110,16 +110,20 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
          * this libc's <signal.h> gives SIGINT and friends — so `case SIGINT:` in
          * a handler and the number sigwait() returns are the same thing. */
         frame->signum   = (1u << bit);
-        frame->eax      = regs->eax;
-        frame->ecx      = regs->ecx;
-        frame->edx      = regs->edx;
-        frame->ebx      = regs->ebx;
-        frame->esp      = regs->useresp;
-        frame->ebp      = regs->ebp;
-        frame->esi      = regs->esi;
-        frame->edi      = regs->edi;
-        frame->eip      = regs->eip;
-        frame->eflags   = regs->eflags;
+        // The signal_frame_t is the 32-bit user ABI (rebuilt together with
+        // userspace in Phase 6); the 64-bit frame's argument registers map onto
+        // the legacy slots the 32-bit stub used: ebx=arg1, ecx/esi=arg2,
+        // edx/edi=arg3.
+        frame->eax      = (uint32_t)regs->rax;
+        frame->ecx      = (uint32_t)regs->rsi;
+        frame->edx      = (uint32_t)regs->rdx;
+        frame->ebx      = (uint32_t)regs->rdi;
+        frame->esp      = (uint32_t)regs->rsp;
+        frame->ebp      = (uint32_t)regs->rbp;
+        frame->esi      = (uint32_t)regs->rsi;
+        frame->edi      = (uint32_t)regs->rdx;
+        frame->eip      = (uint32_t)regs->rip;
+        frame->eflags   = (uint32_t)regs->rflags;
 
         // The two extra handler arguments point at the payloads carried in the
         // same frame, so nothing has to be kept alive elsewhere.
@@ -147,21 +151,21 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
         {
             uint32_t *g = frame->ucontext.uc_mcontext.gregs;
             for (int i = 0; i < 19; i++) g[i] = 0;
-            g[SF_REG_ES]   = regs->es;
-            g[SF_REG_DS]   = regs->ds;
-            g[SF_REG_EDI]  = regs->edi;
-            g[SF_REG_ESI]  = regs->esi;
-            g[SF_REG_EBP]  = regs->ebp;
-            g[SF_REG_ESP]  = regs->useresp;
-            g[SF_REG_EBX]  = regs->ebx;
-            g[SF_REG_EDX]  = regs->edx;
-            g[SF_REG_ECX]  = regs->ecx;
-            g[SF_REG_EAX]  = regs->eax;
-            g[SF_REG_EIP]  = regs->eip;
-            g[SF_REG_CS]   = regs->cs;
-            g[SF_REG_EFL]  = regs->eflags;
-            g[SF_REG_UESP] = regs->useresp;
-            g[SF_REG_SS]   = regs->ss;
+            g[SF_REG_ES]   = 0;                       // long mode has no es/ds to save
+            g[SF_REG_DS]   = 0;
+            g[SF_REG_EDI]  = (uint32_t)regs->rdx;     // edi held arg3 in the 32-bit stub
+            g[SF_REG_ESI]  = (uint32_t)regs->rsi;     // esi held arg2
+            g[SF_REG_EBP]  = (uint32_t)regs->rbp;
+            g[SF_REG_ESP]  = (uint32_t)regs->rsp;
+            g[SF_REG_EBX]  = (uint32_t)regs->rdi;     // ebx held arg1
+            g[SF_REG_EDX]  = (uint32_t)regs->rdx;
+            g[SF_REG_ECX]  = (uint32_t)regs->rsi;
+            g[SF_REG_EAX]  = (uint32_t)regs->rax;
+            g[SF_REG_EIP]  = (uint32_t)regs->rip;
+            g[SF_REG_CS]   = (uint32_t)regs->cs;
+            g[SF_REG_EFL]  = (uint32_t)regs->rflags;
+            g[SF_REG_UESP] = (uint32_t)regs->rsp;
+            g[SF_REG_SS]   = (uint32_t)regs->ss;
         }
 
         // POSIX: the delivered signal is blocked while its handler runs, so a
@@ -173,8 +177,8 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
             t->proc->signal_mask |= mask;
         t->proc->signal_mask |= t->proc->signal_masks[bit];
 
-        regs->useresp = new_esp;
-        regs->eip     = handler;
+        regs->rsp = new_esp;
+        regs->rip = handler;
 
         if (on_alt) t->proc->altstack_flags |= CACT_SS_ONSTACK;
 
