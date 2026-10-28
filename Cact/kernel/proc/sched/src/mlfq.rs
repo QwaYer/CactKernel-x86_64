@@ -606,9 +606,9 @@ pub unsafe extern "C" fn schedule() {
             unsafe { ffi::syscall_set_cpu_esp0(me as u32, esp0) };
         }
 
-        // The incoming task's TLS base, on this core: the descriptor is per-core,
-        // so it has to be (re)written and `%gs` reloaded where the task will run.
-        // A zero base leaves the kernel data segment in `%gs`.
+        // The incoming task's TLS base, on this core: the base lives in an MSR,
+        // so it has to be (re)written where the task will run.  A zero base
+        // leaves the kernel data segment in `%fs`.
         // SAFETY: `next_proc` is live; `set_tls_base` only touches this core's GDT.
         let tls_base = unsafe { (*next_proc).tls_base };
         crate::smp::set_tls_base(me, tls_base);

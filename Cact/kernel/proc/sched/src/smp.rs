@@ -28,11 +28,11 @@ const TSS_SLOTS: usize = 2;
 
 /// Index of the per-task TLS descriptor.  It must be the same in the boot GDT
 /// (the C `gdt.c`, whose `GDT_TLS_SLOT` is `TSS_SLOT + TSS_SLOTS * MAX_CPUS`)
-/// and in every per-CPU GDT: a thread migrates between cores and its `%gs`
+/// and in every per-CPU GDT: a thread migrates between cores and its `%fs`
 /// names one selector, so the descriptor has to mean the same thing everywhere.
 /// Both sides assert the resulting selector value.
 const TLS_SLOT: usize = TSS_SLOT + TSS_SLOTS * MAX_CPUS;
-/// `%gs` selector for that descriptor (RPL 3 so ring 3 may load it as well).
+/// `%fs` selector for that descriptor (RPL 3 so ring 3 may load it as well).
 pub const TLS_SEL: u16 = (TLS_SLOT as u16) * 8 + 3;
 const _: () = assert!(TLS_SEL == 0x42B, "TLS selector must match GDT_TLS_SEL in gdt.h");
 
@@ -299,7 +299,7 @@ fn build_cpu_env(cpu: usize, lapic_id: u32) {
     install_tss_descriptor(p, cpu);
 
     // Per-task TLS descriptor, at the same index in every GDT.  Its base is
-    // programmed through IA32_GS_BASE per switch (`gdt_write_tls`), not through
+    // programmed through IA32_FS_BASE per switch (`gdt_write_tls`), not through
     // the descriptor, which long mode ignores for that purpose.
     set_gdt(&mut p.gdt[TLS_SLOT], 0, 0xFFFFF, 0xF2, 0xCF);
 
@@ -726,25 +726,25 @@ pub fn set_tss_esp0(cpu: usize, esp0: u64) {
     unsafe { (*p).tss.rsp0 = esp0 };
 }
 
-/// Point the running core's thread pointer at `base` — the `%gs` base the task
+/// Point the running core's thread pointer at `base` — the `%fs` base the task
 /// about to run should see.
 ///
 /// Called by the scheduler for the incoming task (and by `sched_set_tls` when a
 /// task changes its own base), always on the core that will run that task.  In
-/// long mode that base is not a descriptor field but the per-core IA32_GS_BASE
+/// long mode that base is not a descriptor field but the per-core IA32_FS_BASE
 /// MSR, so there is nothing per-CPU to look up — the MSR of whichever core runs
 /// this is the one to write.  `base == 0` means "this task has no TLS", and
-/// `%gs` is left on the kernel data segment so a stray `%gs` use cannot reach
+/// `%fs` is left on the kernel data segment so a stray `%fs` use cannot reach
 /// the base of a stale thread pointer.
 pub fn set_tls_base(cpu: usize, base: u32) {
     let _ = cpu;
     if base == 0 {
-        // SAFETY: loads the kernel data selector; the kernel never dereferences `%gs`.
-        unsafe { crate::ffi::gdt_load_gs(0x10) };
+        // SAFETY: loads the kernel data selector; the kernel never dereferences `%fs`.
+        unsafe { crate::ffi::gdt_load_fs(0x10) };
         return;
     }
 
-    // SAFETY: programs IA32_GS_BASE on the calling core.  %gs is deliberately not
+    // SAFETY: programs IA32_FS_BASE on the calling core.  %fs is deliberately not
     // reloaded afterwards: a selector load would take the base from the
     // descriptor again, and the descriptor's base is zero.
     unsafe { crate::ffi::gdt_write_tls(base as u64) };

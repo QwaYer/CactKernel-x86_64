@@ -240,7 +240,7 @@ typedef struct proc_metadata {
     uint32_t   signal_flags[NSIG]; /* sa_flags per signal (CACT_SA_ONSTACK, ...) */
 
     /* --- TLS (appended; offsets above are unchanged) ---
-     * The task's %gs base: what ring 3 sees as its thread pointer.  The
+     * The task's %fs base: what ring 3 sees as its thread pointer.  The
      * scheduler loads it on every switch (see the TLS descriptor in gdt.c /
      * smp.rs).  Set by CACT_PROCCTL_SET_TLS, by CACT_PROCCTL_THREAD_CREATE's
      * tls argument, and cleared on exec(). */

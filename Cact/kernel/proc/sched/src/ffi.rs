@@ -122,10 +122,10 @@ unsafe extern "C" {
     pub fn apic_send_ipi(dest_lapic: u32, vector: u32) -> i32;
 
     pub fn gdt_flush(gdt_ptr: u64);
-    /// Program the per-task `%gs` base (IA32_GS_BASE) on the calling core.
+    /// Program the per-task `%fs` base (IA32_FS_BASE) on the calling core.
     pub fn gdt_write_tls(base: u64);
-    /// Load `sel` into `%gs` on the calling core.
-    pub fn gdt_load_gs(sel: u16);
+    /// Load `sel` into `%fs` on the calling core.
+    pub fn gdt_load_fs(sel: u16);
     pub fn idt_reload();
     pub fn apic_ap_online();
     pub fn apic_send_init_ipi(dest_lapic: u32);

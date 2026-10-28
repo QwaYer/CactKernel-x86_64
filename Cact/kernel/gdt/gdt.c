@@ -88,7 +88,7 @@ void init_gdt() {
                 (uint64_t)(uintptr_t)nmi_stack + sizeof(nmi_stack));
 
     // The per-task TLS descriptor: a ring-3 data segment whose slot is what the
-    // selector names.  Its base is done through IA32_GS_BASE, not the
+    // selector names.  Its base is done through IA32_FS_BASE, not the
     // descriptor (see gdt_write_tls), so it is written as zero.
     set_gdt_gate(GDT_TLS_SLOT, 0, 0xFFFFF, 0xF2, 0xCF);
 
@@ -104,8 +104,8 @@ static inline void wrmsr(uint32_t msr, uint64_t val) {
     __asm__ __volatile__("wrmsr" :: "c"(msr), "a"(lo), "d"(hi));
 }
 
-#define IA32_GS_BASE 0xC0000101u
+#define IA32_FS_BASE 0xC0000100u
 
 void gdt_write_tls(uint64_t base) {
-    wrmsr(IA32_GS_BASE, base);
+    wrmsr(IA32_FS_BASE, base);
 }

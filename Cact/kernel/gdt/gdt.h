@@ -48,21 +48,21 @@ void set_gdt_gate(int num, uint64_t base, uint32_t limit, uint8_t access, uint8_
 void write_tss(int num, uint64_t rsp0);
 void tss_set_ist(int index, uint64_t rsp);
 
-/* Per-task TLS.  In long mode a segment's base lives in an MSR (IA32_GS_BASE),
- * not in the descriptor, so gdt_write_tls() programs the MSR and gdt_load_gs()
- * only loads a selector.  The descriptor keeps its slot so the selector value
- * stays valid; TLS itself moves to %fs in Phase 3 of PORTING-x86_64.md, when
- * %gs becomes per-CPU for swapgs. */
+/* Per-task TLS lives in %fs: in long mode a segment's base is in an MSR
+ * (IA32_FS_BASE), not in the descriptor, so gdt_write_tls() programs the MSR and
+ * gdt_load_fs() only loads a selector.  The descriptor keeps its slot so the
+ * selector value stays valid.  %gs is left for the per-CPU kernel state a later
+ * phase reaches through swapgs. */
 #define GDT_TSS_SLOT    5
 #define GDT_TSS_SLOTS   2       /* a 64-bit TSS descriptor is 16 bytes */
 #define GDT_TLS_SLOT    (GDT_TSS_SLOT + GDT_TSS_SLOTS * 64)   /* TSS_SLOT + 2 * MAX_CPUS */
 #define GDT_TLS_SEL     ((uint16_t)(GDT_TLS_SLOT * 8 + 3))    /* RPL 3: ring 3 may load it */
 #define GDT_ENTRIES     (GDT_TLS_SLOT + 1)
 
-/* Rewrite the per-task %gs base (the boot GDT; APs program their own MSR). */
+/* Rewrite the per-task %fs base (the boot GDT; APs program their own MSR). */
 void gdt_write_tls(uint64_t base);
-/* Load a data selector into %gs. */
-extern void gdt_load_gs(uint16_t sel);
+/* Load a data selector into %fs. */
+extern void gdt_load_fs(uint16_t sel);
 
 // External assembly functions
 extern struct tss_entry_struct tss_entry;

@@ -2,7 +2,7 @@
 
 global gdt_flush
 global tss_flush
-global gdt_load_gs
+global gdt_load_fs
 
 ; void gdt_flush(uint64_t gdt_ptr)
 ; Loads a new GDT and reloads every segment register.  CS can only be reloaded
@@ -34,11 +34,11 @@ tss_flush:
     ltr ax
     ret
 
-; void gdt_load_gs(uint16_t sel)
-; Loads a data selector into %gs.  In long mode this does *not* carry a base —
-; gdt_write_tls() programs IA32_GS_BASE — so a caller that wants a new thread
-; pointer writes the MSR and leaves the selector alone.
-gdt_load_gs:
+; void gdt_load_fs(uint16_t sel)
+; Loads a data selector into %fs — the user TLS segment.  In long mode this does
+; *not* carry a base — gdt_write_tls() programs IA32_FS_BASE — so a caller that
+; wants a new thread pointer writes the MSR and leaves the selector alone.
+gdt_load_fs:
     mov eax, edi
-    mov gs, ax
+    mov fs, ax
     ret

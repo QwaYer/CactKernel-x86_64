@@ -134,7 +134,7 @@ pub struct ProcMeta {
     /// sa_flags recorded per signal (CACT_SA_ONSTACK, ...).
     pub signal_flags:       [u32; NSIG],
     // --- TLS (appended after 676; existing offsets above are unchanged) ---
-    /// The task's `%gs` base — its thread pointer in ring 3 (0 = none).
+    /// The task's `%fs` base — its thread pointer in ring 3 (0 = none).
     pub tls_base:           u32,
     // --- signal dispositions (appended after 680) ---
     /// The set each handler wants blocked while it runs (sa_mask).
