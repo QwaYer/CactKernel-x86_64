@@ -165,21 +165,17 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                     total_avail += e->len;
                 }
 
-                // Build flat mmap table for PMM (32-bit kernel only)
+                // Build flat mmap table for PMM.
                 if (mmap_out && mmap_out->count < MB2_MMAP_MAX_ENTRIES) {
-                    // Skip regions entirely above 4GB (unusable in 32-bit)
-                    if (e->addr >= 0x100000000ULL) continue;
-
-                    uint64_t end64 = e->addr + e->len;
-                    // Clip to 4GB limit
-                    if (end64 > 0x100000000ULL) end64 = 0x100000000ULL;
-                    uint64_t len64 = end64 - e->addr;
-                    if (len64 == 0) continue;
+                    // Keep the full 64-bit values: the PMM is 64-bit and manages
+                    // RAM above 4 GiB too (below the 32-bit hole it is device
+                    // MMIO, above it is RAM again).
+                    if (e->len == 0) continue;
 
                     mb2_mmap_flat_t* fe =
                         &mmap_out->entries[mmap_out->count++];
                     fe->base = e->addr;
-                    fe->len  = len64;
+                    fe->len  = e->len;
                     fe->type = e->type;
                 }
             }

@@ -370,7 +370,7 @@ unsafe fn split_large_page(pd_entry: *mut u64, private: bool) -> *mut u64 {
 /// anywhere without displacing the kernel's view of a live frame, which was the
 /// sole reason `USER_FRAME_CEIL` existed.
 fn build_kernel_map() {
-    let ram_end = crate::pmm::ram_end() as u64;
+    let ram_end = crate::pmm::ram_end();
     let reserved_end = crate::pmm::reserved_end() as u64;
 
     // Identity map: 2 MiB pages, only below the boot reservation.
@@ -411,33 +411,51 @@ fn build_kernel_map() {
         unsafe { *entry(pdpt_low, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
     }
 
-    // Direct map: the whole 4 GiB of physical memory at `DIRECT_MAP_BASE`, so
-    // the kernel can address a frame — or a device register — without an alias
-    // in the low (user) half.  Device space, at or above the RAM/MMIO boundary,
-    // must not be cached, or a register read would be served from cache.
+    // Direct map: every managed physical address at `DIRECT_MAP_BASE`, so the
+    // kernel can address a frame — or a device register — without an alias in
+    // the low (user) half.  The low four 1 GiB windows use the static tables;
+    // any RAM above 4 GiB gets a page directory from `kalloc` (whose frames live
+    // below the low RAM top, already covered by the direct map in force).
     // SAFETY: `addr_of_mut!` projects the address of the static table without
-    // forming a reference.
-    let pd_direct = unsafe { core::ptr::addr_of_mut!(PD_DIRECT.0) };
-    // SAFETY: `pd_direct` addresses the live table array, as for `PD_LOW`.
-    let dmap = unsafe { &mut *pd_direct };
-    for (window, table) in dmap.iter_mut().enumerate() {
-        for (slot, slot_value) in table.iter_mut().enumerate() {
-            let phys = (window * TABLE_ENTRIES + slot) as u64 * LARGE_PAGE_SIZE as u64;
-            let cache = if phys >= ram_end { PAGE_PCD | PAGE_PWT } else { 0 };
-            *slot_value = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_PS as u64
-                | cache as u64;
-        }
-    }
-
+    // forming a reference; the cast to `*mut u64` makes the stride one entry.
+    let pd_direct = unsafe { core::ptr::addr_of_mut!(PD_DIRECT.0).cast::<u64>() };
     // SAFETY: `addr_of_mut!` projects the address of the static without forming
     // a reference.
     let pdpt_direct = unsafe { core::ptr::addr_of_mut!(PDPT_DIRECT.0).cast::<u64>() };
-    let dmap_base = v2p(dmap.as_ptr());
-    for i in 0..dmap.len() {
-        // SAFETY: window `i`'s table is at the array base plus its stride.
-        let phys = dmap_base + (i * TABLE_ENTRIES * 8) as u64;
-        // SAFETY: `i < 4`, so this PDPT entry is in bounds.
-        unsafe { *entry(pdpt_direct, i as u32) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64 };
+    let map_end = core::cmp::max(LOW_MEM_END, crate::pmm::max_ram_addr());
+    let windows_needed =
+        (((map_end + (1u64 << 30) - 1) >> 30) as usize).min(TABLE_ENTRIES);
+    for w in 0..windows_needed {
+        let table: *mut u64 = if w < 4 {
+            // SAFETY: `w < 4`, so `w` tables into the static array is in bounds.
+            unsafe { pd_direct.add(w * TABLE_ENTRIES) }
+        } else {
+            let t = new_table();
+            if t.is_null() {
+                break;
+            }
+            t
+        };
+        for slot in 0..TABLE_ENTRIES {
+            let phys = (w * TABLE_ENTRIES + slot) as u64 * LARGE_PAGE_SIZE as u64;
+            // Device space — the 32-bit PCI hole — must not be cached, or a
+            // register read would be served from cache.  Above 4 GiB the map is
+            // RAM again.
+            let cache = if phys >= ram_end && phys < LOW_MEM_END {
+                PAGE_PCD | PAGE_PWT
+            } else {
+                0
+            };
+            // SAFETY: `table` is a live 512-entry table (static, or a fresh
+            // kalloc'd frame) and `slot < 512`, so this write is in bounds.
+            unsafe {
+                *table.add(slot) = phys | PAGE_PRESENT as u64 | PAGE_RW as u64
+                    | PAGE_PS as u64 | cache as u64
+            };
+        }
+        // SAFETY: `w < TABLE_ENTRIES`, so this PDPT entry is in bounds; the
+        // table is recorded by its physical address.
+        unsafe { *entry(pdpt_direct, w as u32) = v2p(table) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
     }
 
     // 0xFFFFFFFF80000000 is PML4[511], PDPT[510] — the entry that puts physical
@@ -533,7 +551,7 @@ pub unsafe extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr:
 
     let mut flags = flags as u32;
     let caller_uncached = flags & (PAGE_PCD | PAGE_PWT) != 0;
-    if physical_addr >= crate::pmm::ram_end() as u64 {
+    if physical_addr >= crate::pmm::ram_end() {
         flags |= PAGE_PCD | PAGE_PWT;
     }
     // The user stack is pushed into from user mode: a present user page without

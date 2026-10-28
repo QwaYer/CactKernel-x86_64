@@ -224,9 +224,9 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
 
     pmm_init_from_mmap(mmap);       // Physical Memory Manager
     init_memory_manager();          // Virtual memory manager
-    pr_info("%s: %u MiB installed (MB2 map), %u MiB usable below the PCI hole\n",
+    pr_info("%s: %u MiB installed (MB2 map), %u MiB usable\n",
             "pmm", mem_total_kb / 1024u,
-            (unsigned)(pmm_total_frames() * (PAGE_SIZE / 1024u) / 1024u));
+            (unsigned)((uint64_t)pmm_total_frames() * (PAGE_SIZE / 1024u) / 1024u));
     pr_info("%s: virtual address-space manager ready\n", "vmm");
     init_heap();                    // Kernel heap (kmalloc)
     pr_info("%s: kmalloc arena ready (%u KiB free)\n",

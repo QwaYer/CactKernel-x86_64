@@ -11,31 +11,30 @@ pub const PAGE_SIZE: u32 = 4096;
 
 /// Page index -> physical address.
 #[inline]
-pub const fn page_to_addr(idx: u32) -> u32 {
-    idx * PAGE_SIZE
+pub const fn page_to_addr(idx: u64) -> u64 {
+    idx * PAGE_SIZE as u64
 }
 
 /// Physical address -> page index (floor).
 #[inline]
-pub const fn addr_to_page(addr: u32) -> u32 {
-    addr / PAGE_SIZE
+pub const fn addr_to_page(addr: u64) -> u64 {
+    addr / PAGE_SIZE as u64
 }
 
 /// Byte offset of `idx` inside the free-frame bitmap.
 #[inline]
-pub const fn bitmap_byte(idx: u32) -> usize {
+pub const fn bitmap_byte(idx: u64) -> usize {
     (idx / 8) as usize
 }
 
 /// Bit mask of `idx` inside its bitmap byte.
 #[inline]
-pub const fn bitmap_mask(idx: u32) -> u8 {
+pub const fn bitmap_mask(idx: u64) -> u8 {
     1u8 << (idx % 8)
 }
 
-/// Clip a physical region `[base, base+len)` to `[.., limit)` (the 4 GiB
-/// physical ceiling).  Returns the clipped `(base, end)`, or `None` when the
-/// region has no bytes below `limit`.
+/// Clip a physical region `[base, base+len)` to `[.., limit)`.  Returns the
+/// clipped `(base, end)`, or `None` when the region has no bytes below `limit`.
 pub fn clip_to_limit(base: u64, len: u64, limit: u64) -> Option<(u64, u64)> {
     if len == 0 {
         return None;
@@ -49,20 +48,19 @@ pub fn clip_to_limit(base: u64, len: u64, limit: u64) -> Option<(u64, u64)> {
 
 /// Half-open page range `[first, last)` covering `[base, end)`.  `first` is
 /// rounded up to a page boundary, `last` down; callers must skip the region
-/// when `first >= last`.  Mirrors the original PMM install loop exactly,
-/// including the 32-bit truncation of the masked addresses.
-pub fn aligned_page_range(base: u64, end: u64) -> (u32, u32) {
+/// when `first >= last`.
+pub fn aligned_page_range(base: u64, end: u64) -> (u64, u64) {
     let mask = PAGE_SIZE as u64 - 1;
     let first_addr = (base + mask) & !mask;
     let last_addr = end & !mask;
-    (addr_to_page(first_addr as u32), addr_to_page(last_addr as u32))
+    (addr_to_page(first_addr), addr_to_page(last_addr))
 }
 
 /// Page-aligned top of available RAM from the boot map's highest usable end
 /// address.  Returns `None` when there is nothing usable (caller keeps its
 /// default boundary), `Some(re)` otherwise, with `re` clamped below `limit` and
 /// never below `reserved_end`.
-pub fn ram_end_from_candidate(candidate: u64, reserved_end: u32, limit: u64) -> Option<u32> {
+pub fn ram_end_from_candidate(candidate: u64, reserved_end: u64, limit: u64) -> Option<u64> {
     if candidate == 0 {
         return None;
     }
@@ -71,8 +69,8 @@ pub fn ram_end_from_candidate(candidate: u64, reserved_end: u32, limit: u64) -> 
     if re >= limit {
         re = limit - PAGE_SIZE as u64;
     }
-    if re >= reserved_end as u64 {
-        Some(re as u32)
+    if re >= reserved_end {
+        Some(re)
     } else {
         None
     }
@@ -82,8 +80,8 @@ pub fn ram_end_from_candidate(candidate: u64, reserved_end: u32, limit: u64) -> 
 /// greater of the RAM top and the PCI hole, rounded up to 2 MiB.  Keeping it at
 /// or above `PCI_HOLE_START` (= `USER_STACK_TOP`) puts the windows in the shared
 /// kernel half, clear of every user mapping.
-pub const fn mmio_window_base(ram_end: u32, hole_start: u32) -> u32 {
-    const ALIGN: u32 = 2 * 1024 * 1024;
+pub const fn mmio_window_base(ram_end: u64, hole_start: u64) -> u64 {
+    const ALIGN: u64 = 2 * 1024 * 1024;
     let base = if ram_end > hole_start { ram_end } else { hole_start };
     (base + (ALIGN - 1)) & !(ALIGN - 1)
 }

@@ -18,10 +18,9 @@
  */
 #define PCI_HOLE_START  0xC0000000u
 
-/* Worst-case frame counts for the full 4 GiB space; the static PMM arrays in
- * rust_mm are sized from these. */
-#define TOTAL_PAGES     (1024u * 1024u)
-#define BITMAP_SIZE     (TOTAL_PAGES / 8)       /* 128 KB */
+/* The PMM is 64-bit and sizes its free-frame bitmap / refcount arrays at boot
+ * from the Multiboot2 map (rust_mm pmm.rs), so there are no compile-time frame
+ * counts here any more: RAM above 4 GiB is managed like any other. */
 
 /*
  * Fixed kernel windows (ACPI temp map + PCIe ECAM) live in the shared kernel

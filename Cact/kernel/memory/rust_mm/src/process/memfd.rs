@@ -25,10 +25,10 @@ pub const MEMFD_MAX: usize = 128;
 pub const MEMFD_PAGES_INITIAL: u32 = 1024;
 /// Slots added per growth step (64 MiB worth).
 pub const MEMFD_PAGES_GROW: u32 = 16 * 1024;
-/// Ceiling on one object's frame count: the frames the PMM can actually hand out
-/// below the 4 GiB physical limit.  `grow_locked` also rolls
-/// back when `kalloc` runs out, so free RAM is the real limit.
-pub const MEMFD_PAGES_MAX: u32 = (PMM_MAX_ADDR / PAGE_SIZE as u64) as u32;
+/// Ceiling on one object's frame count: a sanity bound on the growable pointer
+/// array.  `grow_locked` also rolls back when `kalloc` runs out, so free RAM is
+/// the real limit.
+pub const MEMFD_PAGES_MAX: u32 = PMM_MAX_FRAMES;
 pub const MEMFD_NAME_MAX: usize = 128;
 
 pub const MFD_CLOEXEC: i32 = 0x0001;
