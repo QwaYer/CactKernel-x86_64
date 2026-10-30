@@ -406,11 +406,15 @@ pub unsafe extern "C" fn sched_task_exit(exit_code: i32) {
         let next_child = unsafe { (*child).next };
         // SAFETY: `child` is live, so its `proc` field is in bounds.
         let child_proc = unsafe { (*child).proc };
-        // SAFETY: `child_proc` is that task's live `ProcMeta`.
-        let child_parent = unsafe { (*child_proc).parent_pid };
-        if child_parent == my_pid {
-            // SAFETY: `child_proc` is live.
-            unsafe { (*child_proc).parent_pid = 0 };
+        // A kernel task has no `ProcMeta` — the per-CPU idle tasks in
+        // particular — and so no parent to be reparented from.  Skip it.
+        if !child_proc.is_null() {
+            // SAFETY: `child_proc` is that task's live `ProcMeta`.
+            let child_parent = unsafe { (*child_proc).parent_pid };
+            if child_parent == my_pid {
+                // SAFETY: `child_proc` is live.
+                unsafe { (*child_proc).parent_pid = 0 };
+            }
         }
         child = next_child;
     }
@@ -453,6 +457,13 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
         while !t.is_null() {
             // SAFETY: `t` is a live task on the list.
             let t_proc = unsafe { (*t).proc };
+            // A kernel task has no `ProcMeta` (the per-CPU idle tasks); it has no
+            // parent and is never a child to be waited for.  Skip it.
+            if t_proc.is_null() {
+                // SAFETY: `t` is live.
+                t = unsafe { (*t).next };
+                continue;
+            }
             // SAFETY: `t_proc` is that task's live `ProcMeta`.
             let t_parent = unsafe { (*t_proc).parent_pid };
             // SAFETY: `t` is live.
