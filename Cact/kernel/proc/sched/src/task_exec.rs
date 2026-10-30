@@ -488,7 +488,7 @@ pub unsafe extern "C" fn task_exec(
 
     // CR3 takes the map's physical address: `new_pd` is a `kalloc` VA.
     let pd_val = cact_mm::vmm_v2p(new_pd as *const u8);
-    let entry_u = entry as u32;
+    let entry_u = entry as u64;
     let sp_u = sp;
 
     // SAFETY: the final exec commit: `new_pd` is the just-loaded address space, `sp_u` a

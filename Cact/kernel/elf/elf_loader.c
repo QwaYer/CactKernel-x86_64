@@ -6,9 +6,23 @@
 #include "klib.h"
 #include "page_fault.h"
 
+/* This is the exec-time ELF loader.  It executes ELF64/x86-64 images only:
+ * a 64-bit kernel cannot run an ELF32 binary (the CPU would decode its 32-bit
+ * instructions in long mode), and vmm_create_address_space()/the ring-3 entry
+ * frames are both 64-bit.  The three `.cctk` module loaders are a separate,
+ * still-32-bit ABI.
+ *
+ * The user VA model is still the 32-bit window: every segment must land below
+ * USER_STACK_TOP (3 GiB), which is where the mmap window and user stack already
+ * live.  `p_vaddr` is read as 64-bit and validated before it is narrowed, so a
+ * segment claiming a higher address is rejected rather than truncated onto some
+ * other page. */
+
 /* PT_INTERP (userspace ld.so) handoff data. main_phdr points at a mapped copy
  * of the program header table (allocated by _map_image when the phdrs are not
- * covered by a PT_LOAD), so ld.so can scan it in user space just like Linux. */
+ * covered by a PT_LOAD), so ld.so can scan it in user space just like Linux.
+ * The fields are 32-bit because they feed the 32-bit auxv layout (see
+ * task_exec/task_create); the address space they describe is the low window. */
 typedef struct {
     uint32_t main_entry;
     uint32_t main_base;
@@ -22,13 +36,13 @@ typedef struct {
  * into the shared kernel page table, visible to every process.  Low addresses
  * are allowed -- vmm_map() COWs the shared low table into a private one for the
  * process -- so the only extra refusals are the NULL page and a segment wrapped
- * past 4 GiB.
+ * past the ceiling.
  *
  * No VA can shadow a kernel frame any more: the identity map is confined to the
  * boot reservation and every frame (and all device MMIO) is reached through the
  * direct map, whose PML4 entry lives in the upper half. */
-static int _elf_seg_ok(uint32_t seg_start, uint32_t seg_end) {
-    if (seg_end < seg_start)      return 0; /* wrapped past 4 GiB */
+static int _elf_seg_ok(uint64_t seg_start, uint64_t seg_end) {
+    if (seg_end < seg_start)      return 0; /* wrapped past the address space */
     if (seg_end > USER_STACK_TOP) return 0; /* kernel half */
     if (seg_start < PAGE_SIZE)    return 0; /* would map the NULL page */
     return 1;
@@ -39,19 +53,19 @@ static int _elf_seg_ok(uint32_t seg_start, uint32_t seg_end) {
  * (0 when the phdrs are already covered by a segment mapping). */
 static int _map_image(struct vfs_node* file, uint64_t* pd,
                       proc_page_tracker_t* tracker,
-                      uint32_t* out_entry, uint32_t* out_min_vaddr,
+                      uint64_t* out_entry, uint32_t* out_min_vaddr,
                       uint32_t* out_phdr, uint32_t* out_phnum)
 {
-    Elf32_Ehdr hdr;
-    if (read_vfs(file, 0, sizeof(Elf32_Ehdr), (char*)&hdr) <= 0) return -1;
+    Elf64_Ehdr hdr;
+    if (read_vfs(file, 0, sizeof(Elf64_Ehdr), (char*)&hdr) <= 0) return -1;
     if (*(uint32_t*)hdr.e_ident != ELF_MAGIC) return -1;
-    if (hdr.e_ident[EI_CLASS] != ELFCLASS32) return -1;
+    if (hdr.e_ident[EI_CLASS] != ELFCLASS64) return -1;
     if (hdr.e_ident[EI_DATA]  != ELFDATA2LSB) return -1;
     if (hdr.e_ident[EI_VERSION] != EV_CURRENT) return -1;
-    if (hdr.e_machine != 3) return -1;
-    if (hdr.e_phentsize < sizeof(Elf32_Phdr)) return -1;
+    if (hdr.e_machine != EM_X86_64) return -1;
+    if (hdr.e_phentsize < sizeof(Elf64_Phdr)) return -1;
     if ((uint32_t)hdr.e_phnum > 65535u) return -1;
-    uint64_t ph_end_check = (uint64_t)hdr.e_phoff +
+    uint64_t ph_end_check = hdr.e_phoff +
                             (uint64_t)hdr.e_phnum * hdr.e_phentsize;
     if (ph_end_check > file->size) return -1;
 
@@ -60,39 +74,39 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
     if (out_phdr)    *out_phdr    = 0;
     if (out_min_vaddr) *out_min_vaddr = 0;
 
-    uint32_t min_vaddr = 0xFFFFFFFFu;
+    uint64_t min_vaddr = 0xFFFFFFFFFFFFFFFFull;
     for (int i = 0; i < hdr.e_phnum; i++) {
-        Elf32_Phdr ph;
-        if (read_vfs(file, hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr), (char*)&ph) <= 0) return -1;
+        Elf64_Phdr ph;
+        if (read_vfs(file, (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr), (char*)&ph) <= 0) return -1;
         if (ph.p_type != PT_LOAD || ph.p_memsz == 0) continue;
         if (ph.p_vaddr + ph.p_memsz < ph.p_vaddr) return -1;
-        uint32_t page_start = ph.p_vaddr & ~0xFFFu;
-        uint32_t page_end   = (ph.p_vaddr + ph.p_memsz + 0xFFFu) & ~0xFFFu;
+        uint64_t page_start = ph.p_vaddr & ~0xFFFull;
+        uint64_t page_end   = (ph.p_vaddr + ph.p_memsz + 0xFFFull) & ~0xFFFull;
         if (!_elf_seg_ok(page_start, page_end)) return -1;
         if (page_start < min_vaddr) min_vaddr = page_start;
     }
-    if (min_vaddr == 0xFFFFFFFFu || min_vaddr < PAGE_SIZE) return -1;
+    if (min_vaddr == 0xFFFFFFFFFFFFFFFFull || min_vaddr < PAGE_SIZE) return -1;
 
-    uint32_t phdr_bytes = (uint32_t)(ph_end_check - (uint64_t)hdr.e_phoff);
+    uint32_t phdr_bytes = (uint32_t)(ph_end_check - hdr.e_phoff);
     int phdr_covered = 0;
     uint32_t phdr_vaddr = 0;
 
     for (int i = 0; i < hdr.e_phnum; i++) {
-        Elf32_Phdr ph;
-        if (read_vfs(file, hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr), (char*)&ph) <= 0) return -1;
+        Elf64_Phdr ph;
+        if (read_vfs(file, (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr), (char*)&ph) <= 0) return -1;
 
         if (ph.p_type == PT_LOAD && ph.p_memsz > 0) {
             if (ph.p_vaddr + ph.p_memsz < ph.p_vaddr) continue;
             if (ph.p_vaddr + ph.p_filesz < ph.p_vaddr) continue;
 
-            uint32_t seg_start = ph.p_vaddr & ~0xFFFu;
-            uint32_t seg_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & ~0xFFFu;
-            uint32_t file_end  = ph.p_vaddr + ph.p_filesz;
+            uint64_t seg_start = ph.p_vaddr & ~0xFFFull;
+            uint64_t seg_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & ~0xFFFull;
+            uint64_t file_end  = ph.p_vaddr + ph.p_filesz;
             if (!_elf_seg_ok(seg_start, seg_end)) return -1;
 
-            for (uint32_t va = seg_start; va < seg_end; va += PAGE_SIZE) {
+            for (uint64_t va = seg_start; va < seg_end; va += PAGE_SIZE) {
                 void* phys = kalloc();
                 if (!phys) { pr_err("elf: out of memory allocating segment page\n"); return -1; }
                 if (proc_tracker_add(tracker, phys) < 0) {
@@ -102,13 +116,14 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
                 for (int k = 0; k < (int)PAGE_SIZE; k++) p[k] = 0;
 
                 if (va < file_end) {
-                    uint32_t copy_start = (va > ph.p_vaddr) ? va : ph.p_vaddr;
-                    uint32_t copy_end   = ((va + PAGE_SIZE) < file_end)
+                    uint64_t copy_start = (va > ph.p_vaddr) ? va : ph.p_vaddr;
+                    uint64_t copy_end   = ((va + PAGE_SIZE) < file_end)
                                           ? (va + PAGE_SIZE) : file_end;
                     if (copy_end > copy_start) {
-                        uint32_t page_offset = copy_start - va;
-                        uint32_t file_offset = ph.p_offset + (copy_start - ph.p_vaddr);
-                        if (read_vfs(file, file_offset, copy_end - copy_start,
+                        uint32_t page_offset = (uint32_t)(copy_start - va);
+                        uint64_t file_offset = ph.p_offset + (copy_start - ph.p_vaddr);
+                        if (read_vfs(file, (uint32_t)file_offset,
+                                     (uint32_t)(copy_end - copy_start),
                                      (char*)phys + page_offset) <= 0) return -1;
                     }
                 }
@@ -119,11 +134,10 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
             }
 
             if (!phdr_covered &&
-                hdr.e_phoff >= (uint64_t)ph.p_offset &&
-                (uint64_t)hdr.e_phoff + phdr_bytes <=
-                    (uint64_t)ph.p_offset + ph.p_filesz) {
+                hdr.e_phoff >= ph.p_offset &&
+                hdr.e_phoff + phdr_bytes <= ph.p_offset + ph.p_filesz) {
                 phdr_covered = 1;
-                phdr_vaddr   = ph.p_vaddr + (uint32_t)(hdr.e_phoff - ph.p_offset);
+                phdr_vaddr   = (uint32_t)(ph.p_vaddr + (hdr.e_phoff - ph.p_offset));
             }
         }
     }
@@ -144,16 +158,16 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
         uint8_t* p = (uint8_t*)phys;
         for (int k = 0; k < (int)PAGE_SIZE; k++) p[k] = 0;
         if (copy_sz > 0)
-            read_vfs(file, hdr.e_phoff, copy_sz, (char*)phys + page_off);
+            read_vfs(file, (uint32_t)hdr.e_phoff, copy_sz, (char*)phys + page_off);
 
         if (min_vaddr < PAGE_SIZE) return -1;
-        uint32_t page_va = min_vaddr - 0x1000u;
+        uint32_t page_va = (uint32_t)min_vaddr - 0x1000u;
         // `kalloc` returns a direct-map VA; the PTE takes the physical address.
         vmm_map(pd, page_va, vmm_v2p(phys), PAGE_USER | PAGE_RW | PAGE_PRESENT);
         phdr_vaddr = page_va + page_off;
     }
 
-    if (out_min_vaddr) *out_min_vaddr = min_vaddr;
+    if (out_min_vaddr) *out_min_vaddr = (uint32_t)min_vaddr;
     if (out_phdr)      *out_phdr      = phdr_vaddr;
     return 0;
 }
@@ -173,8 +187,8 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
         return 0;
     }
 
-    Elf32_Ehdr hdr;
-    if (read_vfs(file, 0, sizeof(Elf32_Ehdr), (char*)&hdr) <= 0) {
+    Elf64_Ehdr hdr;
+    if (read_vfs(file, 0, sizeof(Elf64_Ehdr), (char*)&hdr) <= 0) {
         pr_err("elf: cannot read ELF header from %s\n", path);
         return 0;
     }
@@ -184,8 +198,8 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                (unsigned)*(uint32_t*)hdr.e_ident, (unsigned)ELF_MAGIC, path);
         return 0;
     }
-    if (hdr.e_ident[EI_CLASS] != ELFCLASS32) {
-        pr_err("elf: not 32-bit (class=%u): %s\n",
+    if (hdr.e_ident[EI_CLASS] != ELFCLASS64) {
+        pr_err("elf: not 64-bit (class=%u): %s\n",
                (unsigned)hdr.e_ident[EI_CLASS], path);
         return 0;
     }
@@ -199,14 +213,14 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                (unsigned)hdr.e_ident[EI_VERSION], path);
         return 0;
     }
-    if (hdr.e_machine != 3) {
-        pr_err("elf: unsupported machine %u (want 3=i386): %s\n",
-               (unsigned)hdr.e_machine, path);
+    if (hdr.e_machine != EM_X86_64) {
+        pr_err("elf: unsupported machine %u (want %u=x86_64): %s\n",
+               (unsigned)hdr.e_machine, (unsigned)EM_X86_64, path);
         return 0;
     }
-    if (hdr.e_phentsize < sizeof(Elf32_Phdr)) {
+    if (hdr.e_phentsize < sizeof(Elf64_Phdr)) {
         pr_err("elf: e_phentsize %u too small (min %u): %s\n",
-               (unsigned)hdr.e_phentsize, (unsigned)sizeof(Elf32_Phdr), path);
+               (unsigned)hdr.e_phentsize, (unsigned)sizeof(Elf64_Phdr), path);
         return 0;
     }
     if ((uint32_t)hdr.e_phnum > 65535u) {
@@ -214,7 +228,7 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                (unsigned)hdr.e_phnum, path);
         return 0;
     }
-    uint64_t ph_end_check = (uint64_t)hdr.e_phoff + (uint64_t)hdr.e_phnum * hdr.e_phentsize;
+    uint64_t ph_end_check = hdr.e_phoff + (uint64_t)hdr.e_phnum * hdr.e_phentsize;
     if (ph_end_check > file->size) {
         pr_err("elf: program headers overflow file (need %u > size %u): %s\n",
                (unsigned)ph_end_check, (unsigned)file->size, path);
@@ -222,10 +236,10 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
     }
 
     for (int i = 0; i < hdr.e_phnum; i++) {
-        Elf32_Phdr ph;
+        Elf64_Phdr ph;
         if (read_vfs(file,
-                     hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr),
+                     (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr),
                      (char*)&ph) <= 0) {
             pr_err("elf: cannot read phdr %d (off %u) from %s\n",
                    i, (unsigned)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize), path);
@@ -238,17 +252,17 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
         if (ph.p_vaddr + ph.p_memsz < ph.p_vaddr) continue;
         if (ph.p_vaddr + ph.p_filesz < ph.p_vaddr) continue;
 
-        uint32_t seg_start = ph.p_vaddr & ~0xFFFu;
-        uint32_t seg_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & ~0xFFFu;
-        uint32_t file_end  = ph.p_vaddr + ph.p_filesz;
+        uint64_t seg_start = ph.p_vaddr & ~0xFFFull;
+        uint64_t seg_end   = (ph.p_vaddr + ph.p_memsz + 0xFFF) & ~0xFFFull;
+        uint64_t file_end  = ph.p_vaddr + ph.p_filesz;
         if (!_elf_seg_ok(seg_start, seg_end)) {
-            pr_err("elf: PT_LOAD segment %d [0x%x,0x%x) outside user space: %s\n",
-                   i, (unsigned)seg_start, (unsigned)seg_end, path);
+            pr_err("elf: PT_LOAD segment %d [0x%llx,0x%llx) outside user space: %s\n",
+                   i, (unsigned long long)seg_start, (unsigned long long)seg_end, path);
             proc_free_pages(tracker);
             return 0;
         }
 
-        for (uint32_t va = seg_start; va < seg_end; va += PAGE_SIZE) {
+        for (uint64_t va = seg_start; va < seg_end; va += PAGE_SIZE) {
             if (va < file_end) {
                 void* phys = kalloc();
                 if (!phys) {
@@ -266,15 +280,16 @@ void* load_elf(char* path, uint64_t* pd, proc_page_tracker_t* tracker)
                 uint8_t* p = (uint8_t*)phys;
                 for (int k = 0; k < (int)PAGE_SIZE; k++) p[k] = 0;
 
-                uint32_t copy_start = (va > ph.p_vaddr) ? va : ph.p_vaddr;
-                uint32_t copy_end   = ((va + PAGE_SIZE) < file_end) ? (va + PAGE_SIZE) : file_end;
+                uint64_t copy_start = (va > ph.p_vaddr) ? va : ph.p_vaddr;
+                uint64_t copy_end   = ((va + PAGE_SIZE) < file_end) ? (va + PAGE_SIZE) : file_end;
 
                 if (copy_end > copy_start) {
-                    uint32_t page_offset = copy_start - va;
-                    uint32_t file_offset = ph.p_offset + (copy_start - ph.p_vaddr);
-                    uint32_t copy_sz     = copy_end - copy_start;
+                    uint32_t page_offset = (uint32_t)(copy_start - va);
+                    uint64_t file_offset = ph.p_offset + (copy_start - ph.p_vaddr);
+                    uint32_t copy_sz     = (uint32_t)(copy_end - copy_start);
 
-                    int rd = read_vfs(file, file_offset, copy_sz, (char*)phys + page_offset);
+                    int rd = read_vfs(file, (uint32_t)file_offset, copy_sz,
+                                      (char*)phys + page_offset);
                     if (rd <= 0) {
                         pr_err("elf: read_vfs failed at off=%d sz=%d ret=%d\n",
                                (int)file_offset, (int)copy_sz, (int)rd);
@@ -318,27 +333,27 @@ int elf_get_interp_path(const char* path, char* out, int out_max)
     vfs_node_t* file = vfs_walk_path_follow(vfs_root, (char*)path, 0);
     if (!file) return -1;
 
-    Elf32_Ehdr hdr;
-    if (read_vfs(file, 0, sizeof(Elf32_Ehdr), (char*)&hdr) <= 0) return -1;
+    Elf64_Ehdr hdr;
+    if (read_vfs(file, 0, sizeof(Elf64_Ehdr), (char*)&hdr) <= 0) return -1;
     if (*(uint32_t*)hdr.e_ident != ELF_MAGIC) return -1;
-    if (hdr.e_ident[EI_CLASS] != ELFCLASS32) return -1;
+    if (hdr.e_ident[EI_CLASS] != ELFCLASS64) return -1;
     if (hdr.e_ident[EI_DATA]  != ELFDATA2LSB) return -1;
-    if (hdr.e_machine != 3) return -1;
-    if (hdr.e_phentsize < sizeof(Elf32_Phdr)) return -1;
+    if (hdr.e_machine != EM_X86_64) return -1;
+    if (hdr.e_phentsize < sizeof(Elf64_Phdr)) return -1;
     if ((uint32_t)hdr.e_phnum > 65535u) return -1;
-    uint64_t ph_end_check = (uint64_t)hdr.e_phoff +
+    uint64_t ph_end_check = hdr.e_phoff +
                             (uint64_t)hdr.e_phnum * hdr.e_phentsize;
     if (ph_end_check > file->size) return -1;
 
     for (int i = 0; i < hdr.e_phnum; i++) {
-        Elf32_Phdr ph;
-        if (read_vfs(file, hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr), (char*)&ph) <= 0)
+        Elf64_Phdr ph;
+        if (read_vfs(file, (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr), (char*)&ph) <= 0)
             break;
         if (ph.p_type != PT_INTERP) continue;
-        if (ph.p_filesz == 0 || ph.p_filesz > (uint32_t)out_max) return -1;
+        if (ph.p_filesz == 0 || ph.p_filesz > (uint64_t)out_max) return -1;
 
-        int n = read_vfs(file, ph.p_offset, ph.p_filesz, out);
+        int n = read_vfs(file, (uint32_t)ph.p_offset, (uint32_t)ph.p_filesz, out);
         if (n <= 0) return -1;
         if (n >= out_max) n = out_max - 1;
         out[n] = '\0';
@@ -364,18 +379,20 @@ void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
         return 0;
     }
 
-    uint32_t m_entry = 0, m_min = 0, m_phdr = 0, m_phnum = 0;
+    uint64_t m_entry = 0;
+    uint32_t m_min = 0, m_phdr = 0, m_phnum = 0;
     if (_map_image(main_file, pd, tracker, &m_entry, &m_min, &m_phdr, &m_phnum) != 0) {
         pr_err("elf: failed to map main image: %s\n", path);
         proc_free_pages(tracker);
         return 0;
     }
-    info->main_entry = m_entry;
+    info->main_entry = (uint32_t)m_entry;
     info->main_base  = m_min;
     info->main_phdr  = m_phdr;
     info->main_phnum = m_phnum;
 
-    uint32_t i_entry = 0, i_min = 0, i_phdr = 0, i_phnum = 0;
+    uint64_t i_entry = 0;
+    uint32_t i_min = 0, i_phdr = 0, i_phnum = 0;
     if (_map_image(interp_file, pd, tracker, &i_entry, &i_min, &i_phdr, &i_phnum) != 0) {
         pr_err("elf: failed to map interpreter: %s\n", interp_path);
         proc_free_pages(tracker);
@@ -388,31 +405,31 @@ void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
 
 uint32_t elf_get_brk_start(struct vfs_node* file) {
     if (!file) return 0;
- 
-    Elf32_Ehdr hdr;
-    if (read_vfs(file, 0, sizeof(Elf32_Ehdr), (char*)&hdr) <= 0) return 0;
+
+    Elf64_Ehdr hdr;
+    if (read_vfs(file, 0, sizeof(Elf64_Ehdr), (char*)&hdr) <= 0) return 0;
     if (*(uint32_t*)hdr.e_ident != ELF_MAGIC) return 0;
-    if (hdr.e_phentsize < sizeof(Elf32_Phdr)) return 0;
+    if (hdr.e_phentsize < sizeof(Elf64_Phdr)) return 0;
     if ((uint32_t)hdr.e_phnum > 65535u) return 0;
-    uint64_t ph_end_check = (uint64_t)hdr.e_phoff + (uint64_t)hdr.e_phnum * hdr.e_phentsize;
+    uint64_t ph_end_check = hdr.e_phoff + (uint64_t)hdr.e_phnum * hdr.e_phentsize;
     if (ph_end_check > file->size) return 0;
 
-    uint32_t highest = 0;
+    uint64_t highest = 0;
     for (int i = 0; i < hdr.e_phnum; i++) {
-        Elf32_Phdr ph;
+        Elf64_Phdr ph;
         if (read_vfs(file,
-                     hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr), (char*)&ph) <= 0)
+                     (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr), (char*)&ph) <= 0)
             break;
         if (ph.p_type != PT_LOAD) continue;
         if (ph.p_vaddr + ph.p_memsz < ph.p_vaddr) continue;
-        uint32_t end = ph.p_vaddr + ph.p_memsz;
-        if (!_elf_seg_ok(ph.p_vaddr & ~0xFFFu, (end + 0xFFFu) & ~0xFFFu))
+        uint64_t end = ph.p_vaddr + ph.p_memsz;
+        if (!_elf_seg_ok(ph.p_vaddr & ~0xFFFull, (end + 0xFFFull) & ~0xFFFull))
             continue;
         if (end > highest) highest = end;
     }
- 
-    return (highest + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    return (uint32_t)((highest + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1));
 }
 
 #include "task.h"
@@ -428,27 +445,30 @@ void elf_load_exec_symtab(const char* path, struct proc_metadata* proc) {
     struct vfs_node* file = vfs_walk_path_follow(base, (char*)path, 0);
     if (!file) return;
 
-    Elf32_Ehdr hdr;
-    if (read_vfs(file, 0, sizeof(Elf32_Ehdr), (char*)&hdr) <= 0) return;
+    Elf64_Ehdr hdr;
+    if (read_vfs(file, 0, sizeof(Elf64_Ehdr), (char*)&hdr) <= 0) return;
     if (*(uint32_t*)hdr.e_ident != ELF_MAGIC) return;
-    if (hdr.e_shentsize < sizeof(Elf32_Shdr)) return;
+    if (hdr.e_ident[EI_CLASS] != ELFCLASS64) return;
+    if (hdr.e_shentsize < sizeof(Elf64_Shdr)) return;
     if ((uint32_t)hdr.e_shnum > 256) return;
+    uint64_t sh_end_check = hdr.e_shoff + (uint64_t)hdr.e_shnum * hdr.e_shentsize;
+    if (sh_end_check > file->size) return;
 
     // Find the PT_LOAD segment with the lowest vaddr to determine base
-    uint32_t load_base = 0xFFFFFFFF;
-    for (int i = 0; i < hdr.e_phnum && hdr.e_phentsize >= sizeof(Elf32_Phdr); i++) {
-        Elf32_Phdr ph;
-        if (read_vfs(file, hdr.e_phoff + (uint64_t)i * hdr.e_phentsize,
-                     sizeof(Elf32_Phdr), (char*)&ph) <= 0) break;
+    uint64_t load_base = 0xFFFFFFFFFFFFFFFFull;
+    for (int i = 0; i < hdr.e_phnum && hdr.e_phentsize >= sizeof(Elf64_Phdr); i++) {
+        Elf64_Phdr ph;
+        if (read_vfs(file, (uint32_t)(hdr.e_phoff + (uint64_t)i * hdr.e_phentsize),
+                     sizeof(Elf64_Phdr), (char*)&ph) <= 0) break;
         if (ph.p_type == PT_LOAD && ph.p_vaddr < load_base)
             load_base = ph.p_vaddr;
     }
-    proc->exec_base = (load_base == 0xFFFFFFFF) ? 0 : load_base;
+    proc->exec_base = (load_base == 0xFFFFFFFFFFFFFFFFull) ? 0 : (uint32_t)load_base;
 
     // Read section headers
-    Elf32_Shdr* shdrs = kmalloc(hdr.e_shnum * sizeof(Elf32_Shdr));
+    Elf64_Shdr* shdrs = kmalloc(hdr.e_shnum * sizeof(Elf64_Shdr));
     if (!shdrs) return;
-    if (read_vfs(file, hdr.e_shoff, hdr.e_shnum * sizeof(Elf32_Shdr),
+    if (read_vfs(file, (uint32_t)hdr.e_shoff, hdr.e_shnum * sizeof(Elf64_Shdr),
                  (char*)shdrs) <= 0) {
         kfree(shdrs);
         return;
@@ -459,14 +479,14 @@ void elf_load_exec_symtab(const char* path, struct proc_metadata* proc) {
     if (hdr.e_shstrndx < hdr.e_shnum && shdrs[hdr.e_shstrndx].sh_size > 0) {
         shstrtab = kmalloc(shdrs[hdr.e_shstrndx].sh_size);
         if (shstrtab) {
-            read_vfs(file, shdrs[hdr.e_shstrndx].sh_offset,
-                     shdrs[hdr.e_shstrndx].sh_size, shstrtab);
+            read_vfs(file, (uint32_t)shdrs[hdr.e_shstrndx].sh_offset,
+                     (uint32_t)shdrs[hdr.e_shstrndx].sh_size, shstrtab);
         }
     }
 
     // Find SHT_SYMTAB and its linked SHT_STRTAB
-    Elf32_Shdr* sym_sh = 0;
-    Elf32_Shdr* str_sh = 0;
+    Elf64_Shdr* sym_sh = 0;
+    Elf64_Shdr* str_sh = 0;
     for (int i = 0; i < hdr.e_shnum; i++) {
         if (shdrs[i].sh_type == SHT_SYMTAB && !sym_sh) sym_sh = &shdrs[i];
         if (shdrs[i].sh_type == SHT_STRTAB && shdrs[i].sh_entsize == 0) str_sh = &shdrs[i];
@@ -477,12 +497,14 @@ void elf_load_exec_symtab(const char* path, struct proc_metadata* proc) {
         str_sh = &shdrs[sym_sh->sh_link];
 
     if (sym_sh && str_sh && sym_sh->sh_size > 0) {
-        proc->exec_symtab = kmalloc(sym_sh->sh_size);
-        proc->exec_strtab = kmalloc(str_sh->sh_size);
+        proc->exec_symtab = kmalloc((uint32_t)sym_sh->sh_size);
+        proc->exec_strtab = kmalloc((uint32_t)str_sh->sh_size);
         if (proc->exec_symtab && proc->exec_strtab) {
-            read_vfs(file, sym_sh->sh_offset, sym_sh->sh_size, (char*)proc->exec_symtab);
-            read_vfs(file, str_sh->sh_offset, str_sh->sh_size, proc->exec_strtab);
-            proc->exec_symtab_count = sym_sh->sh_size / sizeof(Elf32_Sym);
+            read_vfs(file, (uint32_t)sym_sh->sh_offset, (uint32_t)sym_sh->sh_size,
+                     (char*)proc->exec_symtab);
+            read_vfs(file, (uint32_t)str_sh->sh_offset, (uint32_t)str_sh->sh_size,
+                     proc->exec_strtab);
+            proc->exec_symtab_count = (uint32_t)(sym_sh->sh_size / sizeof(Elf64_Sym));
         } else {
             if (proc->exec_symtab) { kfree(proc->exec_symtab); proc->exec_symtab = 0; }
             if (proc->exec_strtab) { kfree(proc->exec_strtab); proc->exec_strtab = 0; }

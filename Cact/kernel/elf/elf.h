@@ -26,6 +26,14 @@
 #define EV_NONE    0
 #define EV_CURRENT 1
 
+/* e_machine */
+#define EM_386     3
+#define EM_X86_64  62
+
+/* --- ELF32 ---------------------------------------------------------------
+ * Kept for the still-32-bit `.cctk` module loaders (pci_loader, fs_mod); they
+ * carry their own private copies today and move onto this header when they are
+ * ported to ELF64 in a later stage of PORTING-x86_64.md. */
 typedef uint32_t Elf32_Addr;
 typedef uint16_t Elf32_Half;
 typedef uint32_t Elf32_Off;
@@ -82,6 +90,74 @@ typedef struct {
     Elf32_Half st_shndx;
 } Elf32_Sym;
 
+/* --- ELF64 ---------------------------------------------------------------
+ * The class the x86_64 kernel executes.  Note the field orders differ from
+ * ELF32 (p_flags sits right after p_type; st_value/st_size come after the
+ * fixed 4-byte symbol prefix) — these layouts are ABI, not a choice. */
+typedef uint64_t Elf64_Addr;
+typedef uint64_t Elf64_Off;
+typedef uint16_t Elf64_Half;
+typedef uint32_t Elf64_Word;
+typedef int32_t  Elf64_Sword;
+typedef uint64_t Elf64_Xword;
+typedef int64_t  Elf64_Sxword;
+
+typedef struct {
+    uint8_t    e_ident[16];
+    Elf64_Half e_type;
+    Elf64_Half e_machine;
+    Elf64_Word e_version;
+    Elf64_Addr e_entry;
+    Elf64_Off  e_phoff;
+    Elf64_Off  e_shoff;
+    Elf64_Word e_flags;
+    Elf64_Half e_ehsize;
+    Elf64_Half e_phentsize;
+    Elf64_Half e_phnum;
+    Elf64_Half e_shentsize;
+    Elf64_Half e_shnum;
+    Elf64_Half e_shstrndx;
+} Elf64_Ehdr;
+
+typedef struct {
+    Elf64_Word  p_type;
+    Elf64_Word  p_flags;
+    Elf64_Off   p_offset;
+    Elf64_Addr  p_vaddr;
+    Elf64_Addr  p_paddr;
+    Elf64_Xword p_filesz;
+    Elf64_Xword p_memsz;
+    Elf64_Xword p_align;
+} Elf64_Phdr;
+
+typedef struct {
+    Elf64_Word  sh_name;
+    Elf64_Word  sh_type;
+    Elf64_Xword sh_flags;
+    Elf64_Addr  sh_addr;
+    Elf64_Off   sh_offset;
+    Elf64_Xword sh_size;
+    Elf64_Word  sh_link;
+    Elf64_Word  sh_info;
+    Elf64_Xword sh_addralign;
+    Elf64_Xword sh_entsize;
+} Elf64_Shdr;
+
+typedef struct {
+    Elf64_Word  st_name;
+    uint8_t     st_info;
+    uint8_t     st_other;
+    Elf64_Half  st_shndx;
+    Elf64_Addr  st_value;
+    Elf64_Xword st_size;
+} Elf64_Sym;
+
+typedef struct {
+    Elf64_Addr  r_offset;
+    Elf64_Xword r_info;
+    Elf64_Sxword r_addend;
+} Elf64_Rela;
+
 #define PT_NULL    0
 #define PT_LOAD    1
 #define PT_DYNAMIC 2
@@ -89,13 +165,16 @@ typedef struct {
 #define PT_NOTE    4
 #define PT_SHLIB   5
 #define PT_PHDR    6
+#define PT_GNU_STACK 0x6474E551
 
 #define SHT_NULL       0
 #define SHT_PROGBITS   1
 #define SHT_SYMTAB     2
 #define SHT_STRTAB     3
-#define SHT_REL        9
+#define SHT_RELA       4
 #define SHT_DYNAMIC    6
+#define SHT_NOBITS     8
+#define SHT_REL        9
 #define SHT_DYNSYM     11
 
 #define STB_LOCAL   0
@@ -109,8 +188,13 @@ typedef struct {
 #define SHN_UNDEF   0
 #define SHN_ABS     0xFFF1
 
+/* The bind/type packing is identical for both classes (st_info is one byte
+ * whether or not the rest of the symbol is 32- or 64-bit). */
 #define ELF32_ST_BIND(i)    ((i) >> 4)
 #define ELF32_ST_TYPE(i)    ((i) & 0xF)
 #define ELF32_ST_INFO(b,t)  (((b) << 4) + ((t) & 0xF))
+#define ELF64_ST_BIND(i)    ((i) >> 4)
+#define ELF64_ST_TYPE(i)    ((i) & 0xF)
+#define ELF64_ST_INFO(b,t)  (((b) << 4) + ((t) & 0xF))
 
 #endif

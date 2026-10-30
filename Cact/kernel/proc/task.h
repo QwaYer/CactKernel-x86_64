@@ -220,7 +220,7 @@ typedef struct proc_metadata {
 
     // Cached symbol table from the main executable (for crash traces)
     uint32_t   exec_base;
-    Elf32_Sym* exec_symtab;
+    Elf64_Sym* exec_symtab;
     char*      exec_strtab;
     int        exec_symtab_count;
 

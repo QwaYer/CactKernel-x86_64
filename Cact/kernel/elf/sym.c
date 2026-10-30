@@ -20,7 +20,7 @@ const char* sym_resolve_addr(uint64_t addr, uint64_t* offset) {
         return 0;
 
     // Fall back to the cached main-binary symbol table (ET_EXEC/PIE)
-    Elf32_Sym* symtab = (Elf32_Sym*)current_task->proc->exec_symtab;
+    Elf64_Sym* symtab = (Elf64_Sym*)current_task->proc->exec_symtab;
     char*      strtab = current_task->proc->exec_strtab;
     int        count  = current_task->proc->exec_symtab_count;
     uint64_t   base   = current_task->proc->exec_base;
@@ -31,14 +31,14 @@ const char* sym_resolve_addr(uint64_t addr, uint64_t* offset) {
         uint64_t best_val = 0;
 
         for (int j = 0; j < count; j++) {
-            uint32_t sym_val = symtab[j].st_value;
-            uint8_t st_type = ELF32_ST_TYPE(symtab[j].st_info);
+            uint64_t sym_val = symtab[j].st_value;
+            uint8_t st_type = ELF64_ST_TYPE(symtab[j].st_info);
             if (sym_val > 0 && sym_val <= rel &&
                 (st_type == STT_FUNC || st_type == STT_NOTYPE || st_type == STT_OBJECT)) {
                 // When the symbol carries a size, the address has to land
                 // inside it — otherwise whatever symbol happens to be last
                 // before `rel` swallows every address past the binary.
-                uint32_t sym_size = symtab[j].st_size;
+                uint64_t sym_size = symtab[j].st_size;
                 if (sym_size > 0 && (rel - sym_val) >= sym_size)
                     continue;
                 if (best < 0 || (rel - sym_val) < (rel - best_val)) {
