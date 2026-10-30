@@ -629,10 +629,13 @@ pub unsafe extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr:
         // allocator wants as a VA.
         unsafe { free_page(p2v(old_pte & !0xFFF) as *mut u8) };
     }
-    if is_kernel_mmio {
-        // Shared entries carry no private bit, and the permission bits have to
-        // reach the levels above the page table as well, because a process map
-        // points straight at them.
+    if is_kernel_mmio || flags & PAGE_USER != 0 {
+        // The permission bits have to reach the levels above the page table as
+        // well, because a process map points straight at them and a user access
+        // checks U/S at *every* level: a supervisor-only PDPTE/PDE faults with
+        // #PF err=0x05 even though the leaf itself allows the access.  A shared
+        // kernel/MMIO entry carries no private bit; a user entry belongs to this
+        // address space alone.
         // SAFETY: both entry pointers are in bounds (the walk created the path).
         unsafe {
             *w.pd_entry |= (flags & (PAGE_USER | PAGE_RW)) as u64;
@@ -802,10 +805,14 @@ pub extern "C" fn vmm_create_address_space() -> *mut u64 {
         unsafe { core::ptr::copy_nonoverlapping(src, pdpt, TABLE_ENTRIES) };
     }
     // SAFETY: `pml4` is the fresh map; entry 0 takes the private PDPT, by its
-    // physical address.
+    // physical address.  It carries PAGE_USER because the low half is where user
+    // mappings live, and a user access needs U/S set at every level — starting
+    // with this one.  The kernel's own low-half leaves (the AP trampoline) stay
+    // supervisor-only, so the effective permission there is unchanged.
     unsafe {
         *entry(pml4, 0) =
-            v2p(pdpt) | PAGE_PRESENT as u64 | PAGE_RW as u64 | PDE_PRIVATE as u64
+            v2p(pdpt) | PAGE_PRESENT as u64 | PAGE_RW as u64 | PAGE_USER as u64
+                | PDE_PRIVATE as u64
     };
     pml4
 }
