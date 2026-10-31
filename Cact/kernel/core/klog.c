@@ -30,7 +30,6 @@ static uint32_t klog_lost  = 0;            /* bytes dropped (ring overflow) */
 
 static char     klog_pend[KLOG_LINE_MAX];  /* current partial line          */
 static uint32_t klog_pend_len = 0;
-static uint32_t klog_pend_trunc = 0;       /* chars dropped (line too long) */
 static int      klog_pend_level = KLOG_LEVEL_DEFAULT;
 
 /* Console log level — see klog.h.  DEBUG during boot so the whole bring-up
@@ -83,13 +82,10 @@ static void klog_emit(int level, uint32_t flags, const char *text, uint32_t len)
 
 /* Complete the current pending line (if any) as one log record. */
 static void klog_flush_line(void) {
-    if (klog_pend_len == 0) {
-        klog_pend_trunc = 0;
+    if (klog_pend_len == 0)
         return;
-    }
     klog_emit(klog_pend_level, KLOG_F_NEWLINE, klog_pend, klog_pend_len);
     klog_pend_len = 0;
-    klog_pend_trunc = 0;
 }
 
 void klog_feed(int level, const char *text, uint32_t len) {
@@ -145,8 +141,6 @@ void klog_feed(int level, const char *text, uint32_t len) {
 
         if (klog_pend_len < KLOG_LINE_MAX) {
             klog_pend[klog_pend_len++] = c;
-        } else {
-            klog_pend_trunc++;
         }
     }
 

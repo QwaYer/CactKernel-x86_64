@@ -12,7 +12,7 @@
 #include "udp.h"
 #include "mod.h"
 
-// SOCKCTL_* node-ioctl dispatcher (new ABI) — called by sys_ioctl on socket fds.
+// SOCKCTL_* node-ioctl dispatcher — called by sys_ioctl on socket fds.
 int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg);
 
 #endif

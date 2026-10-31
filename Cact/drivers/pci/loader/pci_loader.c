@@ -69,7 +69,7 @@ int read_rel_elf_from_path(const char *path, uint8_t **elf_data, uint32_t *file_
         return 0;
     }
 
-    struct vfs_node *node = _resolve_path(path);
+    struct vfs_node *node = vfs_resolve_path(path);
     if (!node)
         return -1;
 

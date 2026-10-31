@@ -60,7 +60,7 @@ sysret_t sys_exec(struct syscall_frame* regs) {
     char *kpath = copy_path_from_user(path);
     if (!kpath) return -1;
 
-    vfs_node_t* exec_node = _resolve_path(kpath);
+    vfs_node_t* exec_node = vfs_resolve_path(kpath);
     if (!exec_node || vfs_check_perm(exec_node, VFS_PERM_EXEC) < 0) {
         kfree(kpath);
         return -1;

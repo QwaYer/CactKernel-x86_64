@@ -7,11 +7,10 @@
 #include "ioctl_abi.h"
 #include "unix_sock.h"
 
-// SOCKCTL_* — the new node-ioctl ABI for socket control.  The ioctl() is
-// issued on the socket fd itself (like bind/connect are today), so the node
-// is already resolved by the syscall layer.  Once the legacy net syscalls
-// are dropped, bind/connect/listen/accept/shutdown/sockopt/sendto/recvfrom
-// are all reached through this single entry point.
+// SOCKCTL_* — the node-ioctl ABI for socket control.  The ioctl() is issued
+// on the socket fd itself, so the node is already resolved by the syscall
+// layer.  bind/connect/listen/accept/shutdown/sockopt/sendto/recvfrom are
+// all reached through this single entry point.
 // =========================================================================
 
 #ifndef EINVAL

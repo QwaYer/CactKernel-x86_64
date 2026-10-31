@@ -171,15 +171,6 @@ vfs_node_t   *vfs_resolve_path       (const char *path);
 vfs_node_t   *vfs_resolve_parent     (const char *path, char *basename_out, int basename_max);
 vfs_node_t   *vfs_resolve_parent_follow(const char *path, char *basename_out, int basename_max);
 
-// Legacy aliases for compatibility
-#define _make_abs vfs_make_abs
-#define _resolve_path vfs_resolve_path
-#define _resolve_parent vfs_resolve_parent
-#define _resolve_parent_follow vfs_resolve_parent_follow
-#define _fill_stat vfs_fill_stat
-#define _vfs_type_to_mode vfs_type_to_mode
-#define _kstrcpy vfs_strlcpy
-
 // File descriptor helpers
 file_t       *file_alloc     (vfs_node_t *node);
 void          file_free      (file_t *f);

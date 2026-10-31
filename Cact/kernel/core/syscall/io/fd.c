@@ -67,18 +67,18 @@ sysret_t sys_open(char *name, int flags) {
     char *kname = copy_path_from_user(name);
     if (!kname) return -1;
 
-    vfs_node_t *node = _resolve_path(kname);
+    vfs_node_t *node = vfs_resolve_path(kname);
     if (!node) {
         if (!(flags & OPEN_CREAT)) { kfree(kname); return -1; }
 
         char basename[128];
-        vfs_node_t *parent = _resolve_parent(kname, basename, 128);
+        vfs_node_t *parent = vfs_resolve_parent(kname, basename, 128);
         if (!parent || !basename[0]) { kfree(kname); return -1; }
 
         if (vfs_check_perm(parent, VFS_PERM_WRITE | VFS_PERM_EXEC) < 0) { kfree(kname); return -1; }
 
         if (create_vfs(parent, basename) != 0) { kfree(kname); return -1; }
-        node = _resolve_path(kname);
+        node = vfs_resolve_path(kname);
         if (!node) { kfree(kname); return -1; }
     } else if ((flags & OPEN_CREAT) && (flags & OPEN_EXCL)) {
         /* The name is already taken, so O_CREAT|O_EXCL must fail.  SYS_OPEN
@@ -156,8 +156,7 @@ sysret_t sys_close(int fd) {
 
 // =========================================================================
 // Generic node-ioctl ABI (ioctl_abi.h): FDCTL_* (any fd) and DIRCTL_* (dir).
-// These commands are the *new* ABI: once the legacy per-name syscalls are
-// dropped, dup/lseek/fcntl/stat/mkdir/... are reached through ioctl().
+// dup/lseek/fcntl/stat/mkdir/... are reached through ioctl() on the node.
 // =========================================================================
 
 static int _copy_name_arg(const char *u, char **out) {
@@ -434,7 +433,7 @@ static int _dirctl_handle(vfs_node_t *dir, uint32_t cmd, void *arg) {
         if (!_name_is_single(kold) || !_name_is_single(knew)) {
             kfree(kold); kfree(knew); kfree(kdir); return -EINVAL;
         }
-        vfs_node_t *newd = _resolve_path(kdir);
+        vfs_node_t *newd = vfs_resolve_path(kdir);
         kfree(kdir);
         if (!newd) { kfree(kold); kfree(knew); return -ENOENT; }
         int p = _dir_wx(dir);

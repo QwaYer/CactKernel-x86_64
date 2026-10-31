@@ -41,15 +41,6 @@
 #include <stdint.h>
 
 // ===========================================================================
-// Final core syscall numbering (15).  Applied when syscalls.h is rewritten in
-// the final migration step (SYS_* names already collide with the legacy table
-// and with mmap.h macros until then):
-//   SYS_OPEN=0 SYS_CLOSE=1 SYS_READ=2 SYS_WRITE=3 SYS_IOCTL=4 SYS_POLL=5
-//   SYS_FORK=6 SYS_EXEC=7 SYS_EXIT=8 SYS_WAITPID=9 SYS_BRK=10 SYS_MMAP=11
-//   SYS_MUNMAP=12 SYS_MPROTECT=13 SYS_SIGRETURN=14  (SYS_COUNT=15)
-// ===========================================================================
-
-// ===========================================================================
 // Shared stat structure (matches the kernel VFS `cact_stat_t`).  `size` is
 // 64-bit so a regular file larger than 4 GiB reports correctly; the struct is
 // naturally aligned to 8 bytes (24 bytes total).
