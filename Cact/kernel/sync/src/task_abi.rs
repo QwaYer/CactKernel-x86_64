@@ -61,8 +61,8 @@ pub struct TaskStruct {
 #[repr(C)]
 pub struct ProcShared {
     pub refcount:    u32,
-    pub brk_start:   u32,
-    pub brk_current: u32,
+    pub brk_start:   u64,
+    pub brk_current: u64,
     pub tgid:        u32,
     pub mm:          ProcPageTracker,
 }
@@ -72,15 +72,15 @@ pub struct ProcShared {
 pub struct ProcMeta {
     pub stack_base:         *mut c_void,
     pub ustack_phys:        *mut c_void,
-    pub ustack_virt:        u32,
+    pub ustack_virt:        u64,
     pub ustack_phys_extra:  [*mut c_void; 3],
     pub pending_signals:    u32,
     pub signal_mask:        u32,
     pub saved_signal_mask:  u32,
     pub in_sigsuspend:      u8,
     pub _pad1:              [u8; 3],
-    pub signal_handlers:    [u32; NSIG],
-    pub sigreturn_trampoline: u32,
+    pub signal_handlers:    [u64; NSIG],
+    pub sigreturn_trampoline: u64,
     pub alarm_ticks:        u32,
     pub itimer_value:       u32,
     pub itimer_interval:    u32,
@@ -90,8 +90,8 @@ pub struct ProcMeta {
     pub parent_pid:         u32,
     pub exit_code:          i32,
     pub wait_for_pid:       u32,
-    pub brk_start:          u32,
-    pub brk_current:        u32,
+    pub brk_start:          u64,
+    pub brk_current:        u64,
     pub sleep_until:        u32,
     pub cwd:                [u8; 256],
     pub uid:                u32,
@@ -105,7 +105,7 @@ pub struct ProcMeta {
     pub umask:              u32,
     pub root:               *mut VfsNode,
     // Cached symbol table from the main executable (for crash traces)
-    pub exec_base:          u32,
+    pub exec_base:          u64,
     pub exec_symtab:        *mut u8,
     pub exec_strtab:        *mut u8,
     pub exec_symtab_count:  i32,
@@ -119,14 +119,14 @@ pub struct ProcMeta {
     pub shared:             *mut ProcShared,
     /// Userspace word the kernel clears (and futex-wakes) when this thread
     /// exits — the join futex.  Zero for a process leader.
-    pub clr_tid:            u32,
+    pub clr_tid:            u64,
     /// 1 while the task is in a signal-interruptible block (a userspace futex
     /// wait): a deliverable signal wakes it so it can return -EINTR.
     pub intr_wait:          u8,
     pub _pad3:              [u8; 3],
     // --- sigaltstack (appended after 612; existing offsets above are unchanged) ---
     /// Base of the alternate signal stack (0 = none).
-    pub altstack_sp:        u32,
+    pub altstack_sp:        u64,
     /// Its size in bytes.
     pub altstack_size:      u32,
     /// CACT_SS_DISABLE while the alternate stack is switched off.
@@ -135,14 +135,14 @@ pub struct ProcMeta {
     pub signal_flags:       [u32; NSIG],
     // --- TLS (appended after 676; existing offsets above are unchanged) ---
     /// The task's `%fs` base — its thread pointer in ring 3 (0 = none).
-    pub tls_base:           u32,
+    pub tls_base:           u64,
     // --- signal dispositions (appended after 680) ---
     /// The set each handler wants blocked while it runs (sa_mask).
     pub signal_masks:       [u32; NSIG],
     // --- signal sources (appended after 732) ---
     /// What each pending signal came from (si_code), and the fault address.
     pub signal_codes:       [u32; NSIG],
-    pub signal_addr:        u32,
+    pub signal_addr:        u64,
     // --- sigwait()/sigqueue() (appended after 788) ---
     /// The set this task is parked on for sigwait(), 0 when it is not waiting.
     pub sigwait_set:        u32,

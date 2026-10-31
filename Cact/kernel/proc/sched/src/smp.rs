@@ -765,7 +765,7 @@ pub fn set_tss_esp0(cpu: usize, esp0: u64) {
 /// this is the one to write.  `base == 0` means "this task has no TLS", and
 /// `%fs` is left on the kernel data segment so a stray `%fs` use cannot reach
 /// the base of a stale thread pointer.
-pub fn set_tls_base(cpu: usize, base: u32) {
+pub fn set_tls_base(cpu: usize, base: u64) {
     let _ = cpu;
     if base == 0 {
         // SAFETY: loads the kernel data selector; the kernel never dereferences `%fs`.
@@ -776,7 +776,7 @@ pub fn set_tls_base(cpu: usize, base: u32) {
     // SAFETY: programs IA32_FS_BASE on the calling core.  %fs is deliberately not
     // reloaded afterwards: a selector load would take the base from the
     // descriptor again, and the descriptor's base is zero.
-    unsafe { crate::ffi::gdt_write_tls(base as u64) };
+    unsafe { crate::ffi::gdt_write_tls(base) };
 }
 
 /// 0 until the boot core has finished bringing the system up.  While it is 0 the

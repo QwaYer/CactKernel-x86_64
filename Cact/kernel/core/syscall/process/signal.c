@@ -16,7 +16,7 @@
  *
  * `signal` is the bit (SIGSEGV = 1<<8, as the kernel's own headers define it);
  * the per-signal arrays are indexed by the bit *number*. */
-void task_signal_code(uint32_t pid, uint32_t signal, uint32_t code, uint32_t addr) {
+void task_signal_code(uint32_t pid, uint32_t signal, uint32_t code, uint64_t addr) {
     if (current_task && current_task->proc && current_task->pid == pid) {
         int bit = 0;
         uint32_t m = signal;

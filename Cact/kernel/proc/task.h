@@ -166,8 +166,8 @@ typedef uint32_t gid_t;
    once, when `refcount` reaches zero in reap_task_free(). */
 typedef struct proc_shared {
     uint32_t            refcount;
-    uint32_t            brk_start;
-    uint32_t            brk_current;
+    uint64_t            brk_start;
+    uint64_t            brk_current;
     uint32_t            tgid;
     proc_page_tracker_t mm;
 } proc_shared_t;
@@ -175,15 +175,15 @@ typedef struct proc_shared {
 typedef struct proc_metadata {
     void*    stack_base;
     void*    ustack_phys;
-    uint32_t ustack_virt;
+    uint64_t ustack_virt;
     void*    ustack_phys_extra[3];
 
     uint32_t pending_signals;
     uint32_t signal_mask;
     uint32_t saved_signal_mask;
     uint8_t  in_sigsuspend;
-    uint32_t signal_handlers[NSIG];
-    uint32_t sigreturn_trampoline;
+    uint64_t signal_handlers[NSIG];
+    uint64_t sigreturn_trampoline;
 
     uint32_t alarm_ticks;
     uint32_t itimer_value;
@@ -197,8 +197,8 @@ typedef struct proc_metadata {
     int      exit_code;
     uint32_t wait_for_pid;
 
-    uint32_t brk_start;
-    uint32_t brk_current;
+    uint64_t brk_start;
+    uint64_t brk_current;
 
     uint32_t sleep_until;
 
@@ -219,7 +219,7 @@ typedef struct proc_metadata {
     vfs_node_t *root;
 
     // Cached symbol table from the main executable (for crash traces)
-    uint32_t   exec_base;
+    uint64_t   exec_base;
     Elf64_Sym* exec_symtab;
     char*      exec_strtab;
     int        exec_symtab_count;
@@ -229,12 +229,12 @@ typedef struct proc_metadata {
     uint8_t    is_thread;    /* 1 for a CACT_PROCCTL_THREAD_CREATE thread */
     uint8_t    _pad_thread[3];
     proc_shared_t* shared;   /* thread-group state (NULL for a kernel task) */
-    uint32_t   clr_tid;      /* join futex word cleared on thread exit (0 = none) */
+    uint64_t   clr_tid;      /* join futex word cleared on thread exit (0 = none) */
     uint8_t    intr_wait;    /* 1 while blocked in an interruptible futex wait */
     uint8_t    _pad3[3];
 
     /* --- sigaltstack (appended; offsets above are unchanged) --- */
-    uint32_t   altstack_sp;    /* base of the alternate signal stack (0 = none) */
+    uint64_t   altstack_sp;    /* base of the alternate signal stack (0 = none) */
     uint32_t   altstack_size;  /* its size in bytes */
     uint32_t   altstack_flags; /* CACT_SS_DISABLE while switched off */
     uint32_t   signal_flags[NSIG]; /* sa_flags per signal (CACT_SA_ONSTACK, ...) */
@@ -244,7 +244,7 @@ typedef struct proc_metadata {
      * scheduler loads it on every switch (see the TLS descriptor in gdt.c /
      * smp.rs).  Set by CACT_PROCCTL_SET_TLS, by CACT_PROCCTL_THREAD_CREATE's
      * tls argument, and cleared on exec(). */
-    uint32_t   tls_base;
+    uint64_t   tls_base;
 
     /* --- signal dispositions (appended; offsets above are unchanged) ---
      * The mask each handler wants blocked while it runs (sa_mask), in the same
@@ -256,7 +256,7 @@ typedef struct proc_metadata {
      * the address that faulted (CR2), so an SA_SIGINFO handler gets a truthful
      * siginfo_t.  Reset to SI_USER after each delivery. */
     uint32_t   signal_codes[NSIG];
-    uint32_t   signal_addr;
+    uint64_t   signal_addr;
     /* POSIX sigwait(): the signal set this task is parked on, 0 when it is not
      * waiting — a signal whose bit is in it wakes the waiter so it can *consume*
      * the signal instead of having it delivered to a handler. */
@@ -265,15 +265,11 @@ typedef struct proc_metadata {
     uint32_t   signal_value;
 } proc_metadata_t;
 
-/* The two tail fields the Rust mirrors and the libc agree on; a drift here used
- * to be found by the Rust asserts at boot, and is now a build error instead.
- *
- * The absolute offsets (i686: 788/792/796) do not survive the move to 64-bit
- * pointers and are re-pinned, together with the rest of the layout, in Phase 3
- * of PORTING-x86_64.md.  What is checked here meanwhile is the part that does
- * not depend on the address size: that these really are the last two fields,
- * adjacent and ending the struct, which is what makes "appended, existing
- * offsets unchanged" checkable from the C side. */
+/* The two tail fields the Rust mirrors and the libc agree on.  A drift in the
+ * layout is caught by the Rust offset asserts in sched/src/lib.rs, which pin
+ * the whole 64-bit `ProcMeta`.  What is checked here is the part those cannot:
+ * that these really are the last two fields, adjacent and ending the struct —
+ * the "appended; existing offsets above are unchanged" contract. */
 typedef char _proc_metadata_tail_check[
     (__builtin_offsetof(proc_metadata_t, signal_value) ==
          __builtin_offsetof(proc_metadata_t, sigwait_set) + 4 &&
@@ -361,7 +357,7 @@ int task_exec(char* path, char** argv, char** envp, struct context_frame* regs);
 void task_kill(uint32_t pid);
 void task_signal(uint32_t pid, uint32_t signal);
 /* Same, but records the signal's source (si_code) and fault address first. */
-void task_signal_code(uint32_t pid, uint32_t signal, uint32_t code, uint32_t addr);
+void task_signal_code(uint32_t pid, uint32_t signal, uint32_t code, uint64_t addr);
 void task_signal_locked(uint32_t pid, uint32_t signal);
 /* Pending, unmasked signal on the *current* task (0 = none).  Blocking waits poll
    this so they can return -EINTR instead of delaying the signal's delivery. */

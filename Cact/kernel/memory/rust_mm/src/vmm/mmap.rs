@@ -514,8 +514,8 @@ pub unsafe extern "C" fn do_mprotect(
     addr: u32,
     mut length: u32,
     prot: i32,
-    brk_start: u32,
-    brk_end: u32,
+    brk_start: u64,
+    brk_end: u64,
 ) -> i32 {
     if pd.is_null() || tbl.is_null() || length == 0 {
         return -1;
@@ -525,7 +525,7 @@ pub unsafe extern "C" fn do_mprotect(
     }
 
     length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
-    let in_brk = addr >= brk_start && addr < brk_end;
+    let in_brk = (addr as u64) >= brk_start && (addr as u64) < brk_end;
 
     // SAFETY: `tbl` was checked non-null above and is the caller's live table.
     let region = unsafe { mmap_find_region(tbl, addr) };

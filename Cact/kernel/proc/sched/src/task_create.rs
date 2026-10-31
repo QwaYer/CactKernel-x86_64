@@ -162,7 +162,7 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
     // SAFETY: as above, for the `ProcMeta`.
     let p_ref = unsafe { &mut *p };
 
-    let ustack_virt: u32 = KERNEL_BASE - USER_STACK_BYTES;
+    let ustack_virt: u64 = (KERNEL_BASE - USER_STACK_BYTES) as u64;
 
     let stack_top = kstack as usize + KERNEL_STACK_SIZE;
     // Six callee-saved slots for `switch_to`, the user trampoline it returns to,
@@ -191,7 +191,7 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
 
     // The initial user-stack image (the SysV/AMD64 argc/argv/envp triple); built
     // after `ustack_virt` is set because the stack writers resolve it against it.
-    let mut sp = (ustack_virt + USER_STACK_BYTES) as u64;
+    let mut sp = ustack_virt + USER_STACK_BYTES as u64;
     push_empty_args(p_ref, &mut sp);
     frame[10] = sp;
 
@@ -299,14 +299,14 @@ pub unsafe extern "C" fn create_task_with_entry(
 
     map_user_stack_in_pd(pd, p);
 
-    let highest = calc_highest_mapped_va(pd);
+    let highest = calc_highest_mapped_va(pd) as u64;
     // SAFETY: `shared` is the live thread-group state installed above.
     unsafe { (*shared).brk_start = highest };
     // SAFETY: `shared` is live.
     unsafe { (*shared).brk_current = highest };
 
-    let ustack_top = p.ustack_virt + USER_STACK_BYTES;
-    let mut sp = ustack_top as u64;
+    let ustack_top = p.ustack_virt + USER_STACK_BYTES as u64;
+    let mut sp = ustack_top;
     push_empty_args(p, &mut sp);
     // SAFETY: `stk` is the frame base, so offset 10 (the IRETQ RSP slot) is in bounds.
     let rsp_slot = unsafe { stk.add(10) };
@@ -431,7 +431,7 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
 
     map_user_stack_in_pd(pd, p);
 
-    let highest = calc_highest_mapped_va(pd);
+    let highest = calc_highest_mapped_va(pd) as u64;
     if has_interp {
         // With the interpreter mapped too, calc_highest lands above ld.so;
         // the brk must start at the end of the *main* image instead.
@@ -461,8 +461,8 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
         unsafe { (*shared).brk_current = highest };
     }
 
-    let ustack_top = p.ustack_virt + USER_STACK_BYTES;
-    let mut sp = ustack_top as u64;
+    let ustack_top = p.ustack_virt + USER_STACK_BYTES as u64;
+    let mut sp = ustack_top;
 
     // auxv goes between envp's NULL and the top of the stack (init has no
     // argv/envp strings, so it sits directly above the empty envp array).

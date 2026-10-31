@@ -267,7 +267,7 @@ pub(crate) fn ustack_phys_by_idx(p: &ProcMeta, idx: usize) -> *mut c_void {
 }
 
 pub(crate) fn ustack_kernel_byte_mut(p: &ProcMeta, uva: u64) -> *mut u8 {
-    let base = p.ustack_virt as u64;
+    let base = p.ustack_virt;
     let off = uva.wrapping_sub(base) as usize;
     debug_assert!(off < USER_STACK_BYTES as usize);
     let pi = off / PAGE_SIZE as usize;
@@ -298,9 +298,9 @@ pub(crate) fn map_user_stack_in_pd(pd: *mut u64, p: &ProcMeta) {
     // so each `vmm_map` is handed a real physical page.
     unsafe {
         for i in 0..USER_STACK_PAGES {
-            let vaddr = p.ustack_virt.wrapping_add(i.wrapping_mul(PAGE_SIZE));
+            let vaddr = p.ustack_virt.wrapping_add((i as u64).wrapping_mul(PAGE_SIZE as u64));
             let phys = cact_mm::vmm_v2p(ustack_phys_by_idx(p, i as usize) as *const u8);
-            cact_mm::vmm_map(pd, vaddr as u64, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
+            cact_mm::vmm_map(pd, vaddr, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
         }
     }
 }
@@ -358,7 +358,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
     t.proc       = p as *mut ProcMeta;
     p.cwd[0]     = b'/';
     for slot in p.signal_handlers.iter_mut() {
-        *slot = SIG_DFL;
+        *slot = SIG_DFL as u64;
     }
     // No alternate signal stack until sigaltstack() installs one (POSIX starts
     // in the SS_DISABLE state; signal_flags are already zero from the memset).

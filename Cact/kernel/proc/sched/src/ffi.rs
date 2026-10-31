@@ -74,7 +74,7 @@ unsafe extern "C" {
         info:        *mut InterpInfo,
     ) -> *mut c_void;
 
-    pub fn elf_get_brk_start(node: *mut VfsNode) -> u32;
+    pub fn elf_get_brk_start(node: *mut VfsNode) -> u64;
 
     pub fn vfs_walk_path(root: *mut VfsNode, path: *const u8) -> *mut VfsNode;
     pub fn vfs_walk_path_follow(

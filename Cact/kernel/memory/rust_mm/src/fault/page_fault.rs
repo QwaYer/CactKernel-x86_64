@@ -120,10 +120,8 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
         (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).protection_faults += 1;
         // SAFETY: `task_signal_code` is a kernel FFI entry point and `pid` comes
         // from the live current task; we are in the #PF handler.  The fault
-        // address goes with it, so an SA_SIGINFO handler sees si_addr.  The
-        // signal ABI carries a 32-bit `si_addr`, so the (user) fault address is
-        // narrowed to its width here.
-        unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr as u32) };
+        // address goes with it, so an SA_SIGINFO handler sees si_addr.
+        unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr) };
         // SAFETY: `schedule` is a kernel FFI entry point; the faulting task has
         // just been signalled, so yielding here is valid.
         unsafe { schedule() };

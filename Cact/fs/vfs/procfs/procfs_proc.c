@@ -355,7 +355,7 @@ static int _self_ctl_ioctl(vfs_node_t *node, uint32_t cmd, void *arg) {
         proc_metadata_t* p = current_task->proc;
         uint32_t onstack = p->altstack_flags & CACT_SS_ONSTACK;  /* may be running on it now */
 
-        a.old_sp    = p->altstack_sp;
+        a.old_sp    = (uint32_t)p->altstack_sp;
         a.old_size  = p->altstack_size;
         a.old_flags = p->altstack_flags;
 

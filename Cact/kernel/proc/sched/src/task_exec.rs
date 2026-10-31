@@ -255,8 +255,8 @@ pub unsafe extern "C" fn task_exec(
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let ustack_virt = unsafe { (*p).ustack_virt };
-    let ustack_top = ustack_virt + USER_STACK_BYTES;
-    let mut sp     = ustack_top as u64;
+    let ustack_top = ustack_virt + USER_STACK_BYTES as u64;
+    let mut sp     = ustack_top;
 
     let mut argv_vaddrs: [u64; 256] = [0; 256];
     let mut envp_vaddrs: [u64; 256] = [0; 256];
@@ -343,7 +343,7 @@ pub unsafe extern "C" fn task_exec(
     // argv/envp arrays: (argc+1)+(envc+1) words; the argc/argv/envp triple is
     // 3 words plus up to 1 word of 16-byte alignment pad.
     let ptr_overhead = (argc as u64 + envc as u64 + 6) * 8;
-    if sp < ustack_virt as u64 + ptr_overhead {
+    if sp < ustack_virt + ptr_overhead {
         // SAFETY: `printk` takes a static NUL-terminated byte string.
         unsafe { ffi::printk(c"exec: abort: stack layout preflight failed\n".as_ptr().cast()) };
         // SAFETY: `p` is the live current task's `ProcMeta`.
@@ -393,7 +393,7 @@ pub unsafe extern "C" fn task_exec(
     unsafe { (*p).pending_signals = 0 };
     for i in 0..NSIG {
         // SAFETY: `p` is the live current task's `ProcMeta` and `i < NSIG`.
-        unsafe { (*p).signal_handlers[i] = SIG_DFL };
+        unsafe { (*p).signal_handlers[i] = SIG_DFL as u64 };
         // SAFETY: `p` is live; the disposition flags go with the handler.
         unsafe { (*p).signal_flags[i] = 0 };
     }
@@ -563,7 +563,7 @@ fn copy_strings_to_ustack(
             return None;
         }
 
-        if *sp < p.ustack_virt as u64 + (len + 1 + count * 8) as u64 {
+        if *sp < p.ustack_virt + (len + 1 + count * 8) as u64 {
             return None;
         }
 

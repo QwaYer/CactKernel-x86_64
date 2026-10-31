@@ -48,7 +48,7 @@ void deliver_pending_signal(struct task_struct *t, struct syscall_frame *regs) {
     for (int bit = 0; bit < NSIG; bit++) {
         uint32_t mask = (1u << bit);
         if (!(deliverable & mask)) continue;
-        uint32_t handler = t->proc->signal_handlers[bit];
+        uint64_t handler = t->proc->signal_handlers[bit];
         if (handler <= SIG_IGN) continue;
         if (handler < USER_SPACE_START || handler >= KERNEL_BASE) continue;
 

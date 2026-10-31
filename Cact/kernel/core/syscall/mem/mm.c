@@ -19,7 +19,7 @@ static proc_shared_t *cur_shared(void) {
 
 // brk() — change the program break (heap end)
 int sys_brk(struct syscall_frame* regs) {
-    uint32_t new_brk = (uint32_t)regs->rdi;
+    uint64_t new_brk = regs->rdi;
     if (!current_task) return -1;
 
     proc_shared_t *ps = cur_shared();
@@ -37,12 +37,12 @@ int sys_brk(struct syscall_frame* regs) {
     if (new_brk - ps->brk_start > USER_BRK_MAX_GROWTH)
         return -1;
 
-    uint32_t old_end = (ps->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
-    uint32_t new_end = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t old_end = (ps->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t new_end = (new_brk + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
 
     // Grow heap: allocate and zero new pages
     if (new_end > old_end) {
-        for (uint32_t va = old_end; va < new_end; va += PAGE_SIZE) {
+        for (uint64_t va = old_end; va < new_end; va += PAGE_SIZE) {
             void* phys = kalloc();
             if (!phys) return -1;
             uint8_t* p = (uint8_t*)phys;
@@ -101,7 +101,7 @@ int sys_mprotect(struct syscall_frame* regs) {
     if (!current_task) return -1;
     proc_shared_t *ps = cur_shared();
     if (!ps) return -1;
-    uint32_t brk_end = (ps->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t brk_end = (ps->brk_current + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
     return do_mprotect(
         current_task->page_directory,
         current_task->proc->mmap_table,

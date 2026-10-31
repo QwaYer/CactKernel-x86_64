@@ -403,7 +403,7 @@ void* load_elf_interp(char* path, char* interp_path, uint64_t* pd,
     return (void*)(uintptr_t)i_entry;
 }
 
-uint32_t elf_get_brk_start(struct vfs_node* file) {
+uint64_t elf_get_brk_start(struct vfs_node* file) {
     if (!file) return 0;
 
     Elf64_Ehdr hdr;
@@ -429,7 +429,7 @@ uint32_t elf_get_brk_start(struct vfs_node* file) {
         if (end > highest) highest = end;
     }
 
-    return (uint32_t)((highest + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1));
+    return (highest + PAGE_SIZE - 1) & ~(uint64_t)(PAGE_SIZE - 1);
 }
 
 #include "task.h"
@@ -463,7 +463,7 @@ void elf_load_exec_symtab(const char* path, struct proc_metadata* proc) {
         if (ph.p_type == PT_LOAD && ph.p_vaddr < load_base)
             load_base = ph.p_vaddr;
     }
-    proc->exec_base = (load_base == 0xFFFFFFFFFFFFFFFFull) ? 0 : (uint32_t)load_base;
+    proc->exec_base = (load_base == 0xFFFFFFFFFFFFFFFFull) ? 0 : load_base;
 
     // Read section headers
     Elf64_Shdr* shdrs = kmalloc(hdr.e_shnum * sizeof(Elf64_Shdr));

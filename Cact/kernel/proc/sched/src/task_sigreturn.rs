@@ -81,8 +81,7 @@ pub(crate) fn map_sigreturn_trampoline_on_pd(t: *mut TaskStruct, pd: *mut u64) {
 
     if !t_proc.is_null() {
         // SAFETY: `t_proc` is the task's live `ProcMeta` (non-null checked here), so storing the
-        // trampoline address into it is in bounds.  The address is a fixed low user VA, so it
-        // fits the field's 32-bit width.
-        unsafe { (*t_proc).sigreturn_trampoline = tramp_vaddr as u32 };
+        // trampoline address into it is in bounds.
+        unsafe { (*t_proc).sigreturn_trampoline = tramp_vaddr };
     }
 }

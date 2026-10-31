@@ -142,8 +142,8 @@ pub unsafe extern "C" fn sched_create_thread(
     child_p.itimer_value      = 0;
     child_p.itimer_interval   = 0;
     child_p.is_thread         = 1;
-    child_p.clr_tid           = clr_tid;   // join futex the kernel zeroes on exit
-    child_p.tls_base          = tls;       // this thread's %fs base (0 = none)
+    child_p.clr_tid           = clr_tid as u64;  // join futex the kernel zeroes on exit
+    child_p.tls_base          = tls as u64;      // this thread's %fs base (0 = none)
     // SAFETY: `parent_proc` is the live parent's `ProcMeta`.
     child_p.tgid = unsafe { (*parent_proc).tgid };
     child_p.shared = parent_shared;
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn sched_set_tls(base: u32) -> i32 {
         return -1;
     }
     // SAFETY: `p` is that task's live `ProcMeta`.
-    unsafe { (*p).tls_base = base };
-    crate::smp::set_tls_base(crate::percpu::this_cpu(), base);
+    unsafe { (*p).tls_base = base as u64 };
+    crate::smp::set_tls_base(crate::percpu::this_cpu(), base as u64);
     0
 }

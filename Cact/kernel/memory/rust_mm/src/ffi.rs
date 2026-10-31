@@ -334,15 +334,15 @@ pub struct TaskStruct {
 pub struct ProcMeta {
     pub stack_base:         *mut u8,
     pub ustack_phys:        *mut u8,
-    pub ustack_virt:        u32,
+    pub ustack_virt:        u64,
     pub ustack_phys_extra:  [*mut u8; 3],
     pub pending_signals:    u32,
     pub signal_mask:        u32,
     pub saved_signal_mask:  u32,
     pub in_sigsuspend:      u8,
     pub _pad1:              [u8; 3],
-    pub signal_handlers:    [u32; NSIG],
-    pub sigreturn_trampoline: u32,
+    pub signal_handlers:    [u64; NSIG],
+    pub sigreturn_trampoline: u64,
     pub alarm_ticks:        u32,
     pub itimer_value:       u32,
     pub itimer_interval:    u32,
@@ -352,8 +352,8 @@ pub struct ProcMeta {
     pub parent_pid:         u32,
     pub exit_code:          i32,
     pub wait_for_pid:       u32,
-    pub brk_start:          u32,
-    pub brk_current:        u32,
+    pub brk_start:          u64,
+    pub brk_current:        u64,
     pub sleep_until:        u32,
     pub cwd:                [u8; 256],
     pub uid:                u32,
@@ -368,7 +368,7 @@ pub struct ProcMeta {
     pub root:               *mut VfsNode,
     // The sched crate's full `ProcMeta` carries the cached exec symbol table
     // here; keep the offsets aligned so `shared` lands at the same place.
-    pub exec_base:          u32,
+    pub exec_base:          u64,
     pub exec_symtab:        *mut u8,
     pub exec_strtab:        *mut u8,
     pub exec_symtab_count:  i32,
@@ -376,21 +376,21 @@ pub struct ProcMeta {
     pub is_thread:          u8,
     pub _pad2:              [u8; 3],
     pub shared:             *mut ProcShared,
-    pub clr_tid:            u32,
+    pub clr_tid:            u64,
     pub intr_wait:          u8,
     pub _pad3:              [u8; 3],
     // --- sigaltstack (appended after 612; existing offsets above are unchanged) ---
-    pub altstack_sp:        u32,
+    pub altstack_sp:        u64,
     pub altstack_size:      u32,
     pub altstack_flags:     u32,
     pub signal_flags:       [u32; NSIG],
     // --- TLS (appended after 676; existing offsets above are unchanged) ---
-    pub tls_base:           u32,
+    pub tls_base:           u64,
     // --- signal dispositions (appended after 680) ---
     pub signal_masks:       [u32; NSIG],
     // --- signal sources (appended after 732) ---
     pub signal_codes:       [u32; NSIG],
-    pub signal_addr:        u32,
+    pub signal_addr:        u64,
     // --- sigwait()/sigqueue() (appended after 788) ---
     pub sigwait_set:        u32,
     pub signal_value:       u32,
@@ -498,7 +498,7 @@ unsafe extern "C" {
 
     pub fn task_signal(pid: u32, signal: u32);
     /// Queue a signal *and* record its source (si_code) and fault address.
-    pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u32);
+    pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64);
     pub fn schedule();
     pub fn task_reap();
 

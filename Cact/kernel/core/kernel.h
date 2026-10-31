@@ -257,7 +257,7 @@ struct proc_page_tracker_t;
 struct vfs_node;
 void* load_elf(char* path, uint64_t* pd, struct proc_page_tracker_t* tracker);
 void  elf_load_exec_symtab(const char* path, struct proc_metadata* proc);
-uint32_t elf_get_brk_start(struct vfs_node* file);
+uint64_t elf_get_brk_start(struct vfs_node* file);
 
 // Networking stack
 void net_init             (void);

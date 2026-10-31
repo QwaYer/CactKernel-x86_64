@@ -406,7 +406,7 @@ fn handle_signal_bit(
     }
 
     if sig == SIGCHLD || sig == SIGWINCH {
-        if handler != SIG_DFL && handler != SIG_IGN {
+        if handler != SIG_DFL as u64 && handler != SIG_IGN as u64 {
             p.pending_signals |= sig;
         }
         return;
@@ -417,7 +417,7 @@ fn handle_signal_bit(
     // which builds the frame and then clears the bit.  Clearing it here without
     // delivering is what made every custom handler unreachable (Ctrl-C into a
     // userspace handler included): the bit was gone before the syscall return.
-    if handler != SIG_DFL && handler != SIG_IGN {
+    if handler != SIG_DFL as u64 && handler != SIG_IGN as u64 {
         p.pending_signals |= sig;
         return;
     }
@@ -481,7 +481,7 @@ pub unsafe extern "C" fn task_sigaction(
     // SAFETY: `proc_ptr` is the task's live `ProcMeta`; `signum` was bounded against `NSIG`
     // above, so the handler write is in bounds.
     let p = unsafe { &mut *proc_ptr };
-    p.signal_handlers[signum as usize] = handler;
+    p.signal_handlers[signum as usize] = handler as u64;
     // The disposition's flags travel with the handler so delivery can honour
     // SA_ONSTACK (see deliver_pending_signal).
     p.signal_flags[signum as usize] = if handler <= SIG_IGN { 0 } else { flags };
