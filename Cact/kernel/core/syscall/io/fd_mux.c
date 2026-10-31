@@ -1,7 +1,6 @@
 #include "fd.h"
 #include "validate.h"
 #include "helper.h"
-#include "pipe.h"
 #include "kernel.h"   // terminal_winsize
 
 extern void sched_sleep_ticks(uint32_t ticks);
@@ -11,130 +10,9 @@ extern void sched_sleep_ticks(uint32_t ticks);
 #endif
 
 /* SIGCHLD (bit 6) | SIGWINCH (bit 9): job-control notifications are *reported*
-   to the application, not delivered, so they must not abort a poll/select wait
+   to the application, not delivered, so they must not abort a poll wait
    (the same rule the tty read path follows). */
 #define SC_JC_MASK (~((1u << 6) | (1u << 9)))
-
-int sys_pipe(struct syscall_frame *regs) {
-    int *user_fds = (int *)regs->rdi;
-    if (!validate_user_ptr(user_fds, sizeof(int) * 2)) return -1;
-    if (!current_task) return -1;
-
-    vfs_node_t *pipefd[2];
-    if (pipe_create(pipefd, 0) != 0) return -1;
-
-    file_t *rf = file_alloc(pipefd[0]);
-    file_t *wf = file_alloc(pipefd[1]);
-    if (!rf || !wf) {
-        // Close each end exactly once (see devfs_services.c _pipe_ioctl).
-        if (rf) file_unref(rf); else close_vfs(pipefd[0]);
-        if (wf) file_unref(wf); else close_vfs(pipefd[1]);
-        return -1;
-    }
-
-    int rfd = -1, wfd = -1;
-    for (int i = 3; i < MAX_FD && (rfd < 0 || wfd < 0); i++) {
-        if (!current_task->proc->fds->files[i]) {
-            if (rfd < 0) rfd = i;
-            else         wfd = i;
-        }
-    }
-
-    if (rfd < 0 || wfd < 0) {
-        file_unref(rf);
-        file_unref(wf);
-        return -1;
-    }
-
-    current_task->proc->fds->files[rfd] = rf;
-    current_task->proc->fds->files[wfd] = wf;
-    user_fds[0] = rfd;
-    user_fds[1] = wfd;
-    return 0;
-}
-
-int sys_select(struct syscall_frame *regs) {
-    sel_args_t *ua = (sel_args_t *)regs->rdi;
-    if (!validate_user_ptr(ua, sizeof(sel_args_t))) return -1;
-    if (!current_task) return -1;
-
-    int              nfds  = ua->nfds;
-    sel_fdset_t     *urfds = ua->readfds;
-    sel_fdset_t     *uwfds = ua->writefds;
-    sel_fdset_t     *uefds = ua->exceptfds;
-    struct timeval_fd *utv = ua->timeout;
-
-    if (nfds < 0 || nfds > MAX_FD) return -1;
-    if (urfds && !validate_user_ptr(urfds, sizeof(sel_fdset_t))) return -1;
-    if (uwfds && !validate_user_ptr(uwfds, sizeof(sel_fdset_t))) return -1;
-    if (uefds && !validate_user_ptr(uefds, sizeof(sel_fdset_t))) return -1;
-    if (utv && !validate_user_ptr(utv, sizeof(struct timeval_fd))) return -1;
-
-#define TIMER_HZ_FD 100
-    int      infinite    = (utv == 0);
-    int      nonblocking = 0;
-    uint32_t deadline    = 0;
-    if (!infinite) {
-        uint32_t ticks = (uint32_t)(utv->tv_sec * TIMER_HZ_FD) +
-                         (uint32_t)((utv->tv_usec + (1000000 / TIMER_HZ_FD) - 1) /
-                                    (1000000 / TIMER_HZ_FD));
-        nonblocking = (ticks == 0);
-        deadline    = timer_ticks_get() + ticks;
-    }
-#undef TIMER_HZ_FD
-
-    sel_fdset_t orig_r, orig_w, orig_e;
-    SEL_ZERO(&orig_r); SEL_ZERO(&orig_w); SEL_ZERO(&orig_e);
-    if (urfds) orig_r = *urfds;
-    if (uwfds) orig_w = *uwfds;
-    if (uefds) orig_e = *uefds;
-
-    struct task_struct *t = current_task;
-
-    for (;;) {
-        sel_fdset_t res_r, res_w, res_e;
-        SEL_ZERO(&res_r); SEL_ZERO(&res_w); SEL_ZERO(&res_e);
-        int ready = 0;
-
-        for (int fd = 0; fd < nfds; fd++) {
-            file_t *f = t->proc->fds->files[fd];
-
-            if (urfds && SEL_ISSET(fd, &orig_r)) {
-                if (f && f->node && (poll_file_vfs(f, VFS_POLLIN) & VFS_POLLIN)) {
-                    SEL_SET(fd, &res_r); ready++;
-                }
-            }
-            if (uwfds && SEL_ISSET(fd, &orig_w)) {
-                if (f && f->node && (poll_file_vfs(f, VFS_POLLOUT) & VFS_POLLOUT)) {
-                    SEL_SET(fd, &res_w); ready++;
-                }
-            }
-            if (uefds && SEL_ISSET(fd, &orig_e)) {
-                if (f && f->node) {
-                    uint32_t rev = poll_file_vfs(f, VFS_POLLHUP | VFS_POLLERR);
-                    if (rev & (VFS_POLLHUP | VFS_POLLERR)) {
-                        SEL_SET(fd, &res_e); ready++;
-                    }
-                }
-            }
-        }
-
-        if (ready > 0 || nonblocking ||
-                (!infinite && (int32_t)(timer_ticks_get() - deadline) >= 0)) {
-            if (urfds) copy_to_user(urfds, &res_r, sizeof(sel_fdset_t));
-            if (uwfds) copy_to_user(uwfds, &res_w, sizeof(sel_fdset_t));
-            if (uefds) copy_to_user(uefds, &res_e, sizeof(sel_fdset_t));
-            return ready;
-        }
-
-        /* A waiting select() must be interruptible: a signal with a handler is
-         * only delivered on syscall return, so without this a task parked in
-         * select() could not be killed with Ctrl+C.  Sleep one tick instead of
-         * busy-yielding on the scheduler, which burned a whole core. */
-        if (task_signal_pending_current() & SC_JC_MASK) return -EINTR;
-        sched_sleep_ticks(1);
-    }
-}
 
 sysret_t sys_poll(struct syscall_frame *regs) {
     struct pollfd *fds_user   = (struct pollfd *)regs->rdi;
@@ -219,9 +97,9 @@ sysret_t sys_poll(struct syscall_frame *regs) {
             return ready;
         }
 
-        /* Interruptible wait; see the select() note above.  A blocking poll()
-         * used to busy-yield on schedule(), burning a core and ignoring Ctrl+C
-         * (the pending signal never reached a syscall-return). */
+        /* Interruptible wait.  A blocking poll() used to busy-yield on
+         * schedule(), burning a core and ignoring Ctrl+C (the pending signal
+         * never reached a syscall-return). */
         if (task_signal_pending_current() & SC_JC_MASK) {
             kfree(fds);
             return -EINTR;

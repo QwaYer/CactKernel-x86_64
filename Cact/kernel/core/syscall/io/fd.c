@@ -154,41 +154,6 @@ sysret_t sys_close(int fd) {
     return 0;
 }
 
-sysret_t sys_lseek(struct syscall_frame *regs) {
-    int     fd     = (int)regs->rdi;
-    int64_t offset = (int64_t)regs->rsi;
-    int     whence = (int)regs->rdx;
-
-    file_t *f = _get_file(fd);
-    if (!f || !f->node) return -1;
-
-    uint64_t new_off;
-    if (f->node->ops && f->node->ops->lseek) {
-        if (f->node->ops->lseek(f->node, offset, whence, &new_off) == 0) {
-            f->offset = new_off;
-            return (int)new_off;
-        }
-        return -1;
-    }
-
-    switch (whence) {
-        case 0: // SEEK_SET
-            if (offset < 0) return -1;
-            new_off = (uint64_t)offset;
-            break;
-        case 1: // SEEK_CUR:
-            new_off = f->offset + (uint64_t)offset;
-            break;
-        case 2: // SEEK_END:
-            new_off = f->node->size + (uint64_t)offset;
-            break;
-        default:
-            return -1;
-    }
-    f->offset = new_off;
-    return (int)new_off;
-}
-
 // =========================================================================
 // Generic node-ioctl ABI (ioctl_abi.h): FDCTL_* (any fd) and DIRCTL_* (dir).
 // These commands are the *new* ABI: once the legacy per-name syscalls are
@@ -771,21 +736,4 @@ int sys_dup(int oldfd) {
         }
     }
     return -1;
-}
-
-int sys_dup2(struct syscall_frame *regs) {
-    int oldfd = (int)regs->rdi;
-    int newfd = (int)regs->rsi;
-
-    file_t *f = _get_file(oldfd);
-    if (!f) return -1;
-    if (oldfd == newfd) return newfd;
-
-    file_ref(f);
-
-    file_t *old = current_task->proc->fds->files[newfd];
-    current_task->proc->fds->files[newfd] = f;
-
-    if (old) file_unref(old);
-    return newfd;
 }

@@ -7,17 +7,6 @@
 // Maximum number of argv/envp entries to validate (prevents runaway loops)
 #define EXEC_VALIDATE_MAX 256
 
-// getpid() — return the calling process's PID
-int sys_get_pid(void) {
-    return (int)current_task->pid;
-}
-
-// getppid() — return the parent process's PID
-int sys_getppid(void) {
-    if (!current_task) return -1;
-    return (int)current_task->proc->parent_pid;
-}
-
 // fork() — create a child process that is a copy of the caller
 sysret_t sys_fork(struct syscall_frame* regs) {
     // The syscall frame is field for field a context_frame (mod.c asserts it),
@@ -132,16 +121,4 @@ sysret_t sys_waitpid(struct syscall_frame* regs) {
     if (status && !validate_user_ptr(status, sizeof(int))) return -1;
 
     return sched_waitpid(target_pid, status, options);
-}
-
-// sleep() — sleep for a given number of milliseconds
-int sys_sleep(struct syscall_frame* regs) {
-    uint32_t ms = (uint32_t)regs->rdi;
-    if (!current_task) return -1;
-    if (ms == 0) return 0;
-
-    // Convert ms to timer ticks (100 Hz = 10 ms per tick)
-    uint32_t ticks = (ms + 9) / 10;
-    sched_sleep_ticks(ticks);
-    return 0;
 }

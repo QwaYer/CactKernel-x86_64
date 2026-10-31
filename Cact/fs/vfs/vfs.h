@@ -280,7 +280,6 @@ void vfs_as_stats(uint32_t *out);
 // Handles "." and "..".  Returns the target node or NULL.
 vfs_node_t   *vfs_lookup_child(vfs_node_t *dir, const char *name, int follow);
 int           poll_vfs     (vfs_node_t *node, uint32_t events);
-int           lseek_vfs    (vfs_node_t *node, int64_t offset, int whence, uint64_t *result);
 
 // Helper: convert VFS node type to POSIX stat mode
 uint32_t      vfs_type_to_mode(uint32_t type);

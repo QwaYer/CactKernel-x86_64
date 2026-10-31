@@ -13,7 +13,7 @@
 //! `-EAGAIN` when non-blocking, SIGPIPE to the writer).
 //!
 //! Registration stays in C: devfs registers `/dev/pipe` and its ioctl calls
-//! [`pipe_create`]; `fd_mux.c`'s (dead) `sys_pipe` does too.
+//! [`pipe_create`].
 
 use core::ffi::{c_char, c_void};
 use core::mem::size_of;

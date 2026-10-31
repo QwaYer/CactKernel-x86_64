@@ -11,12 +11,9 @@ extern void sched_task_exit(int exit_code);
 extern int  sched_waitpid(int target_pid, int* status, int options);
 
 // Process management syscalls
-int sys_get_pid(void);
-int sys_getppid(void);
 sysret_t sys_fork(struct syscall_frame* regs);
 sysret_t sys_exec(struct syscall_frame* regs);
 sysret_t sys_exit(struct syscall_frame* regs);
 sysret_t sys_waitpid(struct syscall_frame* regs);
-int sys_sleep(struct syscall_frame* regs);
 
 #endif 

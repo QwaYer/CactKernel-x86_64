@@ -624,26 +624,3 @@ pub unsafe extern "C" fn poll_vfs(node: *mut VfsNode, events: u32) -> i32 {
         revents as i32
     }
 }
-
-#[no_mangle]
-pub unsafe extern "C" fn lseek_vfs(
-    node: *mut VfsNode,
-    offset: i64,
-    whence: i32,
-    result: *mut u64,
-) -> i32 {
-    if node.is_null() || result.is_null() {
-        return -1;
-    }
-    // SAFETY: `node` is live and `result` is writable.
-    unsafe {
-        let ops = (*node).ops;
-        if !ops.is_null() {
-            if let Some(lseek) = (*ops).lseek {
-                return lseek(node, offset, whence, result);
-            }
-        }
-        // Default: files always support seek — caller handles default logic.
-        -1
-    }
-}
