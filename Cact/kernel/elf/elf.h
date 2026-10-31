@@ -30,65 +30,17 @@
 #define EM_386     3
 #define EM_X86_64  62
 
-/* --- ELF32 ---------------------------------------------------------------
- * Kept for the still-32-bit `.cctk` module loaders (pci_loader, fs_mod); they
- * carry their own private copies today and move onto this header when they are
- * ported to ELF64 in a later stage of PORTING-x86_64.md. */
-typedef uint32_t Elf32_Addr;
-typedef uint16_t Elf32_Half;
-typedef uint32_t Elf32_Off;
-typedef int32_t  Elf32_Sword;
-typedef uint32_t Elf32_Word;
+/* e_type */
+#define ET_NONE    0
+#define ET_REL     1
+#define ET_EXEC    2
+#define ET_DYN     3
+#define ET_CORE    4
 
-typedef struct {
-    uint8_t  e_ident[16];
-    Elf32_Half e_type;
-    Elf32_Half e_machine;
-    Elf32_Word e_version;
-    Elf32_Addr e_entry;
-    Elf32_Off  e_phoff;
-    Elf32_Off  e_shoff;
-    Elf32_Word e_flags;
-    Elf32_Half e_ehsize;
-    Elf32_Half e_phentsize;
-    Elf32_Half e_phnum;
-    Elf32_Half e_shentsize;
-    Elf32_Half e_shnum;
-    Elf32_Half e_shstrndx;
-} Elf32_Ehdr;
-
-typedef struct {
-    Elf32_Word p_type;
-    Elf32_Off  p_offset;
-    Elf32_Addr p_vaddr;
-    Elf32_Addr p_paddr;
-    Elf32_Word p_filesz;
-    Elf32_Word p_memsz;
-    Elf32_Word p_flags;
-    Elf32_Word p_align;
-} Elf32_Phdr;
-
-typedef struct {
-    Elf32_Word sh_name;
-    Elf32_Word sh_type;
-    Elf32_Word sh_flags;
-    Elf32_Addr sh_addr;
-    Elf32_Off  sh_offset;
-    Elf32_Word sh_size;
-    Elf32_Word sh_link;
-    Elf32_Word sh_info;
-    Elf32_Word sh_addralign;
-    Elf32_Word sh_entsize;
-} Elf32_Shdr;
-
-typedef struct {
-    Elf32_Word st_name;
-    Elf32_Addr st_value;
-    Elf32_Word st_size;
-    uint8_t    st_info;
-    uint8_t    st_other;
-    Elf32_Half st_shndx;
-} Elf32_Sym;
+/* sh_flags */
+#define SHF_WRITE     0x1
+#define SHF_ALLOC     0x2
+#define SHF_EXECINSTR 0x4
 
 /* --- ELF64 ---------------------------------------------------------------
  * The class the x86_64 kernel executes.  Note the field orders differ from
@@ -188,6 +140,16 @@ typedef struct {
 #define SHN_UNDEF   0
 #define SHN_ABS     0xFFF1
 
+/* x86_64 relocation types (SHT_RELA).  The module loaders link GOT/PLT-free
+ * images (a -mcmodel=kernel object), so only the direct relocations such a
+ * build emits are handled; unsupported types are rejected. */
+#define R_X86_64_NONE    0
+#define R_X86_64_64      1   /* S + A             */
+#define R_X86_64_PC32    2   /* S + A - P         */
+#define R_X86_64_PLT32   4   /* S + A - P (no PLT) */
+#define R_X86_64_32      10  /* S + A, zero-extended */
+#define R_X86_64_32S     11  /* S + A, sign-extended */
+
 /* The bind/type packing is identical for both classes (st_info is one byte
  * whether or not the rest of the symbol is 32- or 64-bit). */
 #define ELF32_ST_BIND(i)    ((i) >> 4)
@@ -196,5 +158,52 @@ typedef struct {
 #define ELF64_ST_BIND(i)    ((i) >> 4)
 #define ELF64_ST_TYPE(i)    ((i) & 0xF)
 #define ELF64_ST_INFO(b,t)  (((b) << 4) + ((t) & 0xF))
+
+/* r_info packing (64-bit: symbol index in the high dword, type in the low). */
+#define ELF64_R_SYM(i)      ((uint32_t)((uint64_t)(i) >> 32))
+#define ELF64_R_TYPE(i)     ((uint32_t)((uint64_t)(i) & 0xFFFFFFFFu))
+#define ELF64_R_INFO(s,t)   ((((uint64_t)(s)) << 32) | ((uint32_t)(t)))
+
+/* True when `eh` is an ELF64 / EM_X86_64 relocatable object — the only shape
+ * the `.cctk` module loaders accept. */
+static inline int elf64_is_rel_object(const Elf64_Ehdr *eh) {
+    return *(const uint32_t *)eh->e_ident == ELF_MAGIC &&
+           eh->e_ident[EI_CLASS] == ELFCLASS64 &&
+           eh->e_type == ET_REL &&
+           eh->e_machine == EM_X86_64;
+}
+
+/* Width in bytes of a supported x86_64 relocation, or 0 if unsupported. */
+static inline uint32_t elf64_rela_width(uint32_t type) {
+    switch (type) {
+    case R_X86_64_64:  return 8;
+    case R_X86_64_PC32:
+    case R_X86_64_PLT32:
+    case R_X86_64_32:
+    case R_X86_64_32S: return 4;
+    default:           return 0;
+    }
+}
+
+/* Apply one supported SHT_RELA relocation in place.  `patch` is the fixup site
+ * (its address is P), `S` the symbol value and `A` the RELA addend. */
+static inline void elf64_apply_rela(uint32_t type, uint8_t *patch, uint64_t S, int64_t A) {
+    uint64_t P = (uint64_t)(uintptr_t)patch;
+    switch (type) {
+    case R_X86_64_64:
+        *(uint64_t *)patch = S + (uint64_t)A;
+        break;
+    case R_X86_64_PC32:
+    case R_X86_64_PLT32:
+        *(int32_t *)patch = (int32_t)(S + (uint64_t)A - P);
+        break;
+    case R_X86_64_32:
+        *(uint32_t *)patch = (uint32_t)(S + (uint64_t)A);
+        break;
+    case R_X86_64_32S:
+        *(int32_t *)patch = (int32_t)(S + (uint64_t)A);
+        break;
+    }
+}
 
 #endif

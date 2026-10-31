@@ -19,6 +19,7 @@
 #include "memory.h"
 #include "kernel.h"
 #include "mod_tag.h"
+#include "elf.h"
 
 // Linux i386 errno values, returned negated to the /dev/sys module ioctl so
 // that modload/modunload can report a real reason (see kmod.c).  The userspace
@@ -51,67 +52,7 @@
 #define ENOSPC 28
 #endif
 
-// ELF 32-bit types (i386)
-typedef uint32_t Elf32_Addr;
-typedef uint32_t Elf32_Off;
-typedef uint16_t Elf32_Half;
-typedef uint32_t Elf32_Word;
-typedef  int32_t Elf32_Sword;
-
-// ELF constants (relocatable object only)
-#define ELF_MAGIC      0x464C457F
-#define ET_REL         1
-#define EM_386         3
-#define SHT_PROGBITS   1
-#define SHT_SYMTAB     2
-#define SHT_STRTAB     3
-#define SHT_REL        9
-#define SHF_ALLOC      0x2
-#define STB_GLOBAL     1
-#define STB_WEAK       2
-#define STT_OBJECT     1
-#define STT_FUNC       2
-#define SHN_UNDEF      0
-#define R_386_32       1
-#define R_386_PC32     2
-
-#define ELF32_ST_BIND(i)  ((i) >> 4)
-#define ELF32_ST_TYPE(i)  ((i) & 0xF)
-#define ELF32_R_SYM(i)    ((i) >> 8)
-#define ELF32_R_TYPE(i)   ((uint8_t)(i))
-
-typedef struct {
-    Elf32_Word e_magic;
-    uint8_t    e_class, e_data, e_version2, e_osabi;
-    uint8_t    e_pad[8];
-    Elf32_Half e_type, e_machine;
-    Elf32_Word e_version;
-    Elf32_Addr e_entry;
-    Elf32_Off  e_phoff, e_shoff;
-    Elf32_Word e_flags;
-    Elf32_Half e_ehsize, e_phentsize, e_phnum;
-    Elf32_Half e_shentsize, e_shnum, e_shstrndx;
-} __attribute__((packed)) Elf32_Ehdr;
-
-typedef struct {
-    Elf32_Word sh_name, sh_type, sh_flags;
-    Elf32_Addr sh_addr;
-    Elf32_Off  sh_offset;
-    Elf32_Word sh_size, sh_link, sh_info, sh_addralign, sh_entsize;
-} __attribute__((packed)) Elf32_Shdr;
-
-typedef struct {
-    Elf32_Word st_name;
-    Elf32_Addr st_value;
-    Elf32_Word st_size;
-    uint8_t    st_info, st_other;
-    Elf32_Half st_shndx;
-} __attribute__((packed)) Elf32_Sym;
-
-typedef struct {
-    Elf32_Addr r_offset;
-    Elf32_Word r_info;
-} __attribute__((packed)) Elf32_Rel;
+// ELF constants live in elf.h (ELF64 / SHT_RELA).
 
 // Resident module slot
 typedef struct {
@@ -128,14 +69,14 @@ typedef struct {
 
 static fs_slot_t slots[FS_MOD_MAX];
 
-static Elf32_Shdr *get_shdr(Elf32_Ehdr *eh, uint16_t idx) {
+static Elf64_Shdr *get_shdr(Elf64_Ehdr *eh, uint16_t idx) {
     if (idx >= eh->e_shnum)
         return NULL;
-    return (Elf32_Shdr *)((uint8_t *)eh + eh->e_shoff + idx * eh->e_shentsize);
+    return (Elf64_Shdr *)((uint8_t *)eh + eh->e_shoff + idx * eh->e_shentsize);
 }
 
-static const char *get_str(Elf32_Ehdr *eh, uint16_t strtab_idx, uint32_t off) {
-    Elf32_Shdr *sh = get_shdr(eh, strtab_idx);
+static const char *get_str(Elf64_Ehdr *eh, uint16_t strtab_idx, uint32_t off) {
+    Elf64_Shdr *sh = get_shdr(eh, strtab_idx);
     if (!sh)
         return NULL;
     return (const char *)((uint8_t *)eh + sh->sh_offset + off);
@@ -184,61 +125,68 @@ static int load_module_image(const char *path, uint8_t **image_out,
         return -EACCES;
     }
 
-    Elf32_Ehdr *eh = (Elf32_Ehdr *)elf_data;
-    if (eh->e_magic != ELF_MAGIC || eh->e_type != ET_REL || eh->e_machine != EM_386) {
-        pr_err("fsmod: not a valid ELF32 relocatable (magic=0x%08x type=%u machine=%u): %s\n",
-               (unsigned)eh->e_magic, (unsigned)eh->e_type, (unsigned)eh->e_machine, path);
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)elf_data;
+    if (!elf64_is_rel_object(eh)) {
+        pr_err("fsmod: not a valid ELF64 relocatable (class=%u type=%u machine=%u): %s\n",
+               (unsigned)eh->e_ident[EI_CLASS], (unsigned)eh->e_type,
+               (unsigned)eh->e_machine, path);
         kfree(elf_data);
         return -2;
     }
 
-    uint32_t sh_tab_end;
-    if (__builtin_umul_overflow(eh->e_shnum, eh->e_shentsize, &sh_tab_end) ||
-        __builtin_uadd_overflow(eh->e_shoff, sh_tab_end, &sh_tab_end) ||
-        eh->e_shentsize < sizeof(Elf32_Shdr) || sh_tab_end > file_size) {
-        pr_err("fsmod: corrupted section header table (shoff=%u shnum=%u "
+    uint64_t sh_tab_end;
+    if (__builtin_mul_overflow(eh->e_shnum, eh->e_shentsize, &sh_tab_end) ||
+        __builtin_add_overflow(eh->e_shoff, sh_tab_end, &sh_tab_end) ||
+        eh->e_shentsize < sizeof(Elf64_Shdr) || sh_tab_end > (uint64_t)file_size) {
+        pr_err("fsmod: corrupted section header table (shoff=%llu shnum=%u "
                "shentsize=%u file=%u): %s\n",
-               (unsigned)eh->e_shoff, (unsigned)eh->e_shnum,
+               (unsigned long long)eh->e_shoff, (unsigned)eh->e_shnum,
                (unsigned)eh->e_shentsize, (unsigned)file_size, path);
         kfree(elf_data);
         return -3;
     }
 
     // First pass: calculate total image size and assign section addresses
-    uint32_t total = 0;
+    uint64_t total = 0;
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        Elf32_Shdr *sh = get_shdr(eh, i);
+        Elf64_Shdr *sh = get_shdr(eh, i);
         if (!sh || !(sh->sh_flags & SHF_ALLOC)) continue;
-        uint32_t align = sh->sh_addralign ? sh->sh_addralign : 1;
+        uint64_t align = sh->sh_addralign ? sh->sh_addralign : 1;
         if (align & (align - 1)) align = 1;
         total = (total + align - 1) & ~(align - 1);
         sh->sh_addr = total;
         total += sh->sh_size;
     }
+    if (total == 0 || total > 0xFFFFFFFFull) {
+        pr_err("fsmod: bad module image size (%llu bytes): %s\n",
+               (unsigned long long)total, path);
+        kfree(elf_data);
+        return -8;
+    }
 
-    uint8_t *image = (uint8_t *)kmalloc(total);
+    uint8_t *image = (uint8_t *)kmalloc((size_t)total);
     if (!image) { kfree(elf_data); return -ENOMEM; }
-    memset(image, 0, total);
+    memset(image, 0, (size_t)total);
 
     // Copy PROGBITS sections into image
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        Elf32_Shdr *sh = get_shdr(eh, i);
+        Elf64_Shdr *sh = get_shdr(eh, i);
         if (!sh || !(sh->sh_flags & SHF_ALLOC) || sh->sh_type != SHT_PROGBITS) continue;
-        if (sh->sh_offset + sh->sh_size > file_size) {
-            pr_err("fsmod: section %u exceeds file (off=0x%x size=0x%x file=0x%x): %s\n",
-                   (unsigned)i, (unsigned)sh->sh_offset, (unsigned)sh->sh_size,
-                   (unsigned)file_size, path);
+        if (sh->sh_offset + sh->sh_size > (uint64_t)file_size) {
+            pr_err("fsmod: section %u exceeds file (off=0x%llx size=0x%llx file=0x%x): %s\n",
+                   (unsigned)i, (unsigned long long)sh->sh_offset,
+                   (unsigned long long)sh->sh_size, (unsigned)file_size, path);
             kfree(image); kfree(elf_data);
             return -8;
         }
-        memcpy(image + sh->sh_addr, elf_data + sh->sh_offset, sh->sh_size);
+        memcpy(image + sh->sh_addr, elf_data + sh->sh_offset, (size_t)sh->sh_size);
     }
 
     // Locate symbol table and its string table
-    Elf32_Shdr *symtab_sh = NULL;
+    Elf64_Shdr *symtab_sh = NULL;
     uint16_t    strtab_idx = 0;
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        Elf32_Shdr *sh = get_shdr(eh, i);
+        Elf64_Shdr *sh = get_shdr(eh, i);
         if (sh && sh->sh_type == SHT_SYMTAB) {
             symtab_sh  = sh;
             strtab_idx = (uint16_t)sh->sh_link;
@@ -250,71 +198,73 @@ static int load_module_image(const char *path, uint8_t **image_out,
         kfree(image); kfree(elf_data);
         return -4;
     }
-    if (symtab_sh->sh_offset + symtab_sh->sh_size > file_size) {
+    if (symtab_sh->sh_offset + symtab_sh->sh_size > (uint64_t)file_size) {
         kfree(image); kfree(elf_data);
         return -8;
     }
-    Elf32_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
-    if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > file_size) {
+    Elf64_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
+    if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > (uint64_t)file_size) {
         kfree(image); kfree(elf_data);
         return -8;
     }
-    Elf32_Sym *syms    = (Elf32_Sym *)(elf_data + symtab_sh->sh_offset);
-    uint32_t   sym_cnt = symtab_sh->sh_size / sizeof(Elf32_Sym);
+    Elf64_Sym *syms    = (Elf64_Sym *)(elf_data + symtab_sh->sh_offset);
+    uint32_t   sym_cnt = (uint32_t)(symtab_sh->sh_size / sizeof(Elf64_Sym));
 
-    // Apply relocations (R_386_32 and R_386_PC32 only, intra-module + ksym).
-    // These are ELF32/32-bit-ABI modules: the relocation *values* are 32-bit,
-    // but they are only ever stored — every dereference below (`patch`, the
-    // resolved entry) uses the full 64-bit VA, so none of this depends on the
-    // identity alias.  A 64-bit kernel cannot run 32-bit module code, so Phase 6
-    // rebuilds these loaders for ELF64 + SHT_RELA rather than widening the
-    // values here.
+    // Apply relocations: ELF64 SHT_RELA, the direct relocations a GOT/PLT-free
+    // (-mcmodel=kernel) object emits — intra-module and against ksym exports.
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        Elf32_Shdr *sh = get_shdr(eh, i);
-        if (!sh || sh->sh_type != SHT_REL) continue;
-        Elf32_Shdr *target_sh = get_shdr(eh, sh->sh_info);
+        Elf64_Shdr *sh = get_shdr(eh, i);
+        if (!sh || sh->sh_type != SHT_RELA) continue;
+        Elf64_Shdr *target_sh = get_shdr(eh, sh->sh_info);
         if (!target_sh || !(target_sh->sh_flags & SHF_ALLOC)) continue;
-        Elf32_Rel *rels    = (Elf32_Rel *)(elf_data + sh->sh_offset);
-        uint32_t   rel_cnt = sh->sh_size / sizeof(Elf32_Rel);
+        Elf64_Rela *rels    = (Elf64_Rela *)(elf_data + sh->sh_offset);
+        uint32_t    rel_cnt = (uint32_t)(sh->sh_size / sizeof(Elf64_Rela));
         for (uint32_t r = 0; r < rel_cnt; r++) {
-            uint32_t   sym_idx = ELF32_R_SYM(rels[r].r_info);
+            uint32_t sym_idx = ELF64_R_SYM(rels[r].r_info);
+            uint32_t type    = ELF64_R_TYPE(rels[r].r_info);
+            uint32_t width   = elf64_rela_width(type);
             if (sym_idx >= sym_cnt) {
                 pr_err("fsmod: relocation symbol index %u >= %u: %s\n",
                        (unsigned)sym_idx, (unsigned)sym_cnt, path);
                 kfree(image); kfree(elf_data);
                 return -7;
             }
-            uint8_t    type    = ELF32_R_TYPE(rels[r].r_info);
-            Elf32_Sym *sym     = &syms[sym_idx];
-            uint32_t   S;
+            if (width == 0) {
+                pr_err("fsmod: unsupported relocation type %u: %s\n",
+                       (unsigned)type, path);
+                kfree(image); kfree(elf_data);
+                return -7;
+            }
+            Elf64_Sym *sym = &syms[sym_idx];
+            uint64_t   S;
             if (sym->st_shndx == SHN_UNDEF) {
                 const char *sym_name = get_str(eh, strtab_idx, sym->st_name);
                 if (!sym_name) { kfree(image); kfree(elf_data); return -7; }
-                S = ksym_resolve(sym_name);
-                if (S == 0 && ELF32_ST_BIND(sym->st_info) != STB_WEAK) {
+                S = (uint64_t)ksym_resolve(sym_name);
+                if (S == 0 && ELF64_ST_BIND(sym->st_info) != STB_WEAK) {
                     pr_err("fsmod: unresolved symbol '%s': %s\n", sym_name, path);
                     kfree(image); kfree(elf_data);
                     return -7;
                 }
             } else {
-                Elf32_Shdr *sym_sh = get_shdr(eh, sym->st_shndx);
+                Elf64_Shdr *sym_sh = get_shdr(eh, sym->st_shndx);
                 if (!sym_sh || !(sym_sh->sh_flags & SHF_ALLOC)) {
                     pr_err("fsmod: symbol in non-ALLOC section %u: %s\n",
                            (unsigned)sym->st_shndx, path);
                     kfree(image); kfree(elf_data);
                     return -7;
                 }
-                S = (uint32_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
+                S = (uint64_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
             }
-            if (rels[r].r_offset + sizeof(uint32_t) > target_sh->sh_size) {
-                pr_err("fsmod: relocation offset 0x%x >= section size 0x%x: %s\n",
-                       (unsigned)rels[r].r_offset, (unsigned)target_sh->sh_size, path);
+            if (rels[r].r_offset + width > target_sh->sh_size) {
+                pr_err("fsmod: relocation offset 0x%llx >= section size 0x%llx: %s\n",
+                       (unsigned long long)rels[r].r_offset,
+                       (unsigned long long)target_sh->sh_size, path);
                 kfree(image); kfree(elf_data);
                 return -7;
             }
-            uint32_t *patch = (uint32_t *)(image + target_sh->sh_addr + rels[r].r_offset);
-            if      (type == R_386_32)   *patch += S;
-            else if (type == R_386_PC32) *patch += S - (uint32_t)(uintptr_t)patch;
+            uint8_t *patch = image + target_sh->sh_addr + rels[r].r_offset;
+            elf64_apply_rela(type, patch, S, rels[r].r_addend);
         }
     }
 
@@ -322,12 +272,12 @@ static int load_module_image(const char *path, uint8_t **image_out,
     fs_mount_fn_t   mnt = NULL;
     fs_unmount_fn_t unm = NULL;
     for (uint32_t s = 0; s < sym_cnt; s++) {
-        if (ELF32_ST_BIND(syms[s].st_info) != STB_GLOBAL) continue;
-        if (ELF32_ST_TYPE(syms[s].st_info) != STT_FUNC)   continue;
+        if (ELF64_ST_BIND(syms[s].st_info) != STB_GLOBAL) continue;
+        if (ELF64_ST_TYPE(syms[s].st_info) != STT_FUNC)   continue;
         if (syms[s].st_shndx == SHN_UNDEF) continue;
         const char *sym_name = get_str(eh, strtab_idx, syms[s].st_name);
         if (!sym_name) continue;
-        Elf32_Shdr *sym_sh = get_shdr(eh, syms[s].st_shndx);
+        Elf64_Shdr *sym_sh = get_shdr(eh, syms[s].st_shndx);
         if (!sym_sh) continue;
         uintptr_t addr = (uintptr_t)(image + sym_sh->sh_addr + syms[s].st_value);
         if (strcmp((char *)sym_name, "fs_mount") == 0)
@@ -343,7 +293,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
 
     kfree(elf_data);
     *image_out  = image;
-    *size_out   = total;
+    *size_out   = (uint32_t)total;
     *mount_out  = mnt;
     *unmount_out = unm;
     return 0;
@@ -566,20 +516,20 @@ int fs_mod_detect(const char *path) {
     if (initfs_modblob_get(path, &blob, &size) != 0 || !blob || !size)
         return -1;
 
-    Elf32_Ehdr *eh = (Elf32_Ehdr *)blob;
-    if (eh->e_magic != ELF_MAGIC || eh->e_type != ET_REL || eh->e_machine != EM_386)
+    Elf64_Ehdr *eh = (Elf64_Ehdr *)blob;
+    if (!elf64_is_rel_object(eh))
         return 0;
 
-    uint32_t sh_tab_end;
-    if (__builtin_umul_overflow(eh->e_shnum, eh->e_shentsize, &sh_tab_end) ||
-        __builtin_uadd_overflow(eh->e_shoff, sh_tab_end, &sh_tab_end) ||
-        eh->e_shentsize < sizeof(Elf32_Shdr) || sh_tab_end > size)
+    uint64_t sh_tab_end;
+    if (__builtin_mul_overflow(eh->e_shnum, eh->e_shentsize, &sh_tab_end) ||
+        __builtin_add_overflow(eh->e_shoff, sh_tab_end, &sh_tab_end) ||
+        eh->e_shentsize < sizeof(Elf64_Shdr) || sh_tab_end > (uint64_t)size)
         return 0;
 
-    Elf32_Shdr *symtab_sh = NULL;
+    Elf64_Shdr *symtab_sh = NULL;
     uint16_t    strtab_idx = 0;
     for (uint16_t i = 0; i < eh->e_shnum; i++) {
-        Elf32_Shdr *sh = get_shdr(eh, i);
+        Elf64_Shdr *sh = get_shdr(eh, i);
         if (sh && sh->sh_type == SHT_SYMTAB) {
             symtab_sh  = sh;
             strtab_idx = (uint16_t)sh->sh_link;
@@ -588,18 +538,18 @@ int fs_mod_detect(const char *path) {
     }
     if (!symtab_sh)
         return 0;
-    if (symtab_sh->sh_offset + symtab_sh->sh_size > size)
+    if (symtab_sh->sh_offset + symtab_sh->sh_size > (uint64_t)size)
         return 0;
-    Elf32_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
-    if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > size)
+    Elf64_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
+    if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > (uint64_t)size)
         return 0;
 
-    Elf32_Sym *syms    = (Elf32_Sym *)(blob + symtab_sh->sh_offset);
-    uint32_t   sym_cnt = symtab_sh->sh_size / sizeof(Elf32_Sym);
+    Elf64_Sym *syms    = (Elf64_Sym *)(blob + symtab_sh->sh_offset);
+    uint32_t   sym_cnt = (uint32_t)(symtab_sh->sh_size / sizeof(Elf64_Sym));
 
     for (uint32_t s = 0; s < sym_cnt; s++) {
-        if (ELF32_ST_BIND(syms[s].st_info) != STB_GLOBAL) continue;
-        if (ELF32_ST_TYPE(syms[s].st_info) != STT_FUNC)   continue;
+        if (ELF64_ST_BIND(syms[s].st_info) != STB_GLOBAL) continue;
+        if (ELF64_ST_TYPE(syms[s].st_info) != STT_FUNC)   continue;
         if (syms[s].st_shndx == SHN_UNDEF)                continue;
         const char *sym_name = get_str(eh, strtab_idx, syms[s].st_name);
         if (!sym_name) continue;
