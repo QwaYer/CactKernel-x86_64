@@ -25,13 +25,13 @@ static struct {
 static int extra_count = 0;
 
 // data node ops (read/write/ioctl)
-static int _data_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _data_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     devfs_entry_t *e = (devfs_entry_t *)node->priv;
     if (!e || !e->drv || !e->drv->read) return -1;
     return e->drv->read(e->drv_priv, off, size, buf);
 }
 
-static int _data_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _data_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     devfs_entry_t *e = (devfs_entry_t *)node->priv;
     if (!e || !e->drv || !e->drv->write) return -1;
     return e->drv->write(e->drv_priv, off, size, buf);
@@ -182,7 +182,7 @@ static vfs_ops_t root_ops = {
     .listdir = _root_listdir,
 };
 
-static int _modinfo_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _modinfo_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node;
     return pci_driver_modinfo_read(off, size, buf);
 }

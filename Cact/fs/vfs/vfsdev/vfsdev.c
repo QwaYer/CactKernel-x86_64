@@ -54,19 +54,19 @@ void vfsdev_set_block_ident(blkdev_t *bd) {
 
 // Byte-range rw on any block device (whole disk or partition). Works sector
 // by sector so unaligned offsets behave like the storage drivers do.
-static int blk_byte_rw(blkdev_t *bd, uint32_t off, uint32_t size,
+static int blk_byte_rw(blkdev_t *bd, uint64_t off, uint32_t size,
                        char *buf, int wr) {
     if (!bd || !buf) return -1;
     if (size == 0) return 0;
 
     uint64_t total = (uint64_t)bd->max_lba * 512ull;
-    if ((uint64_t)off >= total) return 0;
-    if ((uint64_t)off + size > total) size = (uint32_t)(total - off);
+    if (off >= total) return 0;
+    if (off + size > total) size = (uint32_t)(total - off);
 
     uint8_t sec[512];
     uint32_t done = 0;
-    uint32_t first = off / 512;
-    uint32_t soff  = off % 512;
+    uint32_t first = (uint32_t)(off / 512);
+    uint32_t soff  = (uint32_t)(off % 512);
 
     for (uint32_t i = 0; done < size; i++) {
         uint32_t lba = first + i;
@@ -97,11 +97,11 @@ static int blk_byte_rw(blkdev_t *bd, uint32_t off, uint32_t size,
     return (int)done;
 }
 
-static int _blk_read(void *priv, uint32_t off, uint32_t size, char *buf) {
+static int _blk_read(void *priv, uint64_t off, uint32_t size, char *buf) {
     return blk_byte_rw((blkdev_t *)priv, off, size, buf, 0);
 }
 
-static int _blk_write(void *priv, uint32_t off, uint32_t size, char *buf) {
+static int _blk_write(void *priv, uint64_t off, uint32_t size, char *buf) {
     return blk_byte_rw((blkdev_t *)priv, off, size, buf, 1);
 }
 

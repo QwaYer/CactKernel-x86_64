@@ -38,7 +38,7 @@ pub const MFD_CLOEXEC: i32 = 0x0001;
 struct MemFd {
     name: [u8; MEMFD_NAME_MAX],
     name_len: u32,
-    size: u32,
+    size: u64,
     num_pages: u32,
     /// Slots `pages` can hold (0 while `pages` is null).
     pages_cap: u32,
@@ -89,8 +89,8 @@ fn handle_valid(h: i32) -> bool {
     h >= 1 && (h as usize) <= MEMFD_MAX && (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(h - 1) as usize].valid != 0
 }
 
-fn ceil_pages(bytes: u32) -> u32 {
-    bytes.div_ceil(PAGE_SIZE)
+fn ceil_pages(bytes: u64) -> u64 {
+    bytes.div_ceil(PAGE_SIZE as u64)
 }
 
 /// Make sure `s` can index `need_pages` slots, growing the `kmalloc` block in
@@ -309,12 +309,12 @@ pub extern "C" fn memfd_map_dec(handle: i32) -> i32 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn memfd_size(handle: i32) -> i32 {
+pub extern "C" fn memfd_size(handle: i32) -> i64 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
     let size = if handle_valid(handle) {
         // SAFETY: `MEMFD_TABLE[handle-1].size` read under `MEMFD_LOCK`.
-        (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize].size as i32
+        (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize].size as i64
     } else {
         -1
     };
@@ -330,9 +330,10 @@ pub(crate) fn memfd_grow_to(handle: i32, end: u32) -> i32 {
         // SAFETY: `MEMFD_TABLE[handle-1]` mutated by `memfd_grow_to`, which holds
         // `MEMFD_LOCK`.
         let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-        if grow_locked(s, ceil_pages(end)) {
-            if end > s.size {
-                s.size = end;
+        let pages = ceil_pages(end as u64);
+        if pages <= MEMFD_PAGES_MAX as u64 && grow_locked(s, pages as u32) {
+            if end as u64 > s.size {
+                s.size = end as u64;
             }
             0
         } else {
@@ -378,7 +379,7 @@ pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
 /// `buf` must be null or point to at least `size` writable bytes that stay
 /// valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memfd_read(handle: i32, off: u32, buf: *mut u8, size: u32) -> i32 {
+pub unsafe extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
     }
@@ -401,18 +402,18 @@ pub unsafe extern "C" fn memfd_read(handle: i32, off: u32, buf: *mut u8, size: u
     let mut n = size;
     // Overflow-safe replacement for the C `off + n < off` guard: a wrapped
     // sum is treated exactly like the original overflow test.
-    let end_fits = match off.checked_add(n) {
+    let end_fits = match off.checked_add(n as u64) {
         Some(end) => end <= s.size,
         None => false,
     };
     if !end_fits {
-        n = s.size - off;
+        n = (s.size - off) as u32;
     }
     let mut copied = 0u32;
     let mut pos = off;
     while copied < n {
-        let page_idx = pos / PAGE_SIZE;
-        let in_page = pos % PAGE_SIZE;
+        let page_idx = (pos / PAGE_SIZE as u64) as u32;
+        let in_page = (pos % PAGE_SIZE as u64) as u32;
         let chunk = core::cmp::min(n - copied, PAGE_SIZE - in_page);
         // SAFETY: `page_idx < num_pages` (the caller is bounded by `size`, which
         // never exceeds `num_pages` frames) and `num_pages <= pages_cap`, so the
@@ -428,7 +429,7 @@ pub unsafe extern "C" fn memfd_read(handle: i32, off: u32, buf: *mut u8, size: u
         // ranges are distinct (a mapped frame vs the caller's buffer).
         unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk as usize) };
         copied += chunk;
-        pos += chunk;
+        pos += chunk as u64;
     }
     lock_release(MEMFD_LOCK.as_ptr());
     copied as i32
@@ -439,7 +440,7 @@ pub unsafe extern "C" fn memfd_read(handle: i32, off: u32, buf: *mut u8, size: u
 /// `buf` must be null or point to at least `size` readable bytes that stay
 /// valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memfd_write(handle: i32, off: u32, buf: *const u8, size: u32) -> i32 {
+pub unsafe extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
     }
@@ -452,15 +453,15 @@ pub unsafe extern "C" fn memfd_write(handle: i32, off: u32, buf: *const u8, size
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    let end = off.saturating_add(size);
-    if end < off || ceil_pages(end) > MEMFD_PAGES_MAX {
+    let end = off.saturating_add(size as u64);
+    if end < off || ceil_pages(end) > MEMFD_PAGES_MAX as u64 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
     // SAFETY: `MEMFD_TABLE[handle-1]` read/updated under `MEMFD_LOCK`; the frames
     // it owns stay live for the duration of the copy.
     let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    if !grow_locked(s, ceil_pages(end)) {
+    if !grow_locked(s, ceil_pages(end) as u32) {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
@@ -471,8 +472,8 @@ pub unsafe extern "C" fn memfd_write(handle: i32, off: u32, buf: *const u8, size
     let mut written = 0u32;
     let mut pos = off;
     while written < size {
-        let page_idx = pos / PAGE_SIZE;
-        let in_page = pos % PAGE_SIZE;
+        let page_idx = (pos / PAGE_SIZE as u64) as u32;
+        let in_page = (pos % PAGE_SIZE as u64) as u32;
         let chunk = core::cmp::min(size - written, PAGE_SIZE - in_page);
         // SAFETY: `page_idx < num_pages` (the `grow_locked` above covers `end`,
         // and `end <= num_pages * PAGE_SIZE`) and `num_pages <= pages_cap`, so
@@ -488,15 +489,15 @@ pub unsafe extern "C" fn memfd_write(handle: i32, off: u32, buf: *const u8, size
         // ranges are distinct (the caller's buffer vs a mapped frame).
         unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk as usize) };
         written += chunk;
-        pos += chunk;
+        pos += chunk as u64;
     }
     lock_release(MEMFD_LOCK.as_ptr());
     written as i32
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn memfd_truncate(handle: i32, new_size: u32) -> i32 {
-    if ceil_pages(new_size) > MEMFD_PAGES_MAX {
+pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
+    if ceil_pages(new_size) > MEMFD_PAGES_MAX as u64 {
         return -1;
     }
     memfd_ensure_init();
@@ -508,7 +509,7 @@ pub extern "C" fn memfd_truncate(handle: i32, new_size: u32) -> i32 {
     // SAFETY: `MEMFD_TABLE[handle-1]` mutated under `MEMFD_LOCK`.
     let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
     if new_size > s.size
-        && !grow_locked(s, ceil_pages(new_size)) {
+        && !grow_locked(s, ceil_pages(new_size) as u32) {
             lock_release(MEMFD_LOCK.as_ptr());
             return -1;
         }

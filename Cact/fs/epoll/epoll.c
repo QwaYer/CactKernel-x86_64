@@ -81,8 +81,8 @@ typedef struct epoll_event_wire {
     uint64_t data;
 } __attribute__((packed)) epoll_event_wire_t;
 
-static int _epoll_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-static int _epoll_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+static int _epoll_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+static int _epoll_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 static void _epoll_open(vfs_node_t *node);
 static void _epoll_close(vfs_node_t *node);
 static int _epoll_poll(vfs_node_t *node, uint32_t events);
@@ -303,12 +303,12 @@ static int _epoll_ioctl(vfs_node_t *node, uint32_t cmd, void *arg) {
     }
 }
 
-static int _epoll_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _epoll_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node; (void)off; (void)size; (void)buf;
     return -EINVAL;
 }
 
-static int _epoll_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _epoll_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node; (void)off; (void)size; (void)buf;
     return -EINVAL;
 }

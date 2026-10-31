@@ -191,8 +191,8 @@ pub struct Ksock {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct VfsOps {
-    pub read: Option<extern "C" fn(*mut VfsNode, u32, u32, *mut c_char) -> c_int>,
-    pub write: Option<extern "C" fn(*mut VfsNode, u32, u32, *mut c_char) -> c_int>,
+    pub read: Option<extern "C" fn(*mut VfsNode, u64, u32, *mut c_char) -> c_int>,
+    pub write: Option<extern "C" fn(*mut VfsNode, u64, u32, *mut c_char) -> c_int>,
     pub open: Option<extern "C" fn(*mut VfsNode)>,
     pub close: Option<extern "C" fn(*mut VfsNode)>,
     pub walk: *mut c_void,
@@ -231,7 +231,7 @@ const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 184);
 pub struct VfsNode {
     pub name: [c_char; 128],
     pub type_: u32,
-    pub size: u32,
+    pub size: u64,
     pub inode: u32,
     pub refcount: u32,
     pub mode: u32,
@@ -246,11 +246,12 @@ pub struct VfsNode {
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 192);
 const _: () = assert!(core::mem::offset_of!(VfsNode, type_) == 128);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
+const _: () = assert!(core::mem::offset_of!(VfsNode, size) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 176);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 184);
 
 // ── Layout guards for the remaining C mirrors ─────────────────────────────
 // Every struct below is declared twice — once in C (`ksock_t`, `tcp_socket_t`,

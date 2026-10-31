@@ -224,7 +224,7 @@ extern "C" fn sync_file_poll(node: *mut VfsNode, _priv_: *mut c_void, _events: u
 extern "C" fn sync_file_read(
     _node: *mut VfsNode,
     _priv_: *mut c_void,
-    _off: u32,
+    _off: u64,
     _size: u32,
     _buf: *mut u8,
 ) -> c_int {

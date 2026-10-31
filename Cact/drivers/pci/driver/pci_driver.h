@@ -62,6 +62,6 @@ void pci_driver_probe_deferred_all(void);
 void pci_driver_dump(void);
 
 // /dev/modinfo text: pci_register_driver() structs + pci_enumerate() devices
-int pci_driver_modinfo_read(uint32_t off, uint32_t size, char *buf);
+int pci_driver_modinfo_read(uint64_t off, uint32_t size, char *buf);
 
 #endif

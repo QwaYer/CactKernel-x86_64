@@ -107,10 +107,10 @@ static struct { uint32_t pid; int idx; } ctty_tbl[TTY_CTTY_MAX];
 
 // The terminal driver's devfs table.  The tty driver registers every VT node
 // itself (tty_init / tty_alloc); drv_priv is the VT index (0 = active).
-static int _tty_dev_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _tty_dev_read(void *p, uint64_t off, uint32_t size, char *buf) {
     return tty_read((int)(uintptr_t)p, off, size, buf);
 }
-static int _tty_dev_write(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _tty_dev_write(void *p, uint64_t off, uint32_t size, char *buf) {
     return tty_write((int)(uintptr_t)p, off, size, buf);
 }
 static int _tty_dev_ioctl(void *p, uint32_t cmd, void *arg) {
@@ -385,7 +385,7 @@ void tty_console_task_init(void) {
         pr_warn("tty: console switch task could not be created");
 }
 
-int tty_write(int idx, uint32_t off, uint32_t size, char *buf) {
+int tty_write(int idx, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     if (!size) return 0;
     if (!buf || !validate_user_ptr(buf, size)) return -1;
@@ -413,7 +413,7 @@ int tty_write(int idx, uint32_t off, uint32_t size, char *buf) {
     return (int)size;
 }
 
-int tty_read(int idx, uint32_t off, uint32_t size, char *buf) {
+int tty_read(int idx, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     if (!size) return 0;
 

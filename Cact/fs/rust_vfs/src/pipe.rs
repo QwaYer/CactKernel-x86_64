@@ -64,7 +64,7 @@ unsafe fn node_is_write(node: *mut VfsNode) -> bool {
 
 unsafe extern "C" fn pipe_node_read(
     node: *mut VfsNode,
-    _off: u32,
+    _off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -74,7 +74,7 @@ unsafe extern "C" fn pipe_node_read(
 
 unsafe extern "C" fn pipe_node_write(
     node: *mut VfsNode,
-    _off: u32,
+    _off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -375,7 +375,7 @@ unsafe fn make_node(p: *mut Pipe, name: *const c_char, is_write: u32) -> *mut Vf
         (*n).name[i] = 0;
 
         (*n).type_ = VFS_PIPE;
-        (*n).size = PIPE_BUF_SIZE as u32;
+        (*n).size = PIPE_BUF_SIZE as u64;
         (*n).inode = is_write; // 0 = read end, 1 = write end
         (*n).refcount = 0; // open count; file_alloc's open() bumps it
         (*n).ops = ptr::addr_of!(PIPE_OPS) as *mut VfsOps;

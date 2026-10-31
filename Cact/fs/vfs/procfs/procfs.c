@@ -18,7 +18,7 @@ vfs_node_t procfs_root;
 static int procfs_ready = 0;
 
 // File read: delegate to the registered read_fn
-static int _file_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _file_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     proc_file_t *f = (proc_file_t *)node->priv;
     if (!f || !f->read_fn) return 0;
     return f->read_fn(off, size, buf);

@@ -34,8 +34,8 @@ void tty_activate_deferred(int n);
  * once, after the scheduler is live (like usb_hid_repeat_init). */
 void tty_console_task_init(void);
 
-int  tty_read (int idx, uint32_t off, uint32_t size, char *buf);
-int  tty_write(int idx, uint32_t off, uint32_t size, char *buf);
+int  tty_read (int idx, uint64_t off, uint32_t size, char *buf);
+int  tty_write(int idx, uint64_t off, uint32_t size, char *buf);
 int  tty_ioctl(int idx, uint32_t cmd, void *arg);
 
 /* Deliver a keystroke to a VT's input queue.  Called from the keyboard path

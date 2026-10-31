@@ -224,7 +224,7 @@ uint32_t klog_seq(void) {
     return klog_next_seq;
 }
 
-int klog_read(uint32_t off, uint32_t size, char *buf) {
+int klog_read(uint64_t off, uint32_t size, char *buf) {
     if (!buf || size == 0) return 0;
 
     irq_spinlock_acquire(&klog_lock);
@@ -239,10 +239,10 @@ int klog_read(uint32_t off, uint32_t size, char *buf) {
         irq_spinlock_release(&klog_lock);
         return 0;
     }
-    if (size > avail - off) size = avail - off;
+    if (size > avail - off) size = (uint32_t)(avail - off);
 
     uint32_t copied = 0;
-    uint32_t idx    = first + off;
+    uint32_t idx    = first + (uint32_t)off;
     while (copied < size) {
         uint32_t phys  = idx & KLOG_BUF_MASK;
         uint32_t chunk = KLOG_BUF_SIZE - phys;

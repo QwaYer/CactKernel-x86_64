@@ -13,13 +13,13 @@
 
 // ── Built-in driver tables ────────────────────────────────────────────────
 
-static int _null_read (void *p, uint32_t o, uint32_t s, char *b)
+static int _null_read (void *p, uint64_t o, uint32_t s, char *b)
     { (void)p;(void)o;(void)s;(void)b; return 0; }
-static int _null_write(void *p, uint32_t o, uint32_t s, char *b)
+static int _null_write(void *p, uint64_t o, uint32_t s, char *b)
     { (void)p;(void)o;(void)b; return (int)s; }
 devfs_driver_t drv_null = { .read=_null_read, .write=_null_write };
 
-static int _zero_read(void *p, uint32_t o, uint32_t s, char *b)
+static int _zero_read(void *p, uint64_t o, uint32_t s, char *b)
     { (void)p;(void)o; memset(b,0,s); return (int)s; }
 devfs_driver_t drv_zero = { .read=_zero_read, .write=_null_write };
 
@@ -28,7 +28,7 @@ devfs_driver_t drv_zero = { .read=_zero_read, .write=_null_write };
 // their bytes, so there is exactly one generator to trust.
 extern int cact_csprng_fill(uint8_t *buf, uint32_t len);
 
-static int _rand_read(void *p, uint32_t o, uint32_t s, char *b) {
+static int _rand_read(void *p, uint64_t o, uint32_t s, char *b) {
     (void)p;(void)o;
     if (cact_csprng_fill((uint8_t *)b, s) != 0) return -1;
     return (int)s;
@@ -41,7 +41,7 @@ extern int keyboard_read_char(void);
 // devfs_driver_t and registers every VT node itself (Cact/drivers/tty/tty.c).
 
 // /dev/keyboard — raw character stream from keyboard circular buffer
-static int _kbd_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _kbd_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;(void)off;
     uint32_t i=0;
     while(i<size){
@@ -55,7 +55,7 @@ static int _kbd_read(void *p, uint32_t off, uint32_t size, char *buf) {
 devfs_driver_t drv_keyboard = { .read=_kbd_read };
 
 // /dev/mouse — raw mouse event packets (mouse_packet_t structs)
-static int _mouse_read_dev(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _mouse_read_dev(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;(void)off;
     if(size<sizeof(mouse_packet_t)) return -1;
     mouse_packet_t pkt;
@@ -78,20 +78,20 @@ struct fb_var_screeninfo {
     uint32_t grayscale;
 };
 
-static int _fb_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _fb_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     uint32_t fb_sz = fb_get_pitch() * fb_get_height();
     if(off>=fb_sz) return 0;
-    if(off+size>fb_sz) size=fb_sz-off;
+    if(off+size>fb_sz) size=(uint32_t)(fb_sz-off);
     memcpy(buf, (char*)fb_get_buffer()+off, size);
     return (int)size;
 }
 
-static int _fb_write(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _fb_write(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     uint32_t fb_sz = fb_get_pitch() * fb_get_height();
     if(off>=fb_sz) return 0;
-    if(off+size>fb_sz) size=fb_sz-off;
+    if(off+size>fb_sz) size=(uint32_t)(fb_sz-off);
     memcpy((char*)fb_get_buffer()+off, buf, size);
     fb_flush();
     return (int)size;
@@ -125,21 +125,21 @@ devfs_driver_t drv_fb = {
 // reservation, whose low identity alias a process PD can shadow (the ELF image
 // is loaded in that same range), so the copy goes through the direct map, whose
 // PML4 entry every address space shares.
-static int _module_read(const mb2_module_info_t *mod, uint32_t off,
+static int _module_read(const mb2_module_info_t *mod, uint64_t off,
                         uint32_t size, char *buf) {
     uint32_t total = mod->mod_size;
     if (!total || off >= total) return 0;
-    if (size > total - off) size = total - off;
+    if (size > total - off) size = (uint32_t)(total - off);
     memcpy(buf, vmm_p2v((uint64_t)mod->mod_start + off), size);
     return (int)size;
 }
 
-static int _localrepo_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _localrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     return _module_read(&mb2_localrepo_module, off, size, buf);
 }
 
-static int _cctkfs_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _cctkfs_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     return _module_read(&mb2_cctkfs_module, off, size, buf);
 }

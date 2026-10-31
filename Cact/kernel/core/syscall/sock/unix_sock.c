@@ -514,7 +514,7 @@ static void unix_node_close(vfs_node_t *node) {
     kfree(node);
 }
 
-static int unix_node_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int unix_node_read(vfs_node_t *node, uint64_t off, uint32_t size,
                           char *buf) {
     (void)off;
     unix_ep_t *ep = ep_from_node(node);
@@ -544,7 +544,7 @@ static int unix_node_read(vfs_node_t *node, uint32_t off, uint32_t size,
     }
 }
 
-static int unix_node_write(vfs_node_t *node, uint32_t off, uint32_t size,
+static int unix_node_write(vfs_node_t *node, uint64_t off, uint32_t size,
                            char *buf) {
     (void)off;
     unix_ep_t *ep = ep_from_node(node);

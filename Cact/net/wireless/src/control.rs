@@ -130,7 +130,7 @@ fn copy_out<T>(arg: *mut c_void, val: &T) -> bool {
 // ── read(): the AP list as text ───────────────────────────────────────────────
 static mut READ_BUF: [u8; 4096] = [0; 4096];
 
-extern "C" fn wlan_read(_priv: *mut c_void, off: u32, size: u32, buf: *mut c_char) -> c_int {
+extern "C" fn wlan_read(_priv: *mut c_void, off: u64, size: u32, buf: *mut c_char) -> c_int {
     if buf.is_null() || size == 0 {
         return 0;
     }
@@ -138,10 +138,10 @@ extern "C" fn wlan_read(_priv: *mut c_void, off: u32, size: u32, buf: *mut c_cha
     // single-consumer per device.
     let text = unsafe { &mut *core::ptr::addr_of_mut!(READ_BUF) };
     let len = dev::bss_list_text(text);
-    if off >= len as u32 {
+    if off >= len as u64 {
         return 0;
     }
-    let n = core::cmp::min(len as u32 - off, size) as usize;
+    let n = core::cmp::min(len as u64 - off, size as u64) as usize;
     // The devfs read path hands a kernel-accessible buffer, so a direct copy is
     // correct (the retired C driver did the same).
     // SAFETY: `buf` is a `size`-byte writable buffer and `n <= size`.

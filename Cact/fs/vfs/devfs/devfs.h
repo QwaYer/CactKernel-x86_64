@@ -12,8 +12,8 @@
 // stay in their original positions because out-of-tree PCI modules (NVMe,
 // AHCI, HDA, ...) are compiled against this layout and still set `status`.
 typedef struct devfs_driver {
-    int  (*read)  (void *drv_priv, uint32_t off, uint32_t size, char *buf);
-    int  (*write) (void *drv_priv, uint32_t off, uint32_t size, char *buf);
+    int  (*read)  (void *drv_priv, uint64_t off, uint32_t size, char *buf);
+    int  (*write) (void *drv_priv, uint64_t off, uint32_t size, char *buf);
     int  (*ctl)   (void *drv_priv, const char *cmd, uint32_t len);
     int  (*status)(void *drv_priv, char *buf, uint32_t size);
     int  (*ioctl) (void *drv_priv, uint32_t cmd, void *arg);

@@ -98,21 +98,25 @@ static int _ensure_cap(etc_entry_t *e, uint32_t needed) {
 }
 
 // VFS file ops backed by in-memory cache + writeback.
-static int _file_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _file_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     etc_entry_t *e = (etc_entry_t *)node->priv;
     if (!e || !e->data) return 0;
     if (off >= e->size) return 0;
-    uint32_t avail = e->size - off;
-    if (size > avail) size = avail;
+    uint64_t avail = (uint64_t)e->size - off;
+    if ((uint64_t)size > avail) size = (uint32_t)avail;
     memcpy(buf, e->data + off, size);
     return (int)size;
 }
 
-static int _file_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _file_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     etc_entry_t *e = (etc_entry_t *)node->priv;
     if (!e) return -1;
 
-    uint32_t needed = off + size;
+    /* This cache is 32-bit-sized (etc_entry_t.size/cap are uint32_t), so an
+     * offset past the 4 GiB mark cannot be represented. */
+    uint64_t needed64 = off + size;
+    if (needed64 > 0xFFFFFFFFull) return -1;
+    uint32_t needed = (uint32_t)needed64;
     if (_ensure_cap(e, needed) < 0) return -1;
 
     memcpy(e->data + off, buf, size);

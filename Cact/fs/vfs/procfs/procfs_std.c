@@ -48,7 +48,7 @@ static uint32_t _tsc_mhz(void) {
 }
 
 // /proc/cpuinfo generator — uses cpudev.c cached data + the energy core map
-int _cpuinfo_read(uint32_t off, uint32_t size, char *buf) {
+int _cpuinfo_read(uint64_t off, uint32_t size, char *buf) {
     /* Sized for 16 logical CPUs including the feature line.  Both the generator
      * and the per-core loop are bounds-checked, so more cores truncate the file
      * instead of running past this frame (the previous 1.5 KB buffer with an
@@ -221,7 +221,7 @@ int _cpuinfo_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -238,7 +238,7 @@ static uint32_t _get_total_memory_kb(void) {
 }
 
 // /proc/apic generator
-int _apic_read(uint32_t off, uint32_t size, char *buf) {
+int _apic_read(uint64_t off, uint32_t size, char *buf) {
     char tmp[512]; int p = 0;
 
     #define _A(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
@@ -292,7 +292,7 @@ int _apic_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -305,7 +305,7 @@ int _apic_read(uint32_t off, uint32_t size, char *buf) {
 // the PMM free list plus the unused part of the kernel heap window, and MemUsed
 // is the remainder.  The kernel heap / slab / shm figures are reported
 // separately so `free` can show them without disturbing the physical numbers.
-int _meminfo_read(uint32_t off, uint32_t size, char *buf) {
+int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
     char tmp[768]; int p = 0;
 
     const uint32_t frame_kb    = PAGE_SIZE / 1024u;      /* 4 KiB per frame      */
@@ -361,7 +361,7 @@ int _meminfo_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -369,7 +369,7 @@ int _meminfo_read(uint32_t off, uint32_t size, char *buf) {
 extern unsigned int timer_ticks_get(void);
 
 // /proc/uname — binary struct cact_uname_t (relay for uname()).
-int _uname_read(uint32_t off, uint32_t size, char *buf) {
+int _uname_read(uint64_t off, uint32_t size, char *buf) {
     cact_uname_t u;
     memset(&u, 0, sizeof(u));
     const char *sysname  = "CactOS";
@@ -388,7 +388,7 @@ int _uname_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = sizeof(u);
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, (const char *)&u + off, size);
     return (int)size;
 }
@@ -396,7 +396,7 @@ int _uname_read(uint32_t off, uint32_t size, char *buf) {
 // /proc/dmi — SMBIOS system identity (vendor / product / BIOS version) as
 // "key: value" lines.  Zero-length when the firmware exposes no SMBIOS, so a
 // reader simply sees an empty file.
-int _dmi_read(uint32_t off, uint32_t size, char *buf) {
+int _dmi_read(uint64_t off, uint32_t size, char *buf) {
     char tmp[256];
     int p = 0;
     const char *vendor  = dmi_vendor_string();
@@ -409,21 +409,21 @@ int _dmi_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
 
 // /proc/time — binary monotonic time (cact_time_t), used by the libc
 // gettimeofday()/clock_gettime() relay instead of a dedicated syscall.
-int _time_read(uint32_t off, uint32_t size, char *buf) {
+int _time_read(uint64_t off, uint32_t size, char *buf) {
     cact_time_t t;
     uint32_t ticks = timer_ticks_get();
     t.sec  = ticks / 100;
     t.usec = (ticks % 100) * (1000000 / 100);
     uint32_t len = sizeof(t);
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, (const char *)&t + off, size);
     return (int)size;
 }
@@ -432,7 +432,7 @@ int _time_read(uint32_t off, uint32_t size, char *buf) {
 // Unix epoch, from the CMOS RTC read at boot.  /proc/time stays the monotonic
 // boot clock; this is the one to use when the answer has to agree with the
 // outside world (X.509 validity, file timestamps).
-int _wallclock_read(uint32_t off, uint32_t size, char *buf) {
+int _wallclock_read(uint64_t off, uint32_t size, char *buf) {
     cact_time_t t;
     uint64_t us = rtc_epoch_usec();
     if (us == 0) {
@@ -447,13 +447,13 @@ int _wallclock_read(uint32_t off, uint32_t size, char *buf) {
     }
     uint32_t len = sizeof(t);
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, (const char *)&t + off, size);
     return (int)size;
 }
 
 // /proc/uptime generator
-int _uptime_read(uint32_t off, uint32_t size, char *buf) {
+int _uptime_read(uint64_t off, uint32_t size, char *buf) {
     char tmp[64];
     int  p = 0;
     char nb[16]; snprintf(nb, sizeof(nb), "%d", (int)(timer_ticks_get() / 100));
@@ -462,13 +462,13 @@ int _uptime_read(uint32_t off, uint32_t size, char *buf) {
     for (int i = 0; s[i]; i++) tmp[p++] = s[i];
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
 
 // /proc/version generator
-int _version_read(uint32_t off, uint32_t size, char *buf) {
+int _version_read(uint64_t off, uint32_t size, char *buf) {
     char tmp[512];
     int  p = 0;
 
@@ -485,7 +485,7 @@ int _version_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -493,7 +493,7 @@ int _version_read(uint32_t off, uint32_t size, char *buf) {
 // /proc/mounts generator — the kernel layout mounts (from the VFS mount tree)
 // followed by the block-device mounts tracked by vfsdev, all in the Linux
 // mount-table form "<src> <path> <fstype> rw 0 0".
-int _mounts_read(uint32_t off, uint32_t size, char *buf) {
+int _mounts_read(uint64_t off, uint32_t size, char *buf) {
     static char tmp[4096];
     int p = vfs_render_mounts(tmp, (int)sizeof(tmp) - 1);
     if (p < 0) p = 0;
@@ -503,7 +503,7 @@ int _mounts_read(uint32_t off, uint32_t size, char *buf) {
     }
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -516,7 +516,7 @@ int _mounts_read(uint32_t off, uint32_t size, char *buf) {
 // drivers claim; kmod: PCI functions its driver serves.  Slots are scanned
 // directly, not by count: unloading the first of two modules leaves a hole at
 // slot 0.
-int _modules_read(uint32_t off, uint32_t size, char *buf) {
+int _modules_read(uint64_t off, uint32_t size, char *buf) {
     static char tmp[4096];
     int p = 0;
     int cap = (int)sizeof(tmp);
@@ -543,7 +543,7 @@ int _modules_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }
@@ -551,7 +551,7 @@ int _modules_read(uint32_t off, uint32_t size, char *buf) {
 // /proc/usb generator — one line per attached USB device:
 //   <address> <vendor> <product> <class> <subclass> <protocol> <speed> <port>
 // (vendor/product as 0x%04x, the rest decimal).  lsusb formats it.
-int _usb_read(uint32_t off, uint32_t size, char *buf) {
+int _usb_read(uint64_t off, uint32_t size, char *buf) {
     static char tmp[2048];
     int p = 0;
     int cap = (int)sizeof(tmp);
@@ -575,7 +575,7 @@ int _usb_read(uint32_t off, uint32_t size, char *buf) {
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;
-    if (size > len - off) size = len - off;
+    if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
 }

@@ -417,7 +417,7 @@ pub unsafe extern "C" fn vfs_symlink_alloc(
                 j += 1;
             }
             e.target[j] = 0;
-            e.node.size = copy_len as u32;
+            e.node.size = copy_len as u64;
             e.node.priv_ = e.target.as_mut_ptr() as *mut c_void;
 
             cact_sync::mutex_unlock(symlink_mutex());

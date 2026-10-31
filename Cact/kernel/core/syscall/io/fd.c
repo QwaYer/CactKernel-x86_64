@@ -130,7 +130,7 @@ int sys_read(int fd, char *buf, unsigned int size) {
     if (!f || !f->node) return -1;
 
     int ret = read_file_vfs(f, f->offset, size, buf);
-    if (ret > 0) f->offset += (uint32_t)ret;
+    if (ret > 0) f->offset += (uint64_t)ret;
     return ret;
 }
 
@@ -142,7 +142,7 @@ int sys_write(int fd, char *buf, unsigned int size) {
     if (!f || !f->node) return -1;
 
     int ret = write_file_vfs(f, f->offset, size, buf);
-    if (ret > 0) f->offset += (uint32_t)ret;
+    if (ret > 0) f->offset += (uint64_t)ret;
     return ret;
 }
 
@@ -155,14 +155,14 @@ int sys_close(int fd) {
 }
 
 int sys_lseek(struct syscall_frame *regs) {
-    int fd     = (int)regs->rdi;
-    int offset = (int)regs->rsi;
-    int whence = (int)regs->rdx;
+    int     fd     = (int)regs->rdi;
+    int64_t offset = (int64_t)regs->rsi;
+    int     whence = (int)regs->rdx;
 
     file_t *f = _get_file(fd);
     if (!f || !f->node) return -1;
 
-    uint32_t new_off;
+    uint64_t new_off;
     if (f->node->ops && f->node->ops->lseek) {
         if (f->node->ops->lseek(f->node, offset, whence, &new_off) == 0) {
             f->offset = new_off;
@@ -174,13 +174,13 @@ int sys_lseek(struct syscall_frame *regs) {
     switch (whence) {
         case 0: // SEEK_SET
             if (offset < 0) return -1;
-            new_off = (uint32_t)offset;
+            new_off = (uint64_t)offset;
             break;
         case 1: // SEEK_CUR:
-            new_off = (uint32_t)((int)f->offset + offset);
+            new_off = f->offset + (uint64_t)offset;
             break;
         case 2: // SEEK_END:
-            new_off = f->node->size + (uint32_t)offset;
+            new_off = f->node->size + (uint64_t)offset;
             break;
         default:
             return -1;
@@ -239,8 +239,8 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
         if (!arg) return -EINVAL;
         if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
 
-        int      offset = (int)a.offset;
-        uint32_t new_off;
+        int64_t  offset = a.offset;
+        uint64_t new_off;
 
         if (f->node->ops && f->node->ops->lseek) {
             if (f->node->ops->lseek(f->node, offset, (int)a.whence, &new_off) == 0) {
@@ -253,13 +253,13 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
         switch (a.whence) {
         case 0: // SEEK_SET
             if (offset < 0) return -EINVAL;
-            new_off = (uint32_t)offset;
+            new_off = (uint64_t)offset;
             break;
         case 1: // SEEK_CUR
-            new_off = (uint32_t)((int)f->offset + offset);
+            new_off = f->offset + (uint64_t)offset;
             break;
         case 2: // SEEK_END
-            new_off = f->node->size + (uint32_t)offset;
+            new_off = f->node->size + (uint64_t)offset;
             break;
         default:
             return -EINVAL;
@@ -269,8 +269,8 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
     }
 
     case CACT_FDCTL_FSTAT:
-        if (!arg || !validate_user_ptr(arg, 16)) return -EFAULT;
-        return stat_vfs(f->node, (uint32_t *)arg);
+        if (!arg || !validate_user_ptr(arg, sizeof(cact_stat_t))) return -EFAULT;
+        return stat_vfs(f->node, arg);
 
     case CACT_FDCTL_FSTATX:
         if (!arg || !validate_user_ptr(arg, sizeof(cact_statx_t))) return -EFAULT;
@@ -278,7 +278,7 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
         return 0;
 
     case CACT_FDCTL_FTRUNCATE: {
-        uint32_t len;
+        uint64_t len;
         if (!arg) return -EINVAL;
         if (copy_from_user(&len, arg, sizeof(len)) != 0) return -EFAULT;
         if (f->node->type != VFS_FILE) return -EINVAL;
@@ -297,7 +297,7 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
         if (!validate_user_ptr(a.buf, a.count)) return -EFAULT;
 
         uint32_t written = 0;
-        uint32_t index   = f->offset;
+        uint32_t index   = (uint32_t)f->offset;
 
         while (written + entry_size <= a.count) {
             struct vfs_dirent *de = readdir_vfs(f->node, index);
@@ -554,7 +554,7 @@ static int _dirctl_handle(vfs_node_t *dir, uint32_t cmd, void *arg) {
         cact_statat_arg_t a;
         if (!arg) return -EINVAL;
         if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
-        if (!a.buf || !validate_user_ptr(a.buf, 16)) return -EFAULT;
+        if (!a.buf || !validate_user_ptr(a.buf, sizeof(cact_stat_t))) return -EFAULT;
         char *kname;
         if (_copy_name_arg(a.name, &kname) != 0) return -EFAULT;
         if (!_name_is_single(kname)) { kfree(kname); return -EINVAL; }
@@ -563,7 +563,7 @@ static int _dirctl_handle(vfs_node_t *dir, uint32_t cmd, void *arg) {
         vfs_node_t *node = vfs_lookup_child(dir, kname, 1);
         kfree(kname);
         if (!node) return -ENOENT;
-        return stat_vfs(node, (uint32_t *)a.buf);
+        return stat_vfs(node, a.buf);
     }
 
     case CACT_DIRCTL_STATX: {

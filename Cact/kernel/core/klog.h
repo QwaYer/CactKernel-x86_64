@@ -56,7 +56,7 @@ int klog_write_user(const char *text, uint32_t len);
 
 /* Offset-based read of the retained records.  Returns the number of bytes
  * written into buf, or 0 at end of log. */
-int klog_read(uint32_t off, uint32_t size, char *buf);
+int klog_read(uint64_t off, uint32_t size, char *buf);
 
 /* Total bytes of rendered records currently retained (usable as file size). */
 uint32_t klog_available(void);

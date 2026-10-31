@@ -24,8 +24,8 @@ unsafe extern "C" {
 
     /// IRQ-saving spinlock (kernel `irq_spinlock_t`: a spin word + saved flags).
 
-    pub fn read_vfs(node: *mut VfsNode, off: u32, size: u32, buf: *mut c_char) -> c_int;
-    pub fn write_vfs(node: *mut VfsNode, off: u32, size: u32, buf: *mut c_char) -> c_int;
+    pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut c_char) -> c_int;
+    pub fn write_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut c_char) -> c_int;
     pub fn open_vfs(node: *mut VfsNode);
     pub fn close_vfs(node: *mut VfsNode);
 

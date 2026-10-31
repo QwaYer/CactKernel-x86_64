@@ -31,10 +31,10 @@ vfs_node_t proc_self_dir;   // exported for the procfs root walk
 
 // Copy a fixed-size kernel buffer with file offset semantics into the
 // (pre-validated) user buffer supplied by read_vfs.
-static int _emit(const void *src, uint32_t len, uint32_t off, uint32_t size,
+static int _emit(const void *src, uint32_t len, uint64_t off, uint32_t size,
                  char *buf) {
     if (off >= len) return 0;
-    uint32_t n = len - off;
+    uint32_t n = (uint32_t)(len - off);
     if (size < n) n = size;
     memcpy(buf, (const char *)src + off, n);
     return (int)n;
@@ -60,7 +60,7 @@ static void _fill_info(const struct task_struct *t, cact_proc_info_t *info) {
     info->umask = t->proc->umask;
 }
 
-static int _info_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _info_read(vfs_node_t *node, uint64_t off, uint32_t size,
                       char *buf) {
     (void)node;
     cact_proc_info_t info;
@@ -68,7 +68,7 @@ static int _info_read(vfs_node_t *node, uint32_t off, uint32_t size,
     return _emit(&info, sizeof(info), off, size, buf);
 }
 
-static int _cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _cwd_read(vfs_node_t *node, uint64_t off, uint32_t size,
                      char *buf) {
     (void)node;
     if (!current_task || !current_task->proc) return 0;
@@ -80,7 +80,7 @@ static int _cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
 
 // /proc/self/comm — the calling process's command name, with a trailing
 // newline (Linux shape).
-static int _comm_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _comm_read(vfs_node_t *node, uint64_t off, uint32_t size,
                       char *buf) {
     (void)node;
     if (!current_task) return 0;
@@ -707,7 +707,7 @@ static int _may_read(const struct task_struct *t) {
     return t->proc && t->proc->uid == current_task->proc->uid;
 }
 
-static int _pid_info_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _pid_info_read(vfs_node_t *node, uint64_t off, uint32_t size,
                           char *buf) {
     proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
     if (!s || s->pid != node->inode) return -ENOENT;
@@ -726,7 +726,7 @@ static int _pid_info_read(vfs_node_t *node, uint32_t off, uint32_t size,
     return _emit(&info, sizeof(info), off, size, buf);
 }
 
-static int _pid_cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _pid_cwd_read(vfs_node_t *node, uint64_t off, uint32_t size,
                          char *buf) {
     proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
     if (!s || s->pid != node->inode) return -ENOENT;
@@ -751,7 +751,7 @@ static int _pid_cwd_read(vfs_node_t *node, uint32_t off, uint32_t size,
     return _emit(path, len, off, size, buf);
 }
 
-static int _pid_comm_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _pid_comm_read(vfs_node_t *node, uint64_t off, uint32_t size,
                           char *buf) {
     proc_pid_slot_t *s = (proc_pid_slot_t *)node->priv;
     if (!s || s->pid != node->inode) return -ENOENT;

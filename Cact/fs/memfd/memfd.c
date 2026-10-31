@@ -17,12 +17,12 @@
 //     reference goes away.  MAP_SHARED mmap regions hold their own Rust map
 //     reference (region->shobj), so the object survives fd close while mapped.
 
-static int _memfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-static int _memfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+static int _memfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+static int _memfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 static void _memfd_open(vfs_node_t *node);
 static void _memfd_close(vfs_node_t *node);
-static int _memfd_truncate(vfs_node_t *node, uint32_t length);
-static int _memfd_stat(vfs_node_t *node, uint32_t *buf);
+static int _memfd_truncate(vfs_node_t *node, uint64_t length);
+static int _memfd_stat(vfs_node_t *node, void *buf);
 
 static vfs_ops_t memfd_ops = {
     .read     = _memfd_read,
@@ -50,24 +50,24 @@ int memfd_fd_handle(int fd) {
     return _node_handle(f->node);
 }
 
-static int _memfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _memfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     int h = _node_handle(node);
     if (h < 0) return -1;
     int r = memfd_read(h, off, buf, size);
     if (r >= 0) {
-        int sz = memfd_size(h);
-        if (sz >= 0) node->size = (uint32_t)sz;
+        int64_t sz = memfd_size(h);
+        if (sz >= 0) node->size = (uint64_t)sz;
     }
     return r;
 }
 
-static int _memfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _memfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     int h = _node_handle(node);
     if (h < 0) return -1;
     int r = memfd_write(h, off, buf, size);
     if (r >= 0) {
-        int sz = memfd_size(h);
-        if (sz >= 0) node->size = (uint32_t)sz;
+        int64_t sz = memfd_size(h);
+        if (sz >= 0) node->size = (uint64_t)sz;
     }
     return r;
 }
@@ -94,7 +94,7 @@ static void _memfd_close(vfs_node_t *node) {
     }
 }
 
-static int _memfd_truncate(vfs_node_t *node, uint32_t length) {
+static int _memfd_truncate(vfs_node_t *node, uint64_t length) {
     int h = _node_handle(node);
     if (h < 0) return -1;
     if (memfd_truncate(h, length) != 0) return -1;
@@ -102,11 +102,11 @@ static int _memfd_truncate(vfs_node_t *node, uint32_t length) {
     return 0;
 }
 
-static int _memfd_stat(vfs_node_t *node, uint32_t *buf) {
+static int _memfd_stat(vfs_node_t *node, void *buf) {
     int h = _node_handle(node);
     if (h < 0) return -1;
-    int sz = memfd_size(h);
-    if (sz >= 0) node->size = (uint32_t)sz;
+    int64_t sz = memfd_size(h);
+    if (sz >= 0) node->size = (uint64_t)sz;
     vfs_fill_stat(node, buf);
     return 0;
 }

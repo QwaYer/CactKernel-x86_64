@@ -194,7 +194,7 @@ extern "C" fn drm_node_release(node: *mut VfsNode, file: *mut File) {
 extern "C" fn drm_node_read(
     node: *mut VfsNode,
     priv_: *mut c_void,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut u8,
 ) -> c_int {

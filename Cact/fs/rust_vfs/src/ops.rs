@@ -17,7 +17,7 @@ use crate::vfs::finddir_vfs;
 unsafe extern "C" {
     fn memfd_node_handle(node: *mut VfsNode) -> i32;
     fn cact_current_task_get() -> *mut TaskStruct;
-    fn vfs_as_flush(owner: *mut c_void, ino: u32, off: u32, size: u32);
+    fn vfs_as_flush(owner: *mut c_void, ino: u32, off: u64, size: u64);
 }
 
 /// Flush a file-backed mapping's page-cache range, called on munmap.  Resolves
@@ -50,7 +50,7 @@ pub unsafe extern "C" fn vfs_as_flush_fd(fd: i32, off: u32, size: u32) {
         if node.is_null() {
             return;
         }
-        vfs_as_flush((*node).priv_, (*node).inode, off, size);
+        vfs_as_flush((*node).priv_, (*node).inode, off as u64, size as u64);
     }
 }
 
@@ -62,7 +62,7 @@ const MAX_FD: i32 = 256;
 #[no_mangle]
 pub unsafe extern "C" fn read_vfs(
     node: *mut VfsNode,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -83,7 +83,7 @@ pub unsafe extern "C" fn read_vfs(
 #[no_mangle]
 pub unsafe extern "C" fn write_vfs(
     node: *mut VfsNode,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -150,7 +150,7 @@ pub unsafe extern "C" fn ioctl_vfs(node: *mut VfsNode, cmd: u32, arg: *mut c_voi
 #[no_mangle]
 pub unsafe extern "C" fn read_file_vfs(
     f: *mut File,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -173,7 +173,7 @@ pub unsafe extern "C" fn read_file_vfs(
 #[no_mangle]
 pub unsafe extern "C" fn write_file_vfs(
     f: *mut File,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -484,7 +484,7 @@ pub unsafe extern "C" fn vfs_check_perm(node: *mut VfsNode, perm: u32) -> i32 {
 // ── truncate / chmod / chown / mknod / stat / poll / lseek ──────────────
 
 #[no_mangle]
-pub unsafe extern "C" fn truncate_vfs(node: *mut VfsNode, length: u32) -> i32 {
+pub unsafe extern "C" fn truncate_vfs(node: *mut VfsNode, length: u64) -> i32 {
     if node.is_null() {
         return -1;
     }
@@ -583,11 +583,11 @@ pub unsafe extern "C" fn mknod_vfs(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn stat_vfs(node: *mut VfsNode, buf: *mut u32) -> i32 {
+pub unsafe extern "C" fn stat_vfs(node: *mut VfsNode, buf: *mut CactStat) -> i32 {
     if node.is_null() || buf.is_null() {
         return -1;
     }
-    // SAFETY: `node` and a 4-word `buf` are live.
+    // SAFETY: `node` is live and `buf` points to a writable `cact_stat_t`.
     unsafe {
         let ops = (*node).ops;
         if !ops.is_null() {
@@ -628,9 +628,9 @@ pub unsafe extern "C" fn poll_vfs(node: *mut VfsNode, events: u32) -> i32 {
 #[no_mangle]
 pub unsafe extern "C" fn lseek_vfs(
     node: *mut VfsNode,
-    offset: i32,
+    offset: i64,
     whence: i32,
-    result: *mut u32,
+    result: *mut u64,
 ) -> i32 {
     if node.is_null() || result.is_null() {
         return -1;

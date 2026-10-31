@@ -363,7 +363,7 @@ pub unsafe extern "C" fn do_mmap(
                 if !node.is_null() {
                     // SAFETY: node is a valid VfsNode; `phys` is the kalloc'd
                     // frame (a direct-map VA) the read fills.
-                    unsafe { read_vfs(node, file_off, PAGE_SIZE, phys); }
+                    unsafe { read_vfs(node, file_off as u64, PAGE_SIZE, phys); }
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
                 // reserved above, and `phys` is the frame just allocated for it;
@@ -616,7 +616,7 @@ pub unsafe extern "C" fn mmap_handle_fault(
         if !node.is_null() {
             // SAFETY: node is a valid VfsNode; `phys` is the kalloc'd frame (a
             // direct-map VA) the read fills.
-            unsafe { read_vfs(node, file_off, PAGE_SIZE, phys); }
+            unsafe { read_vfs(node, file_off as u64, PAGE_SIZE, phys); }
         }
     }
 

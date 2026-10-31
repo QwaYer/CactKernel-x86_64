@@ -39,8 +39,8 @@ typedef struct signalfd_state {
     mutex_t  lock;
 } signalfd_state_t;
 
-static int _signalfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-static int _signalfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+static int _signalfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+static int _signalfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 static void _signalfd_open(vfs_node_t *node);
 static void _signalfd_close(vfs_node_t *node);
 static int _signalfd_poll(vfs_node_t *node, uint32_t events);
@@ -74,7 +74,7 @@ static uint32_t _pending_for(signalfd_state_t *s) {
     return pending & s->mask & blocked & ~SFD_UNCATCHABLE;
 }
 
-static int _signalfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _signalfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     signalfd_state_t *s = _state(node);
     if (!s) return -1;
@@ -105,7 +105,7 @@ static int _signalfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *b
     }
 }
 
-static int _signalfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _signalfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node; (void)off; (void)size; (void)buf;
     return -EINVAL;
 }

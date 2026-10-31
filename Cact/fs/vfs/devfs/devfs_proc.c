@@ -59,13 +59,13 @@ static void _tty_alias_open(vfs_node_t *node, file_t *f) {
     f->priv = (void *)(uintptr_t)tty_get_ctty();
 }
 
-static int _tty_alias_read(vfs_node_t *node, void *priv, uint32_t off,
+static int _tty_alias_read(vfs_node_t *node, void *priv, uint64_t off,
                            uint32_t size, char *buf) {
     (void)node;
     return tty_read((int)(uintptr_t)priv, off, size, buf);
 }
 
-static int _tty_alias_write(vfs_node_t *node, void *priv, uint32_t off,
+static int _tty_alias_write(vfs_node_t *node, void *priv, uint64_t off,
                             uint32_t size, char *buf) {
     (void)node;
     return tty_write((int)(uintptr_t)priv, off, size, buf);
@@ -100,23 +100,23 @@ static void _fd_alias_open(vfs_node_t *node, file_t *f) {
     if (target) f->priv = file_ref(target);
 }
 
-static int _fd_alias_read(vfs_node_t *node, void *priv, uint32_t off,
+static int _fd_alias_read(vfs_node_t *node, void *priv, uint64_t off,
                           uint32_t size, char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;
     file_t *t = (file_t *)priv;
     int r = read_file_vfs(t, t->offset, size, buf);
-    if (r > 0) t->offset += (uint32_t)r;
+    if (r > 0) t->offset += (uint64_t)r;
     return r;
 }
 
-static int _fd_alias_write(vfs_node_t *node, void *priv, uint32_t off,
+static int _fd_alias_write(vfs_node_t *node, void *priv, uint64_t off,
                            uint32_t size, char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;
     file_t *t = (file_t *)priv;
     int r = write_file_vfs(t, t->offset, size, buf);
-    if (r > 0) t->offset += (uint32_t)r;
+    if (r > 0) t->offset += (uint64_t)r;
     return r;
 }
 
@@ -220,7 +220,7 @@ static vfs_ops_t fd_dir_ops = {
 // The calling process's address space, addressed by virtual address (the file
 // offset *is* the address), i.e. what Linux 2.4's /dev/core was.
 
-static int _core_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _core_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node;
     if (!buf || !validate_user_ptr(buf, size)) return -1;
     if (!validate_user_ptr((void *)(uintptr_t)off, size)) return -1;
@@ -228,7 +228,7 @@ static int _core_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) 
     return (int)size;
 }
 
-static int _core_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _core_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node;
     if (!buf || !validate_user_ptr(buf, size)) return -1;
     if (!validate_user_ptr((void *)(uintptr_t)off, size)) return -1;
@@ -254,14 +254,14 @@ static void _pts_open(vfs_node_t *node, file_t *f) {
     f->priv = (void *)(uintptr_t)(i + 1);
 }
 
-static int _pts_read(vfs_node_t *node, void *priv, uint32_t off, uint32_t size,
+static int _pts_read(vfs_node_t *node, void *priv, uint64_t off, uint32_t size,
                      char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;
     return pty_slave_read((int)(uintptr_t)priv - 1, size, buf);
 }
 
-static int _pts_write(vfs_node_t *node, void *priv, uint32_t off, uint32_t size,
+static int _pts_write(vfs_node_t *node, void *priv, uint64_t off, uint32_t size,
                       char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;
@@ -336,14 +336,14 @@ static void _ptmx_open(vfs_node_t *node, file_t *f) {
     f->priv = (i < 0) ? 0 : (void *)(uintptr_t)(i + 1);
 }
 
-static int _ptmx_read(vfs_node_t *node, void *priv, uint32_t off, uint32_t size,
+static int _ptmx_read(vfs_node_t *node, void *priv, uint64_t off, uint32_t size,
                       char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;
     return pty_master_read((int)(uintptr_t)priv - 1, size, buf);
 }
 
-static int _ptmx_write(vfs_node_t *node, void *priv, uint32_t off,
+static int _ptmx_write(vfs_node_t *node, void *priv, uint64_t off,
                        uint32_t size, char *buf) {
     (void)node; (void)off;
     if (!priv) return -1;

@@ -43,8 +43,8 @@ typedef struct timerfd_state {
     mutex_t  lock;
 } timerfd_state_t;
 
-static int _timerfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-static int _timerfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+static int _timerfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+static int _timerfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 static void _timerfd_open(vfs_node_t *node);
 static void _timerfd_close(vfs_node_t *node);
 static int _timerfd_poll(vfs_node_t *node, uint32_t events);
@@ -92,7 +92,7 @@ static void _tfd_sweep(timerfd_state_t *s, uint32_t now) {
     }
 }
 
-static int _timerfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _timerfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     timerfd_state_t *s = _state(node);
     if (!s) return -1;
@@ -118,7 +118,7 @@ static int _timerfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *bu
     }
 }
 
-static int _timerfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _timerfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)node; (void)off; (void)size; (void)buf;
     return -EINVAL;
 }

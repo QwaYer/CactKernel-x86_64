@@ -33,8 +33,8 @@ static tmpfs_node_t  tmpfs_root_node;
 static uint32_t      tmpfs_inode_ctr = 1;
 static int           tmpfs_ready     = 0;
 
-static int _tmp_read   (vfs_node_t*, uint32_t, uint32_t, char*);
-static int _tmp_write  (vfs_node_t*, uint32_t, uint32_t, char*);
+static int _tmp_read   (vfs_node_t*, uint64_t, uint32_t, char*);
+static int _tmp_write  (vfs_node_t*, uint64_t, uint32_t, char*);
 static void _tmp_open  (vfs_node_t*);
 static void _tmp_close (vfs_node_t*);
 static vfs_node_t *_tmp_walk   (vfs_node_t*, const char*);
@@ -47,7 +47,7 @@ static int _tmp_rmdir  (vfs_node_t*, const char*);
 static int _tmp_rename (vfs_node_t*, const char*, const char*);
 static int _tmp_rename2(vfs_node_t*, const char*, vfs_node_t*, const char*);
 static int _tmp_link   (vfs_node_t*, const char*, vfs_node_t*);
-static int _tmp_truncate(vfs_node_t*, uint32_t);
+static int _tmp_truncate(vfs_node_t*, uint64_t);
 static int _tmp_mmap_backing(vfs_node_t*, uint32_t, uint32_t, int*, uint32_t*);
 
 static vfs_ops_t tmpfs_ops = {
@@ -103,25 +103,25 @@ static void _free_inode(tmpfs_node_t *n) {
 
 // File I/O goes through the generic inode address space (memfd page cache),
 // keyed by (filesystem instance, inode number).
-static int _tmp_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _tmp_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     tmpfs_node_t *n = (tmpfs_node_t*)node->priv;
     if (!n || n->type != VFS_FILE) return -1;
     vfs_as_setsize(node->priv, node->inode, node->size);
     return vfs_as_read(node->priv, node->inode, off, size, buf);
 }
 
-static int _tmp_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _tmp_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     tmpfs_node_t *n = (tmpfs_node_t*)node->priv;
     if (!n || n->type != VFS_FILE) return -1;
     int w = vfs_as_write(node->priv, node->inode, off, size, buf);
     if (w > 0) {
-        int s = vfs_as_size(node->priv, node->inode);
-        if (s >= 0) node->size = (uint32_t)s;
+        int64_t s = vfs_as_size(node->priv, node->inode);
+        if (s >= 0) node->size = (uint64_t)s;
     }
     return w;
 }
 
-static int _tmp_truncate(vfs_node_t *node, uint32_t length) {
+static int _tmp_truncate(vfs_node_t *node, uint64_t length) {
     tmpfs_node_t *n = (tmpfs_node_t*)node->priv;
     if (!n || n->type != VFS_FILE) return -1;
     int r = vfs_as_truncate(node->priv, node->inode, length);

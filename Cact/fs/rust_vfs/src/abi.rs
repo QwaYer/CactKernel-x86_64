@@ -47,9 +47,24 @@ pub struct VfsDirent {
 const _: () = assert!(core::mem::size_of::<VfsDirent>() == 132);
 const _: () = assert!(core::mem::offset_of!(VfsDirent, inode) == 128);
 
-/// Rich stat (`cact_statx_t`): POSIX-style metadata the 4-word `cact_stat_t`
+/// Small stat mirror (`cact_stat_t`, matches `CactStat` in C): `size` is now
+/// 64-bit, so the struct is naturally aligned and 24 bytes.
+#[repr(C)]
+pub struct CactStat {
+    pub inode: u32,
+    pub mode:  u32, // POSIX-ish mode (type bits | rwxrwxrwx)
+    pub size:  u64, // 64-bit byte length
+    pub type_: u32, // VFS node type
+}
+
+const _: () = assert!(core::mem::size_of::<CactStat>() == 24);
+const _: () = assert!(core::mem::offset_of!(CactStat, size) == 8);
+const _: () = assert!(core::mem::offset_of!(CactStat, type_) == 16);
+
+/// Rich stat (`cact_statx_t`): POSIX-style metadata the small `cact_stat_t`
 /// cannot carry (uid/gid/nlink/size in bytes/blocks).  Times are reported from
-/// the wall clock (the VFS does not track per-inode times yet).
+/// the wall clock (the VFS does not track per-inode times yet); `size` and the
+/// times are 64-bit.
 #[repr(C)]
 pub struct CactStatx {
     pub ino:     u32,
@@ -57,16 +72,19 @@ pub struct CactStatx {
     pub nlink:   u32,
     pub uid:     u32,
     pub gid:     u32,
-    pub size:    u32,
+    pub size:    u64,
     pub blksize: u32,
     pub blocks:  u32, // 512-byte blocks
-    pub atime:   u32,
-    pub mtime:   u32,
-    pub ctime:   u32,
+    pub atime:   u64,
+    pub mtime:   u64,
+    pub ctime:   u64,
     pub type_:   u32, // VFS node type
 }
 
-const _: () = assert!(core::mem::size_of::<CactStatx>() == 48);
+const _: () = assert!(core::mem::size_of::<CactStatx>() == 72);
+const _: () = assert!(core::mem::offset_of!(CactStatx, size) == 24);
+const _: () = assert!(core::mem::offset_of!(CactStatx, atime) == 40);
+const _: () = assert!(core::mem::offset_of!(CactStatx, type_) == 64);
 
 /// Filesystem statistics (`cact_statfs_t`, 32 bytes / POSIX `struct statfs`).
 #[repr(C)]
@@ -86,8 +104,8 @@ const _: () = assert!(core::mem::size_of::<CactStatfs>() == 32);
 /// Per-filesystem operations table (`vfs_ops_t`, 25 slots / 100 bytes).
 #[repr(C)]
 pub struct VfsOps {
-    pub read:           Option<unsafe extern "C" fn(*mut VfsNode, u32, u32, *mut c_char) -> i32>, // 0
-    pub write:          Option<unsafe extern "C" fn(*mut VfsNode, u32, u32, *mut c_char) -> i32>, // 1
+    pub read:           Option<unsafe extern "C" fn(*mut VfsNode, u64, u32, *mut c_char) -> i32>, // 0
+    pub write:          Option<unsafe extern "C" fn(*mut VfsNode, u64, u32, *mut c_char) -> i32>, // 1
     pub open:           Option<unsafe extern "C" fn(*mut VfsNode)>, // 2
     pub close:          Option<unsafe extern "C" fn(*mut VfsNode)>, // 3
     pub walk:           Option<unsafe extern "C" fn(*mut VfsNode, *const c_char) -> *mut VfsNode>, // 4
@@ -104,13 +122,13 @@ pub struct VfsOps {
     pub readlink:       Option<unsafe extern "C" fn(*mut VfsNode, *mut c_char, u32) -> i32>, // 15
     pub ioctl:          Option<unsafe extern "C" fn(*mut VfsNode, u32, *mut c_void) -> i32>, // 16
     pub mmap_backing:   Option<unsafe extern "C" fn(*mut VfsNode, u32, u32, *mut i32, *mut u32) -> i32>, // 17
-    pub truncate:       Option<unsafe extern "C" fn(*mut VfsNode, u32) -> i32>, // 18
+    pub truncate:       Option<unsafe extern "C" fn(*mut VfsNode, u64) -> i32>, // 18
     pub chmod:          Option<unsafe extern "C" fn(*mut VfsNode, u32) -> i32>, // 19
     pub chown:          Option<unsafe extern "C" fn(*mut VfsNode, u32, u32) -> i32>, // 20
     pub mknod:          Option<unsafe extern "C" fn(*mut VfsNode, *const c_char, u32, u32) -> i32>, // 21
-    pub stat:           Option<unsafe extern "C" fn(*mut VfsNode, *mut u32) -> i32>, // 22
+    pub stat:           Option<unsafe extern "C" fn(*mut VfsNode, *mut CactStat) -> i32>, // 22
     pub poll:           Option<unsafe extern "C" fn(*mut VfsNode, u32) -> i32>, // 23
-    pub lseek:          Option<unsafe extern "C" fn(*mut VfsNode, i32, i32, *mut u32) -> i32>, // 24
+    pub lseek:          Option<unsafe extern "C" fn(*mut VfsNode, i64, i32, *mut u64) -> i32>, // 24
     /// Cross-directory rename for directories (appended last; NULL = the FS
     /// cannot move a directory across directories, so the VFS returns -EINVAL).
     pub rename2:        Option<unsafe extern "C" fn(*mut VfsNode, *const c_char, *mut VfsNode, *const c_char) -> i32>, // 25
@@ -121,12 +139,12 @@ const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 136);
 const _: () = assert!(core::mem::offset_of!(VfsOps, poll) == 184);
 const _: () = assert!(core::mem::offset_of!(VfsOps, rename2) == 200);
 
-/// Generic VFS node (`vfs_node_t`, 168 bytes).
+/// Generic VFS node (`vfs_node_t`, 192 bytes; `size` is 64-bit).
 #[repr(C)]
 pub struct VfsNode {
     pub name:     [c_char; 128],
     pub type_:    u32,
-    pub size:     u32,
+    pub size:     u64,
     pub inode:    u32,
     pub refcount: u32,
     pub mode:     u32,
@@ -137,11 +155,12 @@ pub struct VfsNode {
     pub priv_:    *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 192);
 const _: () = assert!(core::mem::offset_of!(VfsNode, type_) == 128);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
+const _: () = assert!(core::mem::offset_of!(VfsNode, size) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 176);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 184);
 
 /// Pool entry for a synthetic symlink (`vfs_symlink_entry_t` in vfs_internal.h).
 /// The embedded node is first so a `*mut VfsNode` can be recovered as the
@@ -153,29 +172,30 @@ pub struct VfsSymlinkEntry {
     pub in_use: i32,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsSymlinkEntry>() == 704);
+const _: () = assert!(core::mem::size_of::<VfsSymlinkEntry>() == 712);
 
-/// File description (`file_t`, 24 bytes): the intermediate between the fd table
+/// File description (`file_t`, 40 bytes): the intermediate between the fd table
 /// and a node.  `dup()` shares one `file_t`, so `offset`/`flags` are shared.
 #[repr(C)]
 pub struct File {
     pub node:     *mut VfsNode,
-    pub offset:   u32,
+    pub offset:   u64,
     pub flags:    u32,
     pub cloexec:  u32,
     pub refcount: u32,
     pub priv_:    *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<File>() == 32);
-const _: () = assert!(core::mem::offset_of!(File, priv_) == 24);
+const _: () = assert!(core::mem::size_of::<File>() == 40);
+const _: () = assert!(core::mem::offset_of!(File, offset) == 8);
+const _: () = assert!(core::mem::offset_of!(File, priv_) == 32);
 
-/// Per-open node operations (`vfs_file_ops_t`, 24 bytes).  A node with these
+/// Per-open node operations (`vfs_file_ops_t`, 48 bytes).  A node with these
 /// keeps per-`open()` state in `file_t.priv`, shared by `dup()`d descriptors.
 #[repr(C)]
 pub struct VfsFileOps {
-    pub read:    Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u32, u32, *mut c_char) -> i32>,
-    pub write:   Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u32, u32, *mut c_char) -> i32>,
+    pub read:    Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u64, u32, *mut c_char) -> i32>,
+    pub write:   Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u64, u32, *mut c_char) -> i32>,
     pub ioctl:   Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u32, *mut c_void) -> i32>,
     pub poll:    Option<unsafe extern "C" fn(*mut VfsNode, *mut c_void, u32) -> i32>,
     pub open:    Option<unsafe extern "C" fn(*mut VfsNode, *mut File)>,

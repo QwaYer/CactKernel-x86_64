@@ -36,8 +36,8 @@ typedef struct eventfd_state {
     mutex_t  lock;
 } eventfd_state_t;
 
-static int _eventfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-static int _eventfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+static int _eventfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+static int _eventfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 static void _eventfd_open(vfs_node_t *node);
 static void _eventfd_close(vfs_node_t *node);
 static int _eventfd_poll(vfs_node_t *node, uint32_t events);
@@ -59,7 +59,7 @@ static eventfd_state_t *_state(vfs_node_t *node) {
     return (eventfd_state_t *)node->priv;
 }
 
-static int _eventfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _eventfd_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     eventfd_state_t *s = _state(node);
     if (!s) return -1;
@@ -91,7 +91,7 @@ static int _eventfd_read(vfs_node_t *node, uint32_t off, uint32_t size, char *bu
     }
 }
 
-static int _eventfd_write(vfs_node_t *node, uint32_t off, uint32_t size, char *buf) {
+static int _eventfd_write(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
     (void)off;
     eventfd_state_t *s = _state(node);
     if (!s) return -1;

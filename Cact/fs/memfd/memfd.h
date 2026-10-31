@@ -15,10 +15,10 @@
 int memfd_create(const char *name, uint32_t name_len, int flags);  // -> handle, -1 on error
 int memfd_ref(int handle);          // open/fork reference
 int memfd_close(int handle);        // last-close release
-int memfd_read(int handle, uint32_t off, void *buf, uint32_t size);
-int memfd_write(int handle, uint32_t off, const void *buf, uint32_t size);
-int memfd_truncate(int handle, uint32_t size);
-int memfd_size(int handle);
+int memfd_read(int handle, uint64_t off, void *buf, uint32_t size);
+int memfd_write(int handle, uint64_t off, const void *buf, uint32_t size);
+int memfd_truncate(int handle, uint64_t size);
+int64_t memfd_size(int handle);     // -1 on error, else the 64-bit byte length
 int memfd_map_inc(int handle);      // MAP_SHARED region added
 int memfd_map_dec(int handle);      // MAP_SHARED region removed
 

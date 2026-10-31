@@ -19,8 +19,8 @@ extern "C" {
 /// The `ctl`/`status` slots are legacy but keep their positions.
 #[repr(C)]
 pub struct DevfsDriver {
-    pub read: Option<extern "C" fn(*mut c_void, u32, u32, *mut c_char) -> c_int>,
-    pub write: Option<extern "C" fn(*mut c_void, u32, u32, *mut c_char) -> c_int>,
+    pub read: Option<extern "C" fn(*mut c_void, u64, u32, *mut c_char) -> c_int>,
+    pub write: Option<extern "C" fn(*mut c_void, u64, u32, *mut c_char) -> c_int>,
     pub ctl: Option<extern "C" fn(*mut c_void, *const c_char, u32) -> c_int>,
     pub status: Option<extern "C" fn(*mut c_void, *mut c_char, u32) -> c_int>,
     pub ioctl: Option<extern "C" fn(*mut c_void, u32, *mut c_void) -> c_int>,

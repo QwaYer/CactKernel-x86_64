@@ -29,17 +29,17 @@ vfs_node_t *procfs_proc_pid_dir(const char *name);
 int         procfs_proc_pid_at (uint32_t index, uint32_t *pid_out);
 
 /* procfs_std.c — default /proc file generators. */
-int _cpuinfo_read(uint32_t off, uint32_t size, char *buf);
-int _apic_read(uint32_t off, uint32_t size, char *buf);
-int _meminfo_read(uint32_t off, uint32_t size, char *buf);
-int _uptime_read(uint32_t off, uint32_t size, char *buf);
-int _version_read(uint32_t off, uint32_t size, char *buf);
-int _time_read(uint32_t off, uint32_t size, char *buf);
-int _wallclock_read(uint32_t off, uint32_t size, char *buf);
-int _uname_read(uint32_t off, uint32_t size, char *buf);
-int _mounts_read(uint32_t off, uint32_t size, char *buf);
-int _modules_read(uint32_t off, uint32_t size, char *buf);
-int _usb_read(uint32_t off, uint32_t size, char *buf);
-int _dmi_read(uint32_t off, uint32_t size, char *buf);
+int _cpuinfo_read(uint64_t off, uint32_t size, char *buf);
+int _apic_read(uint64_t off, uint32_t size, char *buf);
+int _meminfo_read(uint64_t off, uint32_t size, char *buf);
+int _uptime_read(uint64_t off, uint32_t size, char *buf);
+int _version_read(uint64_t off, uint32_t size, char *buf);
+int _time_read(uint64_t off, uint32_t size, char *buf);
+int _wallclock_read(uint64_t off, uint32_t size, char *buf);
+int _uname_read(uint64_t off, uint32_t size, char *buf);
+int _mounts_read(uint64_t off, uint32_t size, char *buf);
+int _modules_read(uint64_t off, uint32_t size, char *buf);
+int _usb_read(uint64_t off, uint32_t size, char *buf);
+int _dmi_read(uint64_t off, uint32_t size, char *buf);
 
 #endif

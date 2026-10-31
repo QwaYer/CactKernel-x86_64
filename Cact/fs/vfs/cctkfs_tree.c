@@ -29,12 +29,12 @@ static int name_eq_n(const char *a, const char *b, int len) {
 
 /* ── leaf files ─────────────────────────────────────────────────────────── */
 
-static int _file_read(vfs_node_t *node, uint32_t off, uint32_t size,
+static int _file_read(vfs_node_t *node, uint64_t off, uint32_t size,
                       char *buf) {
     tree_node_t *n = (tree_node_t *)node->priv;
     if (!n || !buf) return 0;
     if (off >= n->node.size) return 0;
-    uint32_t avail = n->node.size - off;
+    uint32_t avail = (uint32_t)(n->node.size - off);
     uint32_t cnt   = size < avail ? size : avail;
     memcpy(buf, (const char *)n->data + off, cnt);
     return (int)cnt;

@@ -38,7 +38,7 @@ struct vfs_dirent;
 // dup() shares the same file_t (POSIX semantics).
 typedef struct file {
     struct vfs_node *node;
-    uint32_t         offset;
+    uint64_t         offset;    // 64-bit byte offset (files may exceed 4 GiB)
     uint32_t         flags;     // open flags (O_RDWR, O_NONBLOCK, etc.)
     uint32_t         cloexec;
     uint32_t         refcount;
@@ -56,8 +56,8 @@ typedef struct file {
 //   open()    — called by file_alloc() once per open(), creates priv
 //   release() — called by file_free() when the last reference goes away
 typedef struct vfs_file_ops {
-    int  (*read)   (struct vfs_node *node, void *priv, uint32_t off, uint32_t size, char *buf);
-    int  (*write)  (struct vfs_node *node, void *priv, uint32_t off, uint32_t size, char *buf);
+    int  (*read)   (struct vfs_node *node, void *priv, uint64_t off, uint32_t size, char *buf);
+    int  (*write)  (struct vfs_node *node, void *priv, uint64_t off, uint32_t size, char *buf);
     int  (*ioctl)  (struct vfs_node *node, void *priv, uint32_t cmd, void *arg);
     int  (*poll)   (struct vfs_node *node, void *priv, uint32_t events);
     void (*open)   (struct vfs_node *node, struct file *f);
@@ -66,8 +66,8 @@ typedef struct vfs_file_ops {
 
 // Per-filesystem operations table — each method may be NULL if unsupported
 typedef struct vfs_ops {
-    int  (*read)   (struct vfs_node *node, uint32_t off, uint32_t size, char *buf);
-    int  (*write)  (struct vfs_node *node, uint32_t off, uint32_t size, char *buf);
+    int  (*read)   (struct vfs_node *node, uint64_t off, uint32_t size, char *buf);
+    int  (*write)  (struct vfs_node *node, uint64_t off, uint32_t size, char *buf);
     void (*open)   (struct vfs_node *node);
     void (*close)  (struct vfs_node *node);
 
@@ -100,13 +100,13 @@ typedef struct vfs_ops {
                         int *backing_out, uint32_t *obj_off_out);
 
     // New VFS operations — pull logic out of syscall layer
-    int (*truncate)(struct vfs_node *node, uint32_t length);
+    int (*truncate)(struct vfs_node *node, uint64_t length);
     int (*chmod)   (struct vfs_node *node, uint32_t mode);
     int (*chown)   (struct vfs_node *node, uint32_t uid, uint32_t gid);
     int (*mknod)   (struct vfs_node *dir, const char *name, uint32_t mode, uint32_t dev);
-    int (*stat)    (struct vfs_node *node, uint32_t *buf);   // 4-word stat buffer
+    int (*stat)    (struct vfs_node *node, void *buf);   // fills a `cact_stat_t`
     int (*poll)    (struct vfs_node *node, uint32_t events);  // returns ready events
-    int (*lseek)   (struct vfs_node *node, int offset, int whence, uint32_t *result);
+    int (*lseek)   (struct vfs_node *node, int64_t offset, int whence, uint64_t *result);
     // Cross-directory rename for directories (a subtree move cannot go through
     // link+unlink).  NULL = the filesystem cannot move a directory across
     // directories, so the VFS returns -EINVAL.  Appended last so existing
@@ -119,7 +119,7 @@ typedef struct vfs_ops {
 typedef struct vfs_node {
     char          name[128];
     uint32_t      type;
-    uint32_t      size;
+    uint64_t      size;       // 64-bit byte length (files may exceed 4 GiB)
     uint32_t      inode;
     uint32_t      refcount;   // hard-link / reference count
     uint32_t      mode;       // permission bits (rwxrwxrwx), 0777 default
@@ -187,8 +187,8 @@ file_t       *file_ref       (file_t *f);
 int           file_unref     (file_t *f);
 
 // Generic I/O wrappers
-int           read_vfs     (vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
-int           write_vfs    (vfs_node_t *node, uint32_t off, uint32_t size, char *buf);
+int           read_vfs     (vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
+int           write_vfs    (vfs_node_t *node, uint64_t off, uint32_t size, char *buf);
 void          open_vfs     (vfs_node_t *node);
 void          close_vfs    (vfs_node_t *node);
 int           ioctl_vfs    (vfs_node_t *node, uint32_t cmd, void *arg);
@@ -196,8 +196,8 @@ int           ioctl_vfs    (vfs_node_t *node, uint32_t cmd, void *arg);
 // File-aware wrappers: pass file_t.priv to node->fops when the node has them,
 // and fall back to the node-level ops otherwise.  The syscall layer uses these
 // so per-open node state (DRM clients) reaches the right handler.
-int           read_file_vfs (file_t *f, uint32_t off, uint32_t size, char *buf);
-int           write_file_vfs(file_t *f, uint32_t off, uint32_t size, char *buf);
+int           read_file_vfs (file_t *f, uint64_t off, uint32_t size, char *buf);
+int           write_file_vfs(file_t *f, uint64_t off, uint32_t size, char *buf);
 int           ioctl_file_vfs(file_t *f, uint32_t cmd, void *arg);
 int           poll_file_vfs (file_t *f, uint32_t events);
 
@@ -238,11 +238,11 @@ void          vfs_node_unref     (vfs_node_t *node);
 int           vfs_check_perm     (vfs_node_t *node, uint32_t perm);
 
 // New VFS wrapper functions (dispatch through vfs_ops_t)
-int           truncate_vfs (vfs_node_t *node, uint32_t length);
+int           truncate_vfs (vfs_node_t *node, uint64_t length);
 int           chmod_vfs    (vfs_node_t *node, uint32_t mode);
 int           chown_vfs    (vfs_node_t *node, uint32_t uid, uint32_t gid);
 int           mknod_vfs    (vfs_node_t *dir, const char *name, uint32_t mode, uint32_t dev);
-int           stat_vfs     (vfs_node_t *node, uint32_t *buf);
+int           stat_vfs     (vfs_node_t *node, void *buf);
 // Rich stat: fills a `cact_statx_t` (see ioctl_abi.h); `buf` is void* here so
 // this header stays independent of the syscall ABI header.
 void          vfs_fill_statx(vfs_node_t *node, void *buf);
@@ -258,15 +258,15 @@ void          vfs_fill_statfs(vfs_node_t *node, void *buf);
 // number.  Filesystems call these for regular files; the object is a memfd so a
 // MAP_SHARED mmap of the file shares the frames read()/write() use.
 // `rfn`/`wfn` are raw backing read/write callbacks
-//   int (*)(void *owner, uint32_t ino, uint32_t off, uint32_t size, char *buf)
+//   int (*)(void *owner, uint32_t ino, uint64_t off, uint32_t size, char *buf)
 // (NULL for a RAM filesystem whose page array *is* the storage).
 void vfs_as_set_backing(void *owner, uint32_t ino, void *rfn, void *wfn);
-void vfs_as_setsize    (void *owner, uint32_t ino, uint32_t size);
-int  vfs_as_size       (void *owner, uint32_t ino);
-int  vfs_as_read    (void *owner, uint32_t ino, uint32_t off, uint32_t size, char *buf);
-int  vfs_as_write   (void *owner, uint32_t ino, uint32_t off, uint32_t size, char *buf);
-int  vfs_as_truncate(void *owner, uint32_t ino, uint32_t length);
-void vfs_as_flush   (void *owner, uint32_t ino, uint32_t off, uint32_t size);
+void vfs_as_setsize    (void *owner, uint32_t ino, uint64_t size);
+int64_t vfs_as_size    (void *owner, uint32_t ino);
+int  vfs_as_read    (void *owner, uint32_t ino, uint64_t off, uint32_t size, char *buf);
+int  vfs_as_write   (void *owner, uint32_t ino, uint64_t off, uint32_t size, char *buf);
+int  vfs_as_truncate(void *owner, uint32_t ino, uint64_t length);
+void vfs_as_flush   (void *owner, uint32_t ino, uint64_t off, uint64_t size);
 int  vfs_as_backing (void *owner, uint32_t ino, uint32_t off, uint32_t len,
                      int *backing, uint32_t *obj_off);
 void vfs_as_release (void *owner, uint32_t ino);
@@ -280,13 +280,14 @@ void vfs_as_stats(uint32_t *out);
 // Handles "." and "..".  Returns the target node or NULL.
 vfs_node_t   *vfs_lookup_child(vfs_node_t *dir, const char *name, int follow);
 int           poll_vfs     (vfs_node_t *node, uint32_t events);
-int           lseek_vfs    (vfs_node_t *node, int offset, int whence, uint32_t *result);
+int           lseek_vfs    (vfs_node_t *node, int64_t offset, int whence, uint64_t *result);
 
 // Helper: convert VFS node type to POSIX stat mode
 uint32_t      vfs_type_to_mode(uint32_t type);
 
-// Helper: fill 4-word stat buffer
-void          vfs_fill_stat(vfs_node_t *node, uint32_t *buf);
+// Helper: fill a `cact_stat_t` (see ioctl_abi.h); `buf` is void* here so this
+// header stays independent of the syscall ABI header.
+void          vfs_fill_stat(vfs_node_t *node, void *buf);
 
 // Helper: bounded string copy (always null-terminates)
 void          vfs_strlcpy(char *dst, const char *src, int max);

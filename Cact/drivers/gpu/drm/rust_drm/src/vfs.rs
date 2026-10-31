@@ -23,15 +23,16 @@ pub const DEVFS_F_DIR: u32 = 0x08;
 #[repr(C)]
 pub struct File {
     pub node: *mut VfsNode,
-    pub offset: u32,
+    pub offset: u64,
     pub flags: u32,
     pub cloexec: u32,
     pub refcount: u32,
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<File>() == 32);
-const _: () = assert!(core::mem::offset_of!(File, priv_) == 24);
+const _: () = assert!(core::mem::size_of::<File>() == 40);
+const _: () = assert!(core::mem::offset_of!(File, offset) == 8);
+const _: () = assert!(core::mem::offset_of!(File, priv_) == 32);
 
 /* ── vfs_node_t ─────────────────────────────────────────────────────────── */
 
@@ -39,7 +40,7 @@ const _: () = assert!(core::mem::offset_of!(File, priv_) == 24);
 pub struct VfsNode {
     pub name: [u8; 128],
     pub ntype: u32,
-    pub size: u32,
+    pub size: u64,
     pub inode: u32,
     pub refcount: u32,
     pub mode: u32,
@@ -50,17 +51,18 @@ pub struct VfsNode {
     pub priv_: *mut c_void,
 }
 
-const _: () = assert!(core::mem::size_of::<VfsNode>() == 184);
-const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 160);
-const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 168);
-const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 176);
+const _: () = assert!(core::mem::size_of::<VfsNode>() == 192);
+const _: () = assert!(core::mem::offset_of!(VfsNode, size) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsNode, ops) == 168);
+const _: () = assert!(core::mem::offset_of!(VfsNode, fops) == 176);
+const _: () = assert!(core::mem::offset_of!(VfsNode, priv_) == 184);
 
 /* ── vfs_file_ops_t ─────────────────────────────────────────────────────── */
 
 #[repr(C)]
 pub struct VfsFileOps {
-    pub read: Option<extern "C" fn(*mut VfsNode, *mut c_void, u32, u32, *mut u8) -> c_int>,
-    pub write: Option<extern "C" fn(*mut VfsNode, *mut c_void, u32, u32, *mut u8) -> c_int>,
+    pub read: Option<extern "C" fn(*mut VfsNode, *mut c_void, u64, u32, *mut u8) -> c_int>,
+    pub write: Option<extern "C" fn(*mut VfsNode, *mut c_void, u64, u32, *mut u8) -> c_int>,
     pub ioctl: Option<extern "C" fn(*mut VfsNode, *mut c_void, u32, *mut c_void) -> c_int>,
     pub poll: Option<extern "C" fn(*mut VfsNode, *mut c_void, u32) -> c_int>,
     pub open: Option<extern "C" fn(*mut VfsNode, *mut File)>,

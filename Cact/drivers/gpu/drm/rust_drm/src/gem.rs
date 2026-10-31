@@ -23,11 +23,11 @@ extern "C" {
 
     /* fs/memfd/memfd.h — the shared RAM object every GEM buffer is built on. */
     fn memfd_create(name: *const u8, name_len: u32, flags: c_int) -> c_int;
-    fn memfd_truncate(handle: c_int, size: u32) -> c_int;
+    fn memfd_truncate(handle: c_int, size: u64) -> c_int;
     fn memfd_close(handle: c_int) -> c_int;
     fn memfd_ref(handle: c_int) -> c_int;
     fn memfd_get_page(handle: c_int, idx: u32) -> *mut c_void;
-    fn memfd_size(handle: c_int) -> c_int;
+    fn memfd_size(handle: c_int) -> i64;
     fn memfd_fd_handle(fd: c_int) -> c_int;
     fn memfd_vnode_from_handle(handle: c_int, name: *const u8, size: u32) -> *mut c_void;
 
@@ -89,7 +89,7 @@ pub extern "C" fn drm_gem_create(dev: *mut DrmDevice, size: u32) -> *mut GemObje
         return core::ptr::null_mut();
     }
     // SAFETY: `h` is the live memfd just created and `rounded` its requested size.
-    if unsafe { memfd_truncate(h, rounded) } != 0 {
+    if unsafe { memfd_truncate(h, rounded as u64) } != 0 {
         // SAFETY: `h` is the live memfd; `obj` is the un-published object.
         unsafe { memfd_close(h) };
         // SAFETY: as above.

@@ -474,7 +474,7 @@ unsafe extern "C" {
     pub fn load_page_directory(dir: *mut u64);
     pub fn enable_paging();
 
-    pub fn read_vfs(node: *mut VfsNode, off: u32, size: u32, buf: *mut u8) -> i32;
+    pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut u8) -> i32;
 
     /// C memfd glue: returns the memfd object handle for an open fd, or -1.
     pub fn memfd_fd_handle(fd: i32) -> i32;

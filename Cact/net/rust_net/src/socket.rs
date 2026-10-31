@@ -78,7 +78,7 @@ pub static mut ksock_table: [Ksock; KSOCK_MAX] = [Ksock {
     nonblock: 0,
 }; KSOCK_MAX];
 
-extern "C" fn socket_read_op(node: *mut VfsNode, _off: u32, size: u32, buf: *mut c_char) -> c_int {
+extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut c_char) -> c_int {
     if node.is_null() {
         return -1;
     }
@@ -195,7 +195,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u32, size: u32, buf: *mut
     -1
 }
 
-extern "C" fn socket_write_op(node: *mut VfsNode, _off: u32, size: u32, buf: *mut c_char) -> c_int {
+extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut c_char) -> c_int {
     if node.is_null() {
         return -1;
     }

@@ -6,7 +6,7 @@
 
 #define PCI_MODINFO_MAX 32768
 
-int pci_driver_modinfo_read(uint32_t off, uint32_t size, char *buf)
+int pci_driver_modinfo_read(uint64_t off, uint32_t size, char *buf)
 {
     extern pci_driver_t *pcidev_driver_list;
     extern uint32_t      pcidev_driver_count;
@@ -163,8 +163,8 @@ int pci_driver_modinfo_read(uint32_t off, uint32_t size, char *buf)
     int total = 0;
     while (tmp[total] && total < PCI_MODINFO_MAX - 1) total++;
 
-    if (off >= (uint32_t)total) return 0;
-    uint32_t avail = (uint32_t)total - off;
+    if (off >= (uint64_t)total) return 0;
+    uint32_t avail = (uint32_t)((uint64_t)total - off);
     if (size > avail) size = avail;
     memcpy(buf, tmp + off, size);
     return (int)size;

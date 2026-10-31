@@ -5,7 +5,7 @@
 #include "vfs.h"
 
 // Read callback: generates up to 'size' bytes at offset 'off' into 'buf'
-typedef int (*procfs_read_fn)(uint32_t off, uint32_t size, char *buf);
+typedef int (*procfs_read_fn)(uint64_t off, uint32_t size, char *buf);
 
 // Initialise procfs and register default files
 void         procfs_init        (void);

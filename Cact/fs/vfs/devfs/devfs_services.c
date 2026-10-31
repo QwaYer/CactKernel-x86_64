@@ -70,12 +70,12 @@ static int _root_only(void) {
 
 // ── /dev/console ──────────────────────────────────────────────────────────
 
-static int _console_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _console_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;(void)off;(void)size;(void)buf;
     return 0;   // console has no input
 }
 
-static int _console_write(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _console_write(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     /* Kernel console == the active VT (Linux /dev/console lands on the console
      * terminal).  Routing through tty_write() keeps the VT scrollback in sync
@@ -93,12 +93,12 @@ devfs_driver_t drv_console = { .read = _console_read, .write = _console_write };
 // userspace (KLOG_F_USER); the level comes from the leading "<N>" or
 // "N,seq,usec,flags,facility;" prefix.
 
-static int _kmsg_read(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _kmsg_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
     return klog_read(off, size, buf);
 }
 
-static int _kmsg_write(void *p, uint32_t off, uint32_t size, char *buf) {
+static int _kmsg_write(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p; (void)off;
     if (!buf || !validate_user_ptr(buf, size)) return -1;
     return klog_write_user(buf, size);

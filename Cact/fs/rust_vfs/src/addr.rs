@@ -33,14 +33,14 @@ const fn bitmap_bytes(pages: usize) -> usize {
 
 /// Raw backing I/O: read/write `size` bytes at file offset `off` for
 /// `(owner, ino)`.  Returns the byte count, or negative on error.
-pub type BackingFn = unsafe extern "C" fn(*mut c_void, u32, u32, u32, *mut c_char) -> i32;
+pub type BackingFn = unsafe extern "C" fn(*mut c_void, u32, u64, u32, *mut c_char) -> i32;
 
 struct AddrSpace {
     used:    bool,
     owner:   *mut c_void,
     ino:     u32,
     mfd:     i32,
-    size:    u32,
+    size:    u64,
     /// Pages the two bitmaps below can describe (0 until the first growth).
     cap_pages: u32,
     /// `kmalloc`'d "page is populated" bitmap (`bitmap_bytes(cap_pages)` bytes).
@@ -75,10 +75,10 @@ unsafe extern "C" {
     fn memfd_create(name: *const u8, name_len: u32, flags: i32) -> i32;
     fn memfd_ref(handle: i32) -> i32;
     fn memfd_close(handle: i32) -> i32;
-    fn memfd_read(handle: i32, off: u32, buf: *mut u8, size: u32) -> i32;
-    fn memfd_write(handle: i32, off: u32, buf: *const u8, size: u32) -> i32;
-    fn memfd_truncate(handle: i32, new_size: u32) -> i32;
-    fn memfd_size(handle: i32) -> i32;
+    fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> i32;
+    fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) -> i32;
+    fn memfd_truncate(handle: i32, new_size: u64) -> i32;
+    fn memfd_size(handle: i32) -> i64;
     fn memfd_get_page(handle: i32, idx: u32) -> *mut u8;
 }
 
@@ -238,7 +238,7 @@ pub unsafe extern "C" fn vfs_as_set_backing(
 
 /// Set the logical file size (grows the backing memfd as needed).
 #[no_mangle]
-pub unsafe extern "C" fn vfs_as_setsize(owner: *mut c_void, ino: u32, size: u32) {
+pub unsafe extern "C" fn vfs_as_setsize(owner: *mut c_void, ino: u32, size: u64) {
     let a = unsafe { as_of(owner, ino) };
     if a.is_null() {
         return;
@@ -247,7 +247,7 @@ pub unsafe extern "C" fn vfs_as_setsize(owner: *mut c_void, ino: u32, size: u32)
     unsafe {
         if size > (*a).size {
             let cur = memfd_size((*a).mfd);
-            if (size as i32) > cur {
+            if (size as i64) > cur {
                 memfd_truncate((*a).mfd, size);
             }
         }
@@ -257,22 +257,22 @@ pub unsafe extern "C" fn vfs_as_setsize(owner: *mut c_void, ino: u32, size: u32)
 
 /// Current logical size, or -1.
 #[no_mangle]
-pub unsafe extern "C" fn vfs_as_size(owner: *mut c_void, ino: u32) -> i32 {
+pub unsafe extern "C" fn vfs_as_size(owner: *mut c_void, ino: u32) -> i64 {
     let a = unsafe { as_of(owner, ino) };
     if a.is_null() {
         return -1;
     }
     // SAFETY: `a` is live.
-    unsafe { (*a).size as i32 }
+    unsafe { (*a).size as i64 }
 }
 
 /// Populate any missing pages of `[off, off+size)` from the backing read.
-unsafe fn populate(a: *mut AddrSpace, off: u32, size: u32) {
+unsafe fn populate(a: *mut AddrSpace, off: u64, size: u32) {
     // SAFETY: `a` is live; the memfd and frames stay alive under no eviction.
     unsafe {
         let h = (*a).mfd;
         let first = (off as usize) / PAGE;
-        let last = ((off + size - 1) as usize) / PAGE;
+        let last = ((off + size as u64 - 1) as usize) / PAGE;
         // Pages past the bitmap can only be re-populated every time (never
         // skipped as present), which keeps reads correct at any file size.
         let tracked = ensure_bits(&mut *a, last + 1);
@@ -282,13 +282,13 @@ unsafe fn populate(a: *mut AddrSpace, off: u32, size: u32) {
             }
             if let Some(rfn) = (*a).rfn {
                 // Ensure the frame exists, then let the filesystem fill it.
-                let need = ((p + 1) * PAGE) as u32;
-                if (need as i32) > memfd_size(h) {
+                let need = ((p + 1) * PAGE) as u64;
+                if (need as i64) > memfd_size(h) {
                     memfd_truncate(h, need);
                 }
                 let page = memfd_get_page(h, p as u32);
                 if !page.is_null() {
-                    rfn((*a).owner, (*a).ino, (p * PAGE) as u32, PAGE as u32, page as *mut c_char);
+                    rfn((*a).owner, (*a).ino, (p * PAGE) as u64, PAGE as u32, page as *mut c_char);
                 }
             }
             if tracked {
@@ -303,7 +303,7 @@ unsafe fn populate(a: *mut AddrSpace, off: u32, size: u32) {
 pub unsafe extern "C" fn vfs_as_read(
     owner: *mut c_void,
     ino: u32,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -319,7 +319,7 @@ pub unsafe extern "C" fn vfs_as_read(
     if off >= fsz {
         return 0;
     }
-    let n = if size > fsz - off { fsz - off } else { size };
+    let n = if (size as u64) > fsz - off { (fsz - off) as u32 } else { size };
     unsafe { populate(a, off, n) };
     // SAFETY: `a` is live and `buf` is the caller's buffer.
     unsafe { memfd_read((*a).mfd, off, buf as *mut u8, n) }
@@ -329,7 +329,7 @@ pub unsafe extern "C" fn vfs_as_read(
 pub unsafe extern "C" fn vfs_as_write(
     owner: *mut c_void,
     ino: u32,
-    off: u32,
+    off: u64,
     size: u32,
     buf: *mut c_char,
 ) -> i32 {
@@ -345,7 +345,7 @@ pub unsafe extern "C" fn vfs_as_write(
     if w <= 0 {
         return w;
     }
-    let end = off + w as u32;
+    let end = off + w as u64;
     // SAFETY: `a` is live; mark the touched pages present + dirty.
     unsafe {
         if end > (*a).size {
@@ -376,7 +376,7 @@ pub unsafe extern "C" fn vfs_as_write(
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vfs_as_truncate(owner: *mut c_void, ino: u32, length: u32) -> i32 {
+pub unsafe extern "C" fn vfs_as_truncate(owner: *mut c_void, ino: u32, length: u64) -> i32 {
     let a = unsafe { as_of(owner, ino) };
     if a.is_null() {
         return -1;
@@ -397,7 +397,7 @@ pub unsafe extern "C" fn vfs_as_truncate(owner: *mut c_void, ino: u32, length: u
 
 /// Flush the pages of `[off, off+size)` to the backing store (if any).
 #[no_mangle]
-pub unsafe extern "C" fn vfs_as_flush(owner: *mut c_void, ino: u32, off: u32, size: u32) {
+pub unsafe extern "C" fn vfs_as_flush(owner: *mut c_void, ino: u32, off: u64, size: u64) {
     let a = unsafe { as_find(owner, ino) };
     if a.is_null() {
         return;
@@ -419,8 +419,8 @@ pub unsafe extern "C" fn vfs_as_flush(owner: *mut c_void, ino: u32, off: u32, si
             if p >= (*a).cap_pages as usize || !bit((*a).present, p) {
                 continue;
             }
-            let page_off = (p * PAGE) as u32;
-            let chunk = core::cmp::min(PAGE as u32, fsz - page_off);
+            let page_off = (p * PAGE) as u64;
+            let chunk = core::cmp::min(PAGE as u64, fsz - page_off) as u32;
             let page = memfd_get_page((*a).mfd, p as u32);
             if !page.is_null() {
                 wfn((*a).owner, (*a).ino, page_off, chunk, page as *mut c_char);

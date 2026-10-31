@@ -337,24 +337,23 @@ pub extern "C" fn vfs_type_to_mode(type_: u32) -> u32 {
 }
 
 #[no_mangle]
-pub unsafe extern "C" fn vfs_fill_stat(node: *mut VfsNode, buf: *mut u32) {
-    // SAFETY: `node` and `buf` are live and `buf` has 4 writable words.
+pub unsafe extern "C" fn vfs_fill_stat(node: *mut VfsNode, buf: *mut CactStat) {
+    // SAFETY: `node` is live and `buf` points to a writable `cact_stat_t`.
     unsafe {
-        *buf = (*node).inode;
+        (*buf).inode = (*node).inode;
         // st_mode is "type bits | rwxrwxrwx" (vfs.h) — include the permission
         // bits, which the original dropped, so `stat`/`ls -l` show them.
-        *buf.add(1) = vfs_type_to_mode((*node).type_) | ((*node).mode & 0o777);
-        *buf.add(2) = (*node).size;
-        *buf.add(3) = (*node).type_;
+        (*buf).mode = vfs_type_to_mode((*node).type_) | ((*node).mode & 0o777);
+        (*buf).size = (*node).size;
+        (*buf).type_ = (*node).type_;
     }
 }
 
 /// Wall-clock seconds since the Unix epoch, 0 when the RTC gave no date.
-fn now_epoch_secs() -> u32 {
+fn now_epoch_secs() -> u64 {
     // SAFETY: `rtc_epoch_sec` is a value-only C accessor of the RTC-derived
     // wall clock; it reads no caller memory.
-    let s = unsafe { rtc_epoch_sec() };
-    if s == 0 { 0 } else { s as u32 }
+    unsafe { rtc_epoch_sec() }
 }
 
 unsafe extern "C" {
@@ -368,7 +367,7 @@ pub unsafe extern "C" fn vfs_fill_statx(node: *mut VfsNode, buf: *mut CactStatx)
         return;
     }
     let now = now_epoch_secs();
-    // SAFETY: `node` and `buf` are live; every field is a plain u32.
+    // SAFETY: `node` and `buf` are live; every field is a plain integer.
     unsafe {
         (*buf).ino = (*node).inode;
         (*buf).mode = vfs_type_to_mode((*node).type_) | ((*node).mode & 0o777);
@@ -377,7 +376,7 @@ pub unsafe extern "C" fn vfs_fill_statx(node: *mut VfsNode, buf: *mut CactStatx)
         (*buf).gid = (*node).gid;
         (*buf).size = (*node).size;
         (*buf).blksize = 4096;
-        (*buf).blocks = ((*node).size + 511) / 512;
+        (*buf).blocks = ((*node).size.div_ceil(512)) as u32;
         // The VFS does not yet track per-inode times, so report the wall clock;
         // nonzero so `ls -l` / `stat` show a real time instead of 1970.
         (*buf).atime = now;

@@ -48,31 +48,39 @@
 // ===========================================================================
 
 // ===========================================================================
-// Shared stat structure (4 words, matches the kernel VFS stat buffer).
+// Shared stat structure (matches the kernel VFS `cact_stat_t`).  `size` is
+// 64-bit so a regular file larger than 4 GiB reports correctly; the struct is
+// naturally aligned to 8 bytes (24 bytes total).
 // ===========================================================================
 typedef struct cact_stat {
     uint32_t inode;
     uint32_t mode;   // POSIX-ish mode (type bits | rwxrwxrwx)
-    uint32_t size;
+    uint64_t size;   // 64-bit byte length
     uint32_t type;   // VFS node type (file/dir/chardev/...)
 } cact_stat_t;
 
-// Rich stat: the POSIX metadata the 4-word buffer cannot carry.  Timestamps are
-// zero for now (the VFS does not track them yet).
+// Rich stat: the POSIX metadata the small stat struct cannot carry.  Timestamps
+// are zero for now (the VFS does not track them yet), but are 64-bit so they
+// can hold a full Unix-epoch second count.
 typedef struct cact_statx {
     uint32_t ino;
     uint32_t mode;     // full st_mode (type bits | rwxrwxrwx)
     uint32_t nlink;
     uint32_t uid;
     uint32_t gid;
-    uint32_t size;
+    uint64_t size;     // 64-bit byte length
     uint32_t blksize;
     uint32_t blocks;   // 512-byte blocks
-    uint32_t atime;
-    uint32_t mtime;
-    uint32_t ctime;
+    uint64_t atime;    // seconds since the Unix epoch
+    uint64_t mtime;
+    uint64_t ctime;
     uint32_t type;     // VFS node type
 } cact_statx_t;
+
+// Layout is mirrored in Rust (`CactStat`/`CactStatx` in rust_vfs/src/abi.rs);
+// these stop the build here if the two ever drift.
+_Static_assert(sizeof(cact_stat_t) == 24, "cact_stat_t layout drift");
+_Static_assert(sizeof(cact_statx_t) == 72, "cact_statx_t layout drift");
 
 // Filesystem statistics (POSIX struct statfs).
 typedef struct cact_statfs {
@@ -94,7 +102,7 @@ typedef struct cact_statfs {
 #define CACT_FDCTL_FCNTL      0x3003  // arg=cact_fcntl_arg_t*
 #define CACT_FDCTL_LSEEK      0x3004  // arg=cact_lseek_arg_t*; returns new offset
 #define CACT_FDCTL_FSTAT      0x3005  // arg=cact_stat_t*    (out)
-#define CACT_FDCTL_FTRUNCATE  0x3006  // arg=uint32_t* length
+#define CACT_FDCTL_FTRUNCATE  0x3006  // arg=uint64_t* length
 #define CACT_FDCTL_GETDENTS   0x3007  // arg=cact_getdents_arg_t*; returns bytes
 #define CACT_FDCTL_FSYNC      0x3008  // arg=NULL (flush the file's page cache)
 #define CACT_FDCTL_FSTATX     0x3009  // arg=cact_statx_t*   (out)
@@ -110,7 +118,7 @@ typedef struct cact_fd_arg { uint32_t newfd; } cact_fd_arg_t;
 
 typedef struct cact_fcntl_arg { uint32_t cmd; uint32_t arg; } cact_fcntl_arg_t;
 
-typedef struct cact_lseek_arg { int32_t offset; uint32_t whence; } cact_lseek_arg_t;
+typedef struct cact_lseek_arg { int64_t offset; uint32_t whence; } cact_lseek_arg_t;
 // whence: 0=SET 1=CUR 2=END
 
 typedef struct cact_getdents_arg { void *buf; uint32_t count; } cact_getdents_arg_t;
@@ -163,7 +171,7 @@ typedef struct cact_statfs_arg  { char *name; cact_statfs_t *buf; } cact_statfs_
 typedef struct cact_access_arg  { char *name; uint32_t mode; } cact_access_arg_t;  // mode: 4=r 2=w 1=x
 typedef struct cact_chmod_arg   { char *name; uint32_t mode; } cact_chmod_arg_t;
 typedef struct cact_chown_arg   { char *name; uint32_t uid; uint32_t gid; } cact_chown_arg_t;
-typedef struct cact_truncate_arg{ char *name; uint32_t length; } cact_truncate_arg_t;
+typedef struct cact_truncate_arg{ char *name; uint64_t length; } cact_truncate_arg_t;
 typedef struct cact_mknod_arg   { char *name; uint32_t mode; uint32_t dev; } cact_mknod_arg_t;
 
 // ===========================================================================
