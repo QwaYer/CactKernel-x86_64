@@ -285,7 +285,7 @@ The PMM installs every **available** frame the **Multiboot2 memory map** reports
 0xC0000000  ┌──────────────────────────┐  Kernel-only (ring 0)
 0xBF000000  ├──────────────────────────┤  User stack floor
             │       user stack ↓        │
-0xBEFFF000  ├──────────────────────────┤  Per-process sigreturn trampoline page (sysenter stub)
+0xBEFFF000  ├──────────────────────────┤  Per-process sigreturn trampoline page (syscall stub)
 0xB0000000  ├──────────────────────────┤  SHM ceiling (`SHM_VA_LIMIT`)
 0xA0000000  ├──────────────────────────┤  SHM base (`SHM_VA_BASE`)
 0x80000000  ├──────────────────────────┤  mmap window base (`MMAP_BASE`)

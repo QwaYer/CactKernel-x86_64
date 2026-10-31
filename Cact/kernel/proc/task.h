@@ -62,23 +62,25 @@ typedef struct {
 /* Signal-frame payloads, layout-identical to the libc's siginfo_t
  * (<signal.h>) and ucontext_t (<ucontext.h>).  The kernel builds them into the
  * frame so a handler installed with SA_SIGINFO is entered as
- * void handler(int, siginfo_t *, void *). */
+ * void handler(int, siginfo_t *, void *).  Address-sized fields are 64-bit:
+ * x86_64 has `long`/pointers at 8 bytes, so the 64-bit libc rebuilds these
+ * definitions (Phase 6 of PORTING-x86_64.md). */
 typedef struct {
     int32_t  si_signo;
     int32_t  si_code;
-    uint32_t si_addr;
+    uint64_t si_addr;      /* the faulting address for a hardware fault */
     /* sigqueue()'s value (POSIX's union sigval): a sigwaitinfo()/sigtimedwait()
      * or an SA_SIGINFO handler reads it back as si_value. */
-    uint32_t si_value;
+    uint64_t si_value;
 } cact_siginfo_t;
 
 typedef struct {
-    uint32_t gregs[19];             /* REG_* order, see the libc's <ucontext.h> */
+    uint64_t gregs[19];             /* REG_* order, see the libc's <ucontext.h> */
 } cact_mcontext_t;
 
 typedef struct {
-    uint32_t        uc_link;
-    uint32_t        uc_flags;
+    uint64_t        uc_link;
+    uint64_t        uc_flags;
     cact_mcontext_t uc_mcontext;
 } cact_ucontext_t;
 
@@ -91,38 +93,36 @@ enum {
     SF_REG_EFL, SF_REG_UESP, SF_REG_SS
 };
 
-/* The frame sits at the handler's ESP: [ESP] = ret_addr, [ESP+4] = signum,
- * [ESP+8] = siginfo *, [ESP+12] = ucontext *.  sigreturn() reads the whole
- * struct back from that address, so the saved registers and the payloads live
- * in the same object. */
+/* The signal frame the kernel builds on the user stack in long mode.  The
+ * handler is entered the SysV AMD64 way — rdi = signum, rsi = &siginfo,
+ * rdx = &ucontext — with rsp = this frame, so [rsp] is the return address the
+ * handler's own `ret` jumps to: the per-process SIGRETURN trampoline (see
+ * task_sigreturn.rs).  The trampoline issues SYS_SIGRETURN with rsp back at
+ * the frame base, and sigreturn reads the whole struct from rsp — so the saved
+ * 64-bit register set and the payloads live in the same object. */
 typedef struct {
-    uint32_t ret_addr;
-    uint32_t signum;              /* handler argument 1 */
-    uint32_t siginfo_ptr;         /* handler argument 2 */
-    uint32_t ucontext_ptr;        /* handler argument 3 */
-    uint32_t eax, ecx, edx, ebx;
-    uint32_t esp, ebp, esi, edi;
-    uint32_t eip;
-    uint32_t eflags;
-    uint32_t saved_mask;          /* signal_mask to put back in sigreturn */
+    uint64_t ret_addr;            /* [rsp]: SIGRETURN trampoline */
+    uint64_t saved_mask;          /* signal_mask to put back in sigreturn */
+    uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
+    uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
+    uint64_t rip, rflags, rsp;
     cact_siginfo_t siginfo;
     cact_ucontext_t ucontext;
 } signal_frame_t;
 
 /* The handler ABI (and sigreturn's read-back) depends on this exact layout:
- * [ESP+4] = signum, [ESP+8] = siginfo, [ESP+12] = ucontext, the register block
- * from offset 16, and the payloads at 60/72.  Compile-time check so the pic
- * cannot move without the frame code being revisited. */
+ * [rsp] = ret_addr, the saved register set from offset 16, rflags at 144 and
+ * the payloads at 160/184.  Compile-time check so the pic cannot move without
+ * the frame code being revisited. */
 typedef char _signal_frame_layout_check[
-    (__builtin_offsetof(signal_frame_t, signum)       == 4  &&
-     __builtin_offsetof(signal_frame_t, siginfo_ptr)  == 8  &&
-     __builtin_offsetof(signal_frame_t, ucontext_ptr) == 12 &&
-     __builtin_offsetof(signal_frame_t, eax)          == 16 &&
-     __builtin_offsetof(signal_frame_t, eip)          == 48 &&
-     __builtin_offsetof(signal_frame_t, saved_mask)   == 56 &&
-     __builtin_offsetof(signal_frame_t, siginfo)      == 60 &&
-     __builtin_offsetof(signal_frame_t, ucontext)     == 76 &&
-     sizeof(signal_frame_t)                           == 160) ? 1 : -1];
+    (__builtin_offsetof(signal_frame_t, ret_addr)   == 0   &&
+     __builtin_offsetof(signal_frame_t, saved_mask) == 8   &&
+     __builtin_offsetof(signal_frame_t, rax)        == 16  &&
+     __builtin_offsetof(signal_frame_t, rip)        == 136 &&
+     __builtin_offsetof(signal_frame_t, rsp)        == 152 &&
+     __builtin_offsetof(signal_frame_t, siginfo)    == 160 &&
+     __builtin_offsetof(signal_frame_t, ucontext)   == 184 &&
+     sizeof(signal_frame_t)                         == 352) ? 1 : -1];
 
 typedef enum {
     TASK_READY,
