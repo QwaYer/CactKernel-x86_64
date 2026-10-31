@@ -60,18 +60,18 @@ struct cact_dirent {
 };
 
 // File descriptor syscalls
-int sys_open(char* name, int flags);
-int sys_read(int fd, char* buf, unsigned int size);
-int sys_write(int fd, char* buf, unsigned int size);
-int sys_close(int fd);
-int sys_lseek(struct syscall_frame* regs);
-int sys_ioctl(struct syscall_frame* regs);
+sysret_t sys_open(char* name, int flags);
+sysret_t sys_read(int fd, char* buf, unsigned int size);
+sysret_t sys_write(int fd, char* buf, unsigned int size);
+sysret_t sys_close(int fd);
+sysret_t sys_lseek(struct syscall_frame* regs);
+sysret_t sys_ioctl(struct syscall_frame* regs);
 int sys_fcntl(int fd, int cmd, int arg);
 int sys_dup(int oldfd);
 int sys_dup2(struct syscall_frame* regs);
 int sys_pipe(struct syscall_frame* regs);
 int sys_select(struct syscall_frame* regs);
-int sys_poll(struct syscall_frame* regs);
+sysret_t sys_poll(struct syscall_frame* regs);
 
 // Shared fd-table lookup (fd.c), used by the mux syscalls too.
 file_t *_get_file(int fd);

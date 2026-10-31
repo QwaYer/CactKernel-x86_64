@@ -13,7 +13,7 @@
 const uint32_t sys_sigreturn_num = SYS_SIGRETURN;
 
 // Syscall function pointer type — cast to/from specific signatures
-typedef int (*syscall_fn)(void*, void*, void*);
+typedef sysret_t (*syscall_fn)(void*, void*, void*);
 
 // The minimal syscall table — indexed by syscall_num_t enum values.
 // Everything else is served through VFS nodes (see ioctl_abi.h).
@@ -82,9 +82,9 @@ void syscall_handler(struct syscall_frame* regs) {
         return;
     }
 
-    int ret;
+    sysret_t ret;
     if (_needs_frame(num)) {
-        ret = ((int(*)(struct syscall_frame*))syscall_table[num])(regs);
+        ret = ((sysret_t(*)(struct syscall_frame*))syscall_table[num])(regs);
     } else {
         ret = syscall_table[num](
             (void*)regs->rdi,
@@ -99,7 +99,7 @@ void syscall_handler(struct syscall_frame* regs) {
     // return of the syscall the handler interrupted) is what userspace must
     // see, so the generic "rax = return value" write below would destroy it.
     if (num != SYS_SIGRETURN)
-        regs->rax = (uint64_t)(int64_t)ret;
+        regs->rax = (uint64_t)ret;
 
     // Deliver any pending signal before returning to Ring 3
     if (current_task && !current_task->is_kernel)

@@ -31,7 +31,9 @@
 // routed straight to the node's own ops; they must stay outside 0x3000-0x3FFF.
 //
 // ioctl conventions:
-//   - return value >= 0 is meaningful (new fd, offset, mask, ...)
+//   - return value >= 0 is meaningful (new fd, offset, mask, ...); the ioctl
+//     return channel is 64-bit (sys_ioctl returns int64_t and the value lands
+//     in rax), so a >2 GiB lseek offset survives
 //   - return value < 0 is -errno
 //   - every `arg` is a pointer to a user-space struct from this header, unless
 //     documented otherwise.
@@ -100,7 +102,7 @@ typedef struct cact_statfs {
 #define CACT_FDCTL_DUP        0x3001  // arg=NULL;          returns new fd
 #define CACT_FDCTL_DUP2       0x3002  // arg=cact_fd_arg_t* (newfd)
 #define CACT_FDCTL_FCNTL      0x3003  // arg=cact_fcntl_arg_t*
-#define CACT_FDCTL_LSEEK      0x3004  // arg=cact_lseek_arg_t*; returns new offset
+#define CACT_FDCTL_LSEEK      0x3004  // arg=cact_lseek_arg_t*; returns the new (64-bit) offset
 #define CACT_FDCTL_FSTAT      0x3005  // arg=cact_stat_t*    (out)
 #define CACT_FDCTL_FTRUNCATE  0x3006  // arg=uint64_t* length
 #define CACT_FDCTL_GETDENTS   0x3007  // arg=cact_getdents_arg_t*; returns bytes

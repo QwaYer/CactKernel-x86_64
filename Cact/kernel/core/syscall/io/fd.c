@@ -61,7 +61,7 @@ file_t *_get_file(int fd) {
     return current_task->proc->fds->files[fd];
 }
 
-int sys_open(char *name, int flags) {
+sysret_t sys_open(char *name, int flags) {
     if (!current_task) return -1;
 
     char *kname = copy_path_from_user(name);
@@ -122,7 +122,7 @@ int sys_open(char *name, int flags) {
     return -1;
 }
 
-int sys_read(int fd, char *buf, unsigned int size) {
+sysret_t sys_read(int fd, char *buf, unsigned int size) {
     if (!size)                         return -1;
     if (!validate_user_ptr(buf, size)) return -1;
 
@@ -134,7 +134,7 @@ int sys_read(int fd, char *buf, unsigned int size) {
     return ret;
 }
 
-int sys_write(int fd, char *buf, unsigned int size) {
+sysret_t sys_write(int fd, char *buf, unsigned int size) {
     if (!size)                         return -1;
     if (!validate_user_ptr(buf, size)) return -1;
 
@@ -146,7 +146,7 @@ int sys_write(int fd, char *buf, unsigned int size) {
     return ret;
 }
 
-int sys_close(int fd) {
+sysret_t sys_close(int fd) {
     file_t *f = _get_file(fd);
     if (!f) return -1;
     current_task->proc->fds->files[fd] = 0;
@@ -154,7 +154,7 @@ int sys_close(int fd) {
     return 0;
 }
 
-int sys_lseek(struct syscall_frame *regs) {
+sysret_t sys_lseek(struct syscall_frame *regs) {
     int     fd     = (int)regs->rdi;
     int64_t offset = (int64_t)regs->rsi;
     int     whence = (int)regs->rdx;
@@ -209,7 +209,7 @@ static int _name_is_single(const char *s) {
     return 1;
 }
 
-static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
+static sysret_t _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
     switch (cmd) {
     case CACT_FDCTL_DUP:
         return sys_dup(fd);
@@ -245,7 +245,7 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
         if (f->node->ops && f->node->ops->lseek) {
             if (f->node->ops->lseek(f->node, offset, (int)a.whence, &new_off) == 0) {
                 f->offset = new_off;
-                return (int)new_off;
+                return (sysret_t)new_off;
             }
             return -1;
         }
@@ -265,7 +265,7 @@ static int _fdctl_handle(file_t *f, int fd, uint32_t cmd, void *arg) {
             return -EINVAL;
         }
         f->offset = new_off;
-        return (int)new_off;
+        return (sysret_t)new_off;
     }
 
     case CACT_FDCTL_FSTAT:
@@ -663,7 +663,7 @@ static int _dirctl_handle(vfs_node_t *dir, uint32_t cmd, void *arg) {
     }
 }
 
-int sys_ioctl(struct syscall_frame *regs) {
+sysret_t sys_ioctl(struct syscall_frame *regs) {
     int      fd  = (int)regs->rdi;
     uint32_t cmd = (uint32_t)regs->rsi;
     void    *arg = (void *)regs->rdx;

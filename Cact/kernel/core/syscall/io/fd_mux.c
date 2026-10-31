@@ -136,7 +136,7 @@ int sys_select(struct syscall_frame *regs) {
     }
 }
 
-int sys_poll(struct syscall_frame *regs) {
+sysret_t sys_poll(struct syscall_frame *regs) {
     struct pollfd *fds_user   = (struct pollfd *)regs->rdi;
     int            nfds       = (int)regs->rsi;
     int            timeout_ms = (int)regs->rdx;

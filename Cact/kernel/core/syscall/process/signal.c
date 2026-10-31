@@ -98,4 +98,4 @@ static int sys_sigreturn_impl(struct syscall_frame* regs) {
     return 0;
 }
 
-int sys_sigreturn(struct syscall_frame* regs) { return sys_sigreturn_impl(regs); }
+sysret_t sys_sigreturn(struct syscall_frame* regs) { return sys_sigreturn_impl(regs); }

@@ -30,7 +30,7 @@ int sys_kill(uint32_t pid);
 int sys_signal(uint32_t pid, uint32_t signal);
 int sys_sigaction(struct syscall_frame* regs);
 int sys_sigprocmask(struct syscall_frame* regs);
-int sys_sigreturn(struct syscall_frame* regs);
+sysret_t sys_sigreturn(struct syscall_frame* regs);
 int sys_sigpending(struct syscall_frame* regs);
 int sys_sigsuspend(struct syscall_frame* regs);
 int sys_alarm(struct syscall_frame* regs);

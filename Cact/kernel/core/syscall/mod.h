@@ -24,6 +24,11 @@ struct syscall_frame {
     uint64_t rsp, ss;
 };
 
+// Syscall return channel: a handler's value is written straight into rax, so
+// the return is 64-bit.  64-bit results (a file offset from lseek, a user
+// address from brk/mmap) must survive intact; -errno sign-extends.
+typedef int64_t sysret_t;
+
 // SYS_SIGRETURN number — exported to the Rust trampoline via FFI
 extern const uint32_t sys_sigreturn_num;
 

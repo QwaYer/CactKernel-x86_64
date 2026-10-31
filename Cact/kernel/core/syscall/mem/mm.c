@@ -18,7 +18,7 @@ static proc_shared_t *cur_shared(void) {
 }
 
 // brk() — change the program break (heap end)
-int sys_brk(struct syscall_frame* regs) {
+sysret_t sys_brk(struct syscall_frame* regs) {
     uint64_t new_brk = regs->rdi;
     if (!current_task) return -1;
 
@@ -27,7 +27,7 @@ int sys_brk(struct syscall_frame* regs) {
 
     // brk(0) returns the current break without changing it
     if (new_brk == 0)
-        return (int)ps->brk_current;
+        return (sysret_t)ps->brk_current;
 
     // Must not go below the initial break
     if (new_brk < ps->brk_start)
@@ -56,17 +56,17 @@ int sys_brk(struct syscall_frame* regs) {
     }
 
     ps->brk_current = new_brk;
-    return (int)new_brk;
+    return (sysret_t)new_brk;
 }
 
 // mmap() — map files or anonymous memory into the process address space
-int sys_mmap(struct syscall_frame* regs) {
+sysret_t sys_mmap(struct syscall_frame* regs) {
     mmap_args_t* args = (mmap_args_t*)regs->rdi;
-    if (!validate_user_ptr(args, sizeof(mmap_args_t))) return (int)(intptr_t)MAP_FAILED;
-    if (!current_task) return (int)(intptr_t)MAP_FAILED;
+    if (!validate_user_ptr(args, sizeof(mmap_args_t))) return (sysret_t)(intptr_t)MAP_FAILED;
+    if (!current_task) return (sysret_t)(intptr_t)MAP_FAILED;
 
     mmap_args_t args_buf;
-    if (copy_from_user(&args_buf, args, sizeof(args_buf)) != 0) return (int)(intptr_t)MAP_FAILED;
+    if (copy_from_user(&args_buf, args, sizeof(args_buf)) != 0) return (sysret_t)(intptr_t)MAP_FAILED;
 
     void* result = do_mmap(
         current_task->page_directory,
@@ -78,11 +78,11 @@ int sys_mmap(struct syscall_frame* regs) {
         args_buf.fd,
         args_buf.offset
     );
-    return (int)(intptr_t)result;
+    return (sysret_t)(intptr_t)result;
 }
 
 // munmap() — unmap a previously mapped region
-int sys_munmap(struct syscall_frame* regs) {
+sysret_t sys_munmap(struct syscall_frame* regs) {
     uint32_t addr   = (uint32_t)regs->rdi;
     uint32_t length = (uint32_t)regs->rsi;
     if (!current_task) return -1;
@@ -94,7 +94,7 @@ int sys_munmap(struct syscall_frame* regs) {
 }
 
 // mprotect() — change protection flags on a mapped region
-int sys_mprotect(struct syscall_frame* regs) {
+sysret_t sys_mprotect(struct syscall_frame* regs) {
     uint32_t addr   = (uint32_t)regs->rdi;
     uint32_t length = (uint32_t)regs->rsi;
     int      prot   = (int)regs->rdx;

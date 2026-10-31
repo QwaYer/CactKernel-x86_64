@@ -19,7 +19,7 @@ int sys_getppid(void) {
 }
 
 // fork() — create a child process that is a copy of the caller
-int sys_fork(struct syscall_frame* regs) {
+sysret_t sys_fork(struct syscall_frame* regs) {
     // The syscall frame is field for field a context_frame (mod.c asserts it),
     // so the child's saved context is the parent's, with `rax` zeroed later by
     // task_fork so fork() returns 0 in the child.
@@ -40,7 +40,7 @@ int sys_fork(struct syscall_frame* regs) {
 }
 
 // exec() — replace the current process image with a new program
-int sys_exec(struct syscall_frame* regs) {
+sysret_t sys_exec(struct syscall_frame* regs) {
     char* path = (char*)regs->rdi;
 
     char** argv = (char**)regs->rsi;
@@ -90,7 +90,7 @@ int sys_exec(struct syscall_frame* regs) {
 }
 
 // exit() — terminate the calling process
-int sys_exit(struct syscall_frame* regs) {
+sysret_t sys_exit(struct syscall_frame* regs) {
     if (!current_task) return -1;
 
     // Drop the console's foreground process group once its last member is gone.
@@ -123,7 +123,7 @@ int sys_exit(struct syscall_frame* regs) {
 }
 
 // waitpid() — wait for a child process to change state
-int sys_waitpid(struct syscall_frame* regs) {
+sysret_t sys_waitpid(struct syscall_frame* regs) {
     int  target_pid = (int)regs->rdi;
     int* status     = (int*)regs->rsi;
     int  options    = (int)regs->rdx;

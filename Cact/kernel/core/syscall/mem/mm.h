@@ -33,9 +33,9 @@
 #endif
 
 // Memory management syscalls
-int sys_brk(struct syscall_frame* regs);
-int sys_mmap(struct syscall_frame* regs);
-int sys_munmap(struct syscall_frame* regs);
-int sys_mprotect(struct syscall_frame* regs);
+sysret_t sys_brk(struct syscall_frame* regs);
+sysret_t sys_mmap(struct syscall_frame* regs);
+sysret_t sys_munmap(struct syscall_frame* regs);
+sysret_t sys_mprotect(struct syscall_frame* regs);
 
 #endif 
