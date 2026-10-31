@@ -34,12 +34,6 @@ static struct page  *hash_table[PC_HASH_SIZE];
 static struct page  *lru_head;
 static struct page  *lru_tail;
 
-// Statistics counters
-static uint32_t stat_hits;
-static uint32_t stat_misses;
-static uint32_t stat_evictions;
-static uint32_t stat_writebacks;
-
 // Synchronisation — protects hash table, LRU list, pool flags/pin_count
 static irq_spinlock_t pc_lock;
 
@@ -121,7 +115,6 @@ static void _writeback(struct page *p) {
     for (uint32_t i = 0; i < spb; i++)
         blkdev_write(bd, lba + i, p->data + i * 512);
     p->flags &= (uint8_t)~PC_FLAG_DIRTY;
-    stat_writebacks++;
 }
 
 // Write back page while holding it pinned to prevent concurrent eviction.
@@ -146,7 +139,6 @@ static struct page *_evict_one(void) {
             _hash_remove(p);
             p->flags      = 0;
             p->pin_count  = 0;
-            stat_evictions++;
             return p;
         }
         p = p->lru_prev;
@@ -169,10 +161,6 @@ void pc_init(void) {
     memory_set(hash_table, 0, sizeof(hash_table));
     lru_head        = 0;
     lru_tail        = 0;
-    stat_hits       = 0;
-    stat_misses     = 0;
-    stat_evictions  = 0;
-    stat_writebacks = 0;
     irq_spinlock_init(&pc_lock);
     pr_info("%s: ready (%u-page cache)\n", "pagecache", (unsigned)PC_MAX_PAGES);
 }
@@ -182,13 +170,11 @@ uint8_t *pc_get_page(uint32_t dev, uint32_t block_no, uint32_t block_size) {
     irq_spinlock_acquire(&pc_lock);
     struct page *p = _hash_find(dev, block_no);
     if (p) {
-        stat_hits++;
         p->pin_count++;
         _lru_touch(p);
         irq_spinlock_release(&pc_lock);
         return p->data;
     }
-    stat_misses++;
     irq_spinlock_release(&pc_lock);
 
     if (block_size == 0 || block_size % 512 != 0) {
@@ -310,70 +296,4 @@ void pc_flush_dev(uint32_t dev) {
         }
     }
     irq_spinlock_release(&pc_lock);
-}
-
-// Remove a single block from cache, writing back first if dirty.
-// Refuses to invalidate pinned pages — caller must unpin first.
-// Frees the data buffer to prevent use-after-free on reallocation.
-void pc_invalidate_block(uint32_t dev, uint32_t block_no) {
-    uint8_t *freed_data;
-    irq_spinlock_acquire(&pc_lock);
-    struct page *p = _hash_find(dev, block_no);
-    if (!p) { irq_spinlock_release(&pc_lock); return; }
-    if (p->pin_count > 0) { irq_spinlock_release(&pc_lock); return; }
-    if (p->flags & PC_FLAG_DIRTY)
-        _writeback_pinned(p);
-    _lru_remove(p);
-    _hash_remove(p);
-    freed_data = p->data;
-    p->data      = 0;
-    p->flags     = 0;
-    p->pin_count = 0;
-    irq_spinlock_release(&pc_lock);
-
-    if (freed_data)
-        free_page(freed_data);
-}
-
-// Flush and remove all pages belonging to a device, freeing their data.
-// Skips pages that are still pinned.
-void pc_invalidate_dev(uint32_t dev) {
-    pc_flush_dev(dev);
-    irq_spinlock_acquire(&pc_lock);
-    for (int i = 0; i < PC_MAX_PAGES; i++) {
-        struct page *p = &pool[i];
-        if ((p->flags & PC_FLAG_VALID) && p->dev == dev) {
-            if (p->pin_count > 0) continue;
-            _lru_remove(p);
-            _hash_remove(p);
-            uint8_t *freed_data = p->data;
-            p->data      = 0;
-            p->flags     = 0;
-            p->pin_count = 0;
-            irq_spinlock_release(&pc_lock);
-            if (freed_data)
-                free_page(freed_data);
-            irq_spinlock_acquire(&pc_lock);
-        }
-    }
-    irq_spinlock_release(&pc_lock);
-}
-
-// Print cache statistics and current state
-void pc_dump_stats(void) {
-    irq_spinlock_acquire(&pc_lock);
-    pr_info("pagecache: hits=%d misses=%d evictions=%d writebacks=%d\n",
-            (int)((int)(stat_hits)), (int)((int)(stat_misses)),
-            (int)((int)(stat_evictions)), (int)((int)(stat_writebacks)));
-
-    uint32_t valid = 0, dirty = 0, pinned = 0;
-    for (int i = 0; i < PC_MAX_PAGES; i++) {
-        if (pool[i].flags & PC_FLAG_VALID)  valid++;
-        if (pool[i].flags & PC_FLAG_DIRTY)  dirty++;
-        if (pool[i].pin_count > 0)          pinned++;
-    }
-    irq_spinlock_release(&pc_lock);
-    pr_info("pagecache: pages: valid=%d dirty=%d pinned=%d/%d\n",
-            (int)((int)(valid)), (int)((int)(dirty)), (int)((int)(pinned)),
-            (int)((int)(PC_MAX_PAGES)));
 }

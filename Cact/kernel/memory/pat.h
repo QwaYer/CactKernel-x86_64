@@ -46,9 +46,6 @@
  */
 void pat_init(void);
 
-/* 1 iff the CPU supports PAT (CPUID.01H:EDX.PAT=1). */
-int  pat_available(void);
-
 /*
  * Mark the framebuffer range as Write-Combining by setting the PAT bit
  * and clearing PCD|PWT on every page in

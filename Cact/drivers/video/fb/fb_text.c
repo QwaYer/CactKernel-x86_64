@@ -346,12 +346,6 @@ void printk(const char* fmt, ...) {
         console_puts(buf, color);
 }
 
-void printk_at(char* message, int x, int y) {
-    cursor_x = x;
-    cursor_y = y;
-    printk(message);
-}
-
 void init_framebuffer(void) {
     fb_init_result_t status = fb_get_init_status();
 
@@ -369,11 +363,4 @@ void init_framebuffer(void) {
         return;
     }
     /* Success line (geometry / PAT / shadow) is printed once by kernel.c. */
-}
-
-int get_cursor_x(void) {
-    return cursor_x;
-}
-int get_cursor_y(void) {
-    return cursor_y;
 }

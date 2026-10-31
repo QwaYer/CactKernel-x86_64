@@ -299,10 +299,6 @@ int usb_register_device(usb_device_t *dev) {
     return 0;
 }
 
-void usb_dump_devices(void) {
-    (void)device_count;
-}
-
 int usb_device_count(void) {
     return device_count;
 }

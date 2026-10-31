@@ -51,19 +51,6 @@ uint16_t pcidev_cfg_read16(pci_device_t *dev, uint16_t reg)
     return (uint16_t)(v >> ((reg & 2) * 8));
 }
 
-void pcidev_cfg_write8(pci_device_t *dev, uint16_t reg, uint8_t val)
-{
-    if (!dev) return;
-    if (pcie_is_available()) {
-        pcie_write8(dev->bus, dev->dev, dev->fn, reg, val);
-        return;
-    }
-    uint32_t v = pci_read_config_dword(dev->bus, dev->dev, dev->fn, (uint8_t)(reg & ~3));
-    uint32_t shift = (reg & 3) * 8;
-    v = (v & ~(0xFFu << shift)) | ((uint32_t)val << shift);
-    pci_write_config_dword(dev->bus, dev->dev, dev->fn, (uint8_t)(reg & ~3), v);
-}
-
 void pcidev_cfg_write16(pci_device_t *dev, uint16_t reg, uint16_t val)
 {
     if (!dev) return;
@@ -147,30 +134,6 @@ int pcidev_match_device(pci_device_t *dev)
 }
 
 
-pci_device_t *pcidev_find_by_class(uint8_t class_code, uint8_t subclass)
-{
-    for (pci_device_t *d = pci_device_list; d; d = d->next)
-        if (d->class_code == class_code && d->subclass == subclass)
-            return d;
-    return NULL;
-}
-
-pci_device_t *pcidev_find_by_id(uint16_t vendor_id, uint16_t device_id)
-{
-    for (pci_device_t *d = pci_device_list; d; d = d->next)
-        if (d->vendor_id == vendor_id && d->device_id == device_id)
-            return d;
-    return NULL;
-}
-
-pci_device_t *pcidev_find_by_bdf(uint8_t bus, uint8_t dev, uint8_t fn)
-{
-    for (pci_device_t *d = pci_device_list; d; d = d->next)
-        if (d->bus == bus && d->dev == dev && d->fn == fn)
-            return d;
-    return NULL;
-}
-
 
 #define PCI_CMD_REG      0x04
 #define PCI_CMD_BUS_MASTER  (1u << 2)
@@ -190,40 +153,12 @@ void pcidev_enable_mmio(pci_device_t *dev)
     pcidev_cfg_write32(dev, PCI_CMD_REG, cmd | PCI_CMD_MEM_SPACE);
 }
 
-void pcidev_enable_io_space(pci_device_t *dev)
-{
-    uint32_t cmd = pcidev_cfg_read32(dev, PCI_CMD_REG);
-    pcidev_cfg_write32(dev, PCI_CMD_REG, cmd | PCI_CMD_IO_SPACE);
-}
-
 void pcidev_disable_intx(pci_device_t *dev)
 {
     uint32_t cmd = pcidev_cfg_read32(dev, PCI_CMD_REG);
     pcidev_cfg_write32(dev, PCI_CMD_REG, cmd | PCI_CMD_INTX_DISABLE);
 }
 
-
-int pcidev_find_cap(pci_device_t *dev, uint8_t cap_id)
-{
-    if (!dev) return 0;
-    return pcie_find_cap(dev->bus, dev->dev, dev->fn, cap_id);
-}
-
-int pcidev_get_pcie_type(pci_device_t *dev)
-{
-    if (!dev) return -1;
-    int cap = pcidev_find_cap(dev, PCI_CAP_ID_EXP);
-    if (!cap) return -1;
-    uint16_t v = pcidev_cfg_read16(dev, (uint16_t)(cap + 2));
-    return (v >> 4) & 0x7;
-}
-
-uint16_t pcidev_read_ext_cap(pci_device_t *dev, uint16_t cap_id,
-                             uint16_t start)
-{
-    if (!dev) return 0;
-    return pcie_read_ext_cap(dev->bus, dev->dev, dev->fn, cap_id, start);
-}
 
 
 void pcidev_defer_device(pci_device_t *dev)
@@ -272,21 +207,6 @@ void pcidev_init(void)
 }
 
 
-void pcidev_dump(void)
-{
-    pr_info("pcidev: PCI devices");
-}
-
-
-pci_device_t *pci_find_by_class(uint8_t cc, uint8_t sc)
-{
-    return pcidev_find_by_class(cc, sc);
-}
-
-pci_device_t *pci_find_by_id(uint16_t vid, uint16_t did)
-{
-    return pcidev_find_by_id(vid, did);
-}
 
 pci_device_t *pci_device_by_index(int index_1based)
 {
@@ -314,34 +234,11 @@ void pci_driver_match(pci_device_t *dev)
     pcidev_match_device(dev);
 }
 
-void pci_driver_defer_device(pci_device_t *dev)
-{
-    pcidev_defer_device(dev);
-}
-
-void pci_driver_probe_deferred_all(void)
-{
-    pcidev_probe_all();
-}
-
 pci_driver_t *pci_driver_find_by_name(const char *name)
 {
     if (!name || !name[0]) return NULL;
     for (pci_driver_t *d = pcidev_driver_list; d; d = d->next)
         if (streq(d->name, name)) return d;
-    return NULL;
-}
-
-pci_driver_t *pci_driver_find_class_module(uint8_t class_code, uint8_t subclass,
-                                           const char *module_path)
-{
-    if (!module_path || !module_path[0]) return NULL;
-    for (pci_driver_t *d = pcidev_driver_list; d; d = d->next) {
-        if (!d->module_path) continue;
-        if (!streq(d->module_path, module_path)) continue;
-        if (d->class_code != class_code || d->subclass != subclass) continue;
-        return d;
-    }
     return NULL;
 }
 

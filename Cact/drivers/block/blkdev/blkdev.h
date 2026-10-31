@@ -72,8 +72,6 @@ blkdev_t *blkdev_find        (const char *name);
 blkdev_t *blkdev_by_id       (uint32_t id);
 int       blkdev_count       (void);       // total devices incl. partitions
 int       blkdev_disk_count  (void);       // whole-disk devices only
-void      blkdev_dump        (void);
-
 // Per-device sector I/O. Partitions translate lba to (parent, start_lba+lba).
 // Returns 0 on success, -1 on a missing device / out-of-range lba.
 int blkdev_read (blkdev_t *dev, uint32_t lba, uint8_t *buf);

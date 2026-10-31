@@ -18,7 +18,6 @@
 #define LAPIC_LVT_MASK      (1u << 16)
 #define LAPIC_LVT_PERIODIC  (1u << 17)
 
-static int lapic_timer_armed = 0;
 static uint32_t lapic_ticks_per_ms = 0;
 
 /* Start a one-shot countdown from the maximum count, divide by 1.  The LVT is
@@ -128,24 +127,9 @@ void lapic_timer_start_periodic(uint32_t ticks_per_ms)
                 "timer", (unsigned)lvt, (unsigned)LAPIC_TIMER_VECTOR);
 
     lapic_ticks_per_ms = ticks_per_ms;
-    lapic_timer_armed = 1;
 }
 
 uint32_t lapic_timer_ticks_per_ms(void)
 {
     return lapic_ticks_per_ms;
-}
-
-void lapic_timer_mask(void)
-{
-    if (!apic_lapic_ready())
-        return;
-    apic_lapic_write(LAPIC_LVT_TIMER,
-                     LAPIC_TIMER_VECTOR | LAPIC_LVT_PERIODIC | LAPIC_LVT_MASK);
-    lapic_timer_armed = 0;
-}
-
-bool lapic_timer_active(void)
-{
-    return lapic_timer_armed != 0;
 }

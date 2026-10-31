@@ -379,13 +379,6 @@ int usb_mod_loaded(const char *instance) {
     return slot_by_instance(instance) != 0;
 }
 
-int usb_mod_count(void) {
-    int n = 0;
-    for (int i = 0; i < USB_MOD_MAX; i++)
-        if (slots[i].used) n++;
-    return n;
-}
-
 const char *usb_mod_instance(int slot) {
     if (slot < 0 || slot >= USB_MOD_MAX || !slots[slot].used)
         return 0;

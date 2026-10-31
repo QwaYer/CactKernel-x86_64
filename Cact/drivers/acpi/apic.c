@@ -499,17 +499,6 @@ void apic_eoi(void)
         apic_lapic_write(LAPIC_EOI, 0);
 }
 
-int apic_pci_vector(uint8_t irq_pin)
-{
-    if (!apic_enabled || irq_pin < 1 || irq_pin > 4)
-        return -1;
-    unsigned int gsi = irq_pin + 15;
-    unsigned int entry_idx = gsi - ioapic_global_irq_base;
-    if (entry_idx > ioapic_max_redir)
-        return -1;
-    return 0xF0 + (entry_idx & 0x0F);
-}
-
 uint32_t apic_lapic_base(void)       { return lapic_base_addr; }
 
 uint32_t apic_lapic_id(void)

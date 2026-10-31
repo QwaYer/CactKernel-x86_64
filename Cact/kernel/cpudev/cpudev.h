@@ -167,8 +167,6 @@ const char* cpu_syscall_mech_str(syscall_mech_t mech);
 int cpudev_init(void);
 
 cpu_vendor_t    cpu_vendor(void);
-syscall_mech_t  cpu_syscall_mech(void);
-
 uint32_t cpu_features_edx(void);
 uint32_t cpu_features_ecx(void);
 uint32_t cpu_features_ext_edx(void);
@@ -182,44 +180,10 @@ void cact_cpuid(uint32_t leaf, uint32_t subleaf, uint32_t *eax, uint32_t *ebx,
 
 int cpu_has_sep(void);
 int cpu_has_syscall(void);
-int cpu_has_pat(void);
-int cpu_has_msr(void);
-int cpu_has_fpu(void);
-int cpu_has_sse(void);
-int cpu_has_sse2(void);
-int cpu_has_sse3(void);
-int cpu_has_ssse3(void);
-int cpu_has_sse41(void);
-int cpu_has_sse42(void);
-int cpu_has_avx(void);
-int cpu_has_avx2(void);
-int cpu_has_fma(void);
-int cpu_has_aes(void);
-int cpu_has_vmx(void);
 int cpu_has_monitor(void);
-int cpu_has_smep(void);
-int cpu_has_smap(void);
-int cpu_has_umip(void);
-int cpu_has_pku(void);
-int cpu_has_ibrs(void);
-int cpu_has_stibp(void);
-int cpu_has_ssbd(void);
-int cpu_has_md_clear(void);
-int cpu_has_mtrr(void);
-int cpu_has_pge(void);
-int cpu_has_pae(void);
-int cpu_has_apic(void);
 int cpu_has_x2apic(void);
-int cpu_has_htt(void);
-int cpu_has_nx(void);
-int cpu_has_gbpages(void);
-int cpu_has_rdtscp(void);
-int cpu_has_invpcid(void);
 int cpu_has_rdrand(void);
-int cpu_has_arat(void);
 int cpu_has_invariant_tsc(void);
-int cpu_has_hypervisor(void);
-
 /* Nominal TSC frequency in Hz as enumerated by CPUID (leaves 0x15/0x16), or 0
  * when firmware does not report it.  Used to calibrate the TSC when no other
  * reference clock (ACPI PM timer) is available. */

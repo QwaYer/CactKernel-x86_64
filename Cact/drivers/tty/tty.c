@@ -121,8 +121,6 @@ static devfs_driver_t drv_tty = {
 };
 
 int tty_count(void)  { return tty_num; }
-int tty_active(void) { return tty_cur; }
-
 int tty_index(int idx) { return (idx <= 0) ? tty_cur : idx; }
 
 static void tty_termios_default(tty_termios_t *t) {

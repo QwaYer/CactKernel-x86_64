@@ -68,14 +68,6 @@ uint16_t pcie_read16(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg)
     return *(volatile uint16_t *)(ecam->virt + off);
 }
 
-void pcie_write8(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint8_t val)
-{
-    pcie_ecam_t *ecam = pcie_find_ecam(bus);
-    if (!ecam) return;
-    uint32_t off = pcie_ecam_offset(bus, dev, fn, reg, ecam->start_bus);
-    *(volatile uint8_t *)(ecam->virt + off) = val;
-}
-
 void pcie_write16(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint16_t val)
 {
     pcie_ecam_t *ecam = pcie_find_ecam(bus);
@@ -98,47 +90,6 @@ int pcie_find_cap(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t cap_id)
         cap_ptr = (uint8_t)((cap >> 8) & 0xFF);
     }
     return 0;
-}
-
-int pcie_get_type(uint8_t bus, uint8_t dev, uint8_t fn)
-{
-    int cap_off = pcie_find_cap(bus, dev, fn, PCIE_CAP_ID);
-    if (!cap_off) return -1;
-    uint16_t cap_reg = pcie_read16(bus, dev, fn, cap_off + 2);
-    return (cap_reg >> 4) & 0x7;
-}
-
-uint16_t pcie_read_ext_cap(uint8_t bus, uint8_t dev, uint8_t fn,
-                           uint16_t cap_id, uint16_t offset)
-{
-    if (offset == 0) {
-        uint16_t first = pcie_read16(bus, dev, fn, 0x100);
-        uint16_t next = (first >> 4) & 0xFFF;
-        uint16_t id  = first & 0xFFF;
-        if (id == cap_id) return pcie_read16(bus, dev, fn, 0x102);
-        offset = next;
-    }
-    while (offset > 0 && offset != 0xFFF) {
-        uint16_t cap = pcie_read16(bus, dev, fn, offset);
-        uint16_t id  = cap & 0xFFF;
-        if (id == cap_id)
-            return pcie_read16(bus, dev, fn, offset + 2);
-        offset = (cap >> 4) & 0xFFF;
-    }
-    return 0;
-}
-
-void pcie_dump_all(void)
-{
-    if (!pcie_ready) {
-        pr_warn("%s: not available\n", "pcie");
-        return;
-    }
-    for (pci_device_t *d = pci_device_list; d; d = d->next) {
-        int cap = pcie_find_cap(d->bus, d->dev, d->fn, PCIE_CAP_ID);
-        if (!cap) continue;
-        pr_info("pcie: device detected");
-    }
 }
 
 bool pcie_init(void)

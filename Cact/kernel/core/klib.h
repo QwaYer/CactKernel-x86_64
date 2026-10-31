@@ -28,8 +28,6 @@ int snprintf(char* buf, unsigned int size, const char* fmt, ...);
 // memory operations (signed length)
 void* memory_set(void* dest, int val, int len);
 void* memory_copy(void* dest, const void* src, int len);
-int memory_compare(const void* s1, const void* s2, int n);
-
 // memory operations (unsigned length)
 void* memset(void* dest, int val, unsigned int len);
 void* memcpy(void* dest, const void* src, unsigned int len);

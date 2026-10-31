@@ -162,12 +162,8 @@ void console_replay(const char* message, uint32_t len, uint32_t color);
 /* Called by console_puts() for every rendered byte stream; the tty core uses it
  * to record console output in the active VT's scrollback. */
 void console_on_write(const char *buf, uint32_t len);
-void printk_at   (char* message, int x, int y);
 void clear_screen(void);
 void scroll      (void);
-int  get_cursor_x(void);
-int  get_cursor_y(void);
-
 // Kernel-space string/number utilities
 void itoa          (int n, char str[]);
 int  atoi          (char* str);
@@ -231,8 +227,6 @@ struct task_struct** cact_current_task_slot(void);
 #define current_task (*cact_current_task_slot())
 
 int  fpu_global_init(void);
-void fpu_cleanup_task(struct task_struct* task);
-
 // Paging / memory management
 void      init_paging            (void);
 void      switch_paging          (uint64_t* pd);

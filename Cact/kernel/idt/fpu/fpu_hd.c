@@ -43,12 +43,6 @@ int fpu_global_init(void) {
     return 0;
 }
 
-void fpu_cleanup_task(struct task_struct* task) {
-    if (fpu_owner == task) {
-        fpu_owner = 0;
-    }
-}
-
 void handle_lazy_fpu(void) {
     __asm__ volatile("clts");
 

@@ -31,8 +31,6 @@ int fs_mod_load(const char *path);
 // Unload by instance name ("ext4") or slot index. Refuses while the module
 // still has mounted devices. Returns 0 on success, negative otherwise.
 int fs_mod_unload(const char *instance);
-int fs_mod_unload_slot(int slot);
-
 // Query.
 int          fs_mod_count(void);            // number of resident modules
 int          fs_mod_loaded(const char *instance); // 1 if that module is loaded

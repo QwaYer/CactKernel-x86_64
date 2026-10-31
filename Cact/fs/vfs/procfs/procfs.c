@@ -107,23 +107,6 @@ int procfs_register_file(const char *name, procfs_read_fn read_fn) {
     return 0;
 }
 
-// Unregister a virtual file
-int procfs_unregister_file(const char *name) {
-    proc_file_t **pp = &file_list;
-    while (*pp) {
-        if (streq((*pp)->name, name)) {
-            proc_file_t *dead = *pp;
-            *pp = dead->next;
-            dead->read_fn = NULL;
-            dead->node.priv = NULL;
-            kfree(dead);
-            return 0;
-        }
-        pp = &(*pp)->next;
-    }
-    return -1;
-}
-
 // Initialize procfs root, subdirs, and default files.
 void procfs_init(void) {
     if (procfs_ready) return;

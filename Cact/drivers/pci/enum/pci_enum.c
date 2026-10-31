@@ -203,7 +203,3 @@ void pci_enumerate(void) {
     }
     pr_info("%s: enumeration finished\n", "pci-bus");
 }
-
-void pci_enum_dump(void) {
-    for (pci_device_t *d = pci_device_list; d; d = d->next) { (void)d; }
-}

@@ -10,12 +10,7 @@
  * when it is present, invariant and could be calibrated, otherwise the ACPI
  * PM timer. */
 int      ktime_init(void);
-bool     ktime_using_tsc(void);
 uint64_t ktime_get_usec(void);
-
-/* Re-establish the timebase after an S3 resume (the sleep may have stopped
- * the ACPI PM timer that the wall clock was running on). */
-void     ktime_resume(void);
 
 /* Busy-wait for at least `us` microseconds with interrupts enabled or
  * disabled (used by the ACPI OSL stall).  Prefers the calibrated TSC, then the

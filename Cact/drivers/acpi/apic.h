@@ -19,8 +19,6 @@ void apic_clear_in_service(void);
  * leave pinning PPR.  Must cope with a LAPIC that is still mid-bring-up. */
 void spurious_apic_handler(void);
 void apic_eoi(void);
-int  apic_pci_vector(uint8_t irq_pin);
-
 uint32_t apic_lapic_base(void);
 uint32_t apic_lapic_id(void);
 bool     apic_lapic_ready(void);

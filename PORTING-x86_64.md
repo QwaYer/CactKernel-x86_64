@@ -25,7 +25,7 @@
 | `linker.ld` | `. = 1M`, без `OUTPUT_FORMAT` | `OUTPUT_FORMAT(elf64-x86-64)`, higher-half |
 | nasm | `-f elf32` (6 `meson.build`, 10 целей) + `objcopy -O elf32-i386` (SMP) | `-f elf64` / `elf64-x86-64` |
 
-PAE/long mode в коде нет — только CPUID-хелперы `cpu_has_pae()`/`CPU_FEATURE_LM`
+PAE/long mode в коде нет — из CPUID-хелперов есть только бит `CPU_FEATURE_LM`
 (`Cact/kernel/cpudev/cpudev.c`). Единственное упоминание 4 ГиБ как жёсткого
 предела — `Cact/drivers/pci/msi/msix.c:196-198`.
 

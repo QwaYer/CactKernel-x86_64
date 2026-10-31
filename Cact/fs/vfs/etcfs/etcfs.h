@@ -20,15 +20,7 @@ int  etcfs_write (const char *name, const char *buf, uint32_t size);
 int  etcfs_create(const char *name);
 int  etcfs_delete(const char *name);
 
-// Flush all dirty entries to disk
-void etcfs_flush       (void);
-
 // Seed default /etc/passwd and /etc/group if missing
 void         etcfs_seed_users  (void);
-
-// User database lookups
-const char  *etcfs_uid_to_name (uint32_t uid);
-uint32_t     etcfs_name_to_uid (const char *name);
-uint32_t     etcfs_name_to_gid (const char *name);
 
 #endif

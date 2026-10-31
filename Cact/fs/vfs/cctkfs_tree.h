@@ -42,10 +42,6 @@ void        cctkfs_tree_build (cctkfs_tree_t *tree, const char *prefix,
                                uint32_t root_file_mode,
                                const char *const *exclude);
 
-/* The synthesized root directory node; the caller names it (its name is empty
- * until then).  0 when the tree was not built. */
-vfs_node_t *cctkfs_tree_root  (cctkfs_tree_t *tree);
-
 /* Look up a first-level name; 0 when missing. */
 vfs_node_t *cctkfs_tree_walk  (cctkfs_tree_t *tree, const char *name);
 

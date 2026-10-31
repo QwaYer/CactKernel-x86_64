@@ -46,12 +46,7 @@ uint32_t pcie_read32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg);
 void     pcie_write32(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint32_t val);
 uint8_t  pcie_read8(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg);
 uint16_t pcie_read16(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg);
-void     pcie_write8(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint8_t val);
 void     pcie_write16(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t reg, uint16_t val);
 
 int      pcie_find_cap(uint8_t bus, uint8_t dev, uint8_t fn, uint8_t cap_id);
-int      pcie_get_type(uint8_t bus, uint8_t dev, uint8_t fn);
-uint16_t pcie_read_ext_cap(uint8_t bus, uint8_t dev, uint8_t fn, uint16_t cap_id, uint16_t offset);
-void     pcie_dump_all(void);
-
 #endif

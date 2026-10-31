@@ -28,9 +28,4 @@ void lapic_timer_start_periodic(uint32_t ticks_per_ms);
  * while the PM-timer reference used to calibrate it may). */
 uint32_t lapic_timer_ticks_per_ms(void);
 
-/* Stop delivering LAPIC timer interrupts (LVT masked, counter left running). */
-void lapic_timer_mask(void);
-
-bool lapic_timer_active(void);
-
 #endif

@@ -282,23 +282,6 @@ int part_scan_disk(blkdev_t *disk) {
     return 0;
 }
 
-int part_scan_all(void) {
-    int total = 0;
-    int disks = 0;
-    for (int i = 0; i < BLKDEV_SLOTS; i++) {
-        blkdev_t *d = blkdev_by_id((uint32_t)i);
-        if (!d || d->parent != 0)
-            continue;
-        disks++;
-        int n = part_scan_disk(d);
-        if (n > 0)
-            total += n;
-    }
-    pr_info("%s: %d disk(s) scanned, %d partition(s) exposed\n",
-            "blkdev", disks, total);
-    return total;
-}
-
 int part_rescan(const char *name) {
     if (!name)
         return -1;

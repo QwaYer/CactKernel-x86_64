@@ -40,9 +40,6 @@ int vfsdev_mount(const char *devarg, const char *target, const char *fstype);
 // Unmount by mount target path or by device name/device path.
 int vfsdev_umount(const char *arg);
 
-// Print the current device mounts.
-void vfsdev_list(void);
-
 // Format the mounted block devices as /proc/mounts lines
 // ("/dev/<dev> <target> <fstype> rw 0 0\n").  Writes at most cap bytes into
 // buf and returns the number of bytes produced (the full table length, which

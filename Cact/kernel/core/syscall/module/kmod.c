@@ -120,13 +120,6 @@ static kmod_slot_t *kmod_slot_by_name(const char *name) {
     return 0;
 }
 
-int kmod_count(void) {
-    int n = 0;
-    for (int i = 0; i < KMOD_MAX_SLOTS; i++)
-        if (kmod_slots[i].used) n++;
-    return n;
-}
-
 const char *kmod_name_at(int slot) {
     if (slot < 0 || slot >= KMOD_MAX_SLOTS || !kmod_slots[slot].used)
         return 0;

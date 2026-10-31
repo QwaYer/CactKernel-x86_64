@@ -24,9 +24,7 @@
 static char     klog_buf[KLOG_BUF_SIZE];   /* ring storage                  */
 static uint32_t klog_first = 0;            /* logical idx of oldest byte    */
 static uint32_t klog_next  = 0;            /* logical idx of next write     */
-static uint32_t klog_recs  = 0;            /* records appended              */
 static uint32_t klog_next_seq = 1;         /* sequence of the next record   */
-static uint32_t klog_lost  = 0;            /* bytes dropped (ring overflow) */
 
 static char     klog_pend[KLOG_LINE_MAX];  /* current partial line          */
 static uint32_t klog_pend_len = 0;
@@ -45,10 +43,8 @@ static irq_spinlock_t klog_lock;
  * holds the log lock (interrupts disabled). */
 static void klog_append(const char *s, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) {
-        if (klog_next - klog_first >= KLOG_BUF_SIZE) {
+        if (klog_next - klog_first >= KLOG_BUF_SIZE)
             klog_first++;
-            klog_lost++;
-        }
         klog_buf[klog_next & KLOG_BUF_MASK] = s[i];
         klog_next++;
     }
@@ -77,7 +73,6 @@ static void klog_emit(int level, uint32_t flags, const char *text, uint32_t len)
 
     klog_append(rec, total);
     klog_next_seq++;
-    klog_recs++;
 }
 
 /* Complete the current pending line (if any) as one log record. */
@@ -200,22 +195,6 @@ int klog_write_user(const char *text, uint32_t len) {
 
     irq_spinlock_release(&klog_lock);
     return (int)len;
-}
-
-uint32_t klog_available(void) {
-    return klog_next - klog_first;
-}
-
-uint32_t klog_line_count(void) {
-    return klog_recs;
-}
-
-uint32_t klog_dropped_bytes(void) {
-    return klog_lost;
-}
-
-uint32_t klog_seq(void) {
-    return klog_next_seq;
 }
 
 int klog_read(uint64_t off, uint32_t size, char *buf) {

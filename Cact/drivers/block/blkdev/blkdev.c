@@ -10,7 +10,6 @@
 // of the mount, and device ids == slot indexes. Freed slots are reused.
 static blkdev_t devices[BLKDEV_SLOTS];
 static int      dev_used[BLKDEV_SLOTS];
-static int      dev_count   = 0;   // live devices
 static blkdev_t *boot_dev   = 0;
 
 // Partition-layer probe (set by part_probe_init); called when a disk appears.
@@ -73,7 +72,6 @@ int register_blkdev(const char *name, uint32_t max_lba,
     d->read_sector   = read_sector;
     d->write_sector  = write_sector;
     dev_used[idx] = 1;
-    dev_count++;
 
     if (!boot_dev)
         boot_dev = d;
@@ -123,7 +121,6 @@ void unregister_blkdev(const char *name) {
     int idx = (int)d->id;
     dev_used[idx] = 0;
     memset(&devices[idx], 0, sizeof(blkdev_t));
-    dev_count--;
 
     blkdev_pick_boot();
 
@@ -134,7 +131,6 @@ void unregister_blkdev(const char *name) {
 void blkdev_init(void) {
     memset(devices,   0, sizeof(devices));
     memset(dev_used,  0, sizeof(dev_used));
-    dev_count = 0;
     boot_dev  = 0;
 
     pr_info("%s: layer ready (kmods attach during PCI probe)\n", "block");
@@ -159,44 +155,6 @@ blkdev_t *blkdev_by_id(uint32_t id) {
     if (id >= (uint32_t)BLKDEV_SLOTS)
         return 0;
     return dev_used[(int)id] ? &devices[(int)id] : 0;
-}
-
-// Return number of registered block devices
-int blkdev_count(void) {
-    return dev_count;
-}
-
-int blkdev_disk_count(void) {
-    int n = 0;
-    for (int i = 0; i < BLKDEV_SLOTS; i++)
-        if (dev_used[i] && blkdev_is_disk(&devices[i]))
-            n++;
-    return n;
-}
-
-// Print all registered devices with LBA and boot flag
-void blkdev_dump(void) {
-    pr_info("blkdev: devices:\n");
-    char b[16];
-    for (int i = 0; i < BLKDEV_SLOTS; i++) {
-        if (!dev_used[i])
-            continue;
-        blkdev_t *d = &devices[i];
-        printk("  "); printk(d->name);
-        if (!blkdev_is_disk(d)) {
-            printk(" [part of ");
-            printk(d->parent ? d->parent->name : "?");
-            printk(" @ ");
-            snprintf(b, sizeof(b), "0x%x", (unsigned)(d->start_lba));
-            printk(b);
-            printk("]");
-        }
-        printk(" lba=");
-        snprintf(b, sizeof(b), "0x%x", (unsigned)(d->max_lba));
-        printk(b);
-        if (d == boot_dev) printk(" *boot*");
-        printk("\n");
-    }
 }
 
 // Returns true if lba is out of range; prints diagnostic
@@ -343,7 +301,6 @@ blkdev_t *blkdev_add_partition(blkdev_t *disk, uint32_t part_no,
         snprintf(d->ident, BLKDEV_IDENT_MAX, "%s-part%u",
                  disk->ident, (unsigned)part_no);
     dev_used[idx] = 1;
-    dev_count++;
 
     pr_info("blkdev: partition %s: start=0x%x len=0x%x on %s\n",
             name, (unsigned)(start_lba), (unsigned)(len_lba), disk->name);
@@ -364,7 +321,6 @@ int blkdev_clear_partitions(blkdev_t *disk) {
         swap_notify_device_gone(&devices[i]);
         dev_used[i] = 0;
         memset(&devices[i], 0, sizeof(blkdev_t));
-        dev_count--;
         n++;
     }
     return n;

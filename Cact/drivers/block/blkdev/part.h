@@ -23,10 +23,6 @@ void part_probe_init(void);
 // Drop partitions of `disk` (vfsdev block nodes + blkdev entries).
 int part_drop_disk(blkdev_t *disk);
 
-// Scan all currently registered whole-disk devices. Called at boot after the
-// storage kmods have been probed. Returns total partitions created.
-int part_scan_all(void);
-
 // Scan a single disk by name (used by the /dev/sys rescan ioctl).
 int part_rescan(const char *name);
 

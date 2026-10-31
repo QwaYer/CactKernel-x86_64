@@ -152,23 +152,6 @@ int vfsdev_umount(const char *arg) {
     return r;
 }
 
-void vfsdev_list(void) {
-    printk("\nMounted block devices:\n");
-    if (!mount_list) {
-        printk("  (none)\n");
-        return;
-    }
-    for (vfsdev_mount_t *m = mount_list; m; m = m->next) {
-        printk("  ");
-        printk(m->devname);
-        printk("  ->  ");
-        printk(m->target);
-        printk("  [");
-        printk(m->fstype);
-        printk("]\n");
-    }
-}
-
 int vfsdev_mounts_text(char *buf, int cap) {
     int p = 0;
     if (!buf || cap <= 0) return 0;

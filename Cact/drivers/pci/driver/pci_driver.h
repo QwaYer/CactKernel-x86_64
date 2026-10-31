@@ -41,11 +41,6 @@ int  pci_unregister_driver(pci_driver_t *drv);
 // Find a registered driver by name (exact match), or NULL.
 pci_driver_t *pci_driver_find_by_name(const char *name);
 
-// First driver matching class/subclass and lazy-load module path (strcmp).
-// Used by Generic Driver Discovery to avoid loading the same ET_REL twice.
-pci_driver_t *pci_driver_find_class_module(uint8_t class_code, uint8_t subclass,
-                                           const char *module_path);
-
 // Unique relocatable (.cctk) driver that matches `dev` and has probe bound; NULL if none/ambiguous
 pci_driver_t *pci_driver_find_reloc_for_device(const pci_device_t *dev);
 
@@ -55,9 +50,6 @@ int pci_driver_device_count(const pci_driver_t *drv);
 
 // Walk driver list and probe the first matching driver for a device.
 void pci_driver_match(pci_device_t *dev);
-void pci_driver_defer_device(pci_device_t *dev);
-void pci_driver_probe_deferred_all(void);
-
 // Debug: print all registered drivers.
 void pci_driver_dump(void);
 

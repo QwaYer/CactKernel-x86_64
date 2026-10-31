@@ -209,11 +209,6 @@ static tree_node_t *_root_of(cctkfs_tree_t *tree) {
     return (tree && tree->root) ? (tree_node_t *)tree->root : 0;
 }
 
-vfs_node_t *cctkfs_tree_root(cctkfs_tree_t *tree) {
-    tree_node_t *root = _root_of(tree);
-    return root ? &root->node : 0;
-}
-
 vfs_node_t *cctkfs_tree_walk(cctkfs_tree_t *tree, const char *name) {
     tree_node_t *root = _root_of(tree);
     if (!root) return 0;

@@ -23,7 +23,4 @@ vfs_node_t  *procfs_get_root(void);
 // Register a read-only virtual file under /proc
 int procfs_register_file(const char *name, procfs_read_fn read_fn);
 
-// Unregister a virtual file
-int procfs_unregister_file(const char *name);
-
 #endif

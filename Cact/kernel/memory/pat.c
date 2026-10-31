@@ -63,10 +63,6 @@ void pat_init(void) {
     pr_info("%s: per-PTE memory types (WC) available\n", "pat");
 }
 
-int pat_available(void) {
-    return g_pat_present;
-}
-
 int pat_enable_wc_for_framebuffer(uint64_t fb_va,
                                    uint32_t fb_pitch,
                                    uint32_t fb_height)

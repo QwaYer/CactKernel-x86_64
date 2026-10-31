@@ -58,18 +58,6 @@ int klog_write_user(const char *text, uint32_t len);
  * written into buf, or 0 at end of log. */
 int klog_read(uint64_t off, uint32_t size, char *buf);
 
-/* Total bytes of rendered records currently retained (usable as file size). */
-uint32_t klog_available(void);
-
-/* Number of records appended since boot (sequence high-water mark). */
-uint32_t klog_line_count(void);
-
-/* Number of bytes dropped because the ring buffer was full. */
-uint32_t klog_dropped_bytes(void);
-
-/* Next sequence number to be assigned. */
-uint32_t klog_seq(void);
-
 /* Console log level (0..7).  printk() always feeds the log, but renders to
  * the console only when the message level is <= this threshold.  It starts at
  * DEBUG so the boot transcript is complete, and the kernel raises it when

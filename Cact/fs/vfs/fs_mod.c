@@ -379,12 +379,6 @@ static int slot_unload(fs_slot_t *s) {
     return 0;
 }
 
-int fs_mod_unload_slot(int slot) {
-    if (slot < 0 || slot >= FS_MOD_MAX)
-        return -EINVAL;
-    return slot_unload(&slots[slot]);
-}
-
 int fs_mod_unload(const char *instance) {
     fs_slot_t *s = slot_by_instance(instance);
     if (!s)
@@ -394,17 +388,6 @@ int fs_mod_unload(const char *instance) {
         pr_info("fsmod: module unloaded: %s\n", instance);
     }
     return rc;
-}
-
-int fs_mod_count(void) {
-    int n = 0;
-    for (int i = 0; i < FS_MOD_MAX; i++)
-        if (slots[i].used) n++;
-    return n;
-}
-
-int fs_mod_loaded_any(void) {
-    return fs_mod_count() > 0;
 }
 
 int fs_mod_loaded(const char *instance) {

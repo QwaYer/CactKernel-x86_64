@@ -30,13 +30,4 @@ void pc_put_page(uint32_t dev, uint32_t block_no);
 // Write back all dirty pages for a device
 void pc_flush_dev(uint32_t dev);
 
-// Remove a single block from cache, writing back if dirty
-void pc_invalidate_block(uint32_t dev, uint32_t block_no);
-
-// Flush and free all pages belonging to a device
-void pc_invalidate_dev(uint32_t dev);
-
-// Dump hit/miss/eviction/writeback stats and page state
-void pc_dump_stats(void);
-
 #endif

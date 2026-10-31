@@ -305,16 +305,6 @@ void* memory_copy(void* dest, const void* src, int len) {
     return dest;
 }
 
-// Compare two memory blocks, return difference at first mismatch
-int memory_compare(const void* s1, const void* s2, int n) {
-    const unsigned char* p1 = (const unsigned char*)s1;
-    const unsigned char* p2 = (const unsigned char*)s2;
-    for (int i = 0; i < n; i++) {
-        if (p1[i] != p2[i]) return p1[i] - p2[i];
-    }
-    return 0;
-}
-
 // memset wrapper with unsigned length
 void* memset(void* dest, int val, unsigned int len) {
     unsigned char* ptr = (unsigned char*)dest;

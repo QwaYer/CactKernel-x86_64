@@ -115,7 +115,6 @@ const char* cpu_syscall_mech_str(syscall_mech_t mech) {
 }
 
 cpu_vendor_t   cpu_vendor(void)          { return g_vendor; }
-syscall_mech_t cpu_syscall_mech(void)     { return g_syscall_mech; }
 uint32_t       cpu_features_edx(void)     { return g_features_edx; }
 uint32_t       cpu_features_ecx(void)     { return g_features_ecx; }
 uint32_t       cpu_features_ext_edx(void) { return g_features_ext_edx; }
@@ -125,48 +124,10 @@ uint32_t       cpu_features_leaf7_edx(void) { return g_features_leaf7_edx; }
 
 int cpu_has_sep(void)    { return !!(g_features_edx & CPU_FEATURE_SEP); }
 int cpu_has_syscall(void){ return !!(g_features_ext_edx & CPU_FEATURE_SYSCALL); }
-int cpu_has_pat(void)    { return !!(g_features_edx & CPU_FEATURE_PAT); }
-int cpu_has_msr(void)    { return !!(g_features_edx & CPU_FEATURE_MSR); }
-int cpu_has_fpu(void)    { return !!(g_features_edx & CPU_FEATURE_FPU); }
-int cpu_has_sse(void)    { return !!(g_features_edx & CPU_FEATURE_SSE); }
-int cpu_has_sse2(void)   { return !!(g_features_edx & CPU_FEATURE_SSE2); }
-int cpu_has_sse3(void)   { return !!(g_features_ecx & CPU_FEATURE_SSE3); }
-int cpu_has_ssse3(void)  { return !!(g_features_ecx & CPU_FEATURE_SSSE3); }
-int cpu_has_sse41(void)  { return !!(g_features_ecx & CPU_FEATURE_SSE41); }
-int cpu_has_sse42(void)  { return !!(g_features_ecx & CPU_FEATURE_SSE42); }
-int cpu_has_avx(void)    { return !!(g_features_ecx & CPU_FEATURE_AVX); }
-int cpu_has_avx2(void)   { return !!(g_features_leaf7_ebx & CPU_FEATURE_AVX2); }
-int cpu_has_fma(void)    { return !!(g_features_ecx & CPU_FEATURE_FMA); }
-int cpu_has_aes(void)    { return !!(g_features_ecx & CPU_FEATURE_AES); }
-int cpu_has_vmx(void)    { return !!(g_features_ecx & CPU_FEATURE_VMX); }
 int cpu_has_monitor(void){ return !!(g_features_ecx & CPU_FEATURE_MONITOR); }
-int cpu_has_smep(void)   { return !!(g_features_leaf7_ebx & CPU_FEATURE_SMEP); }
-int cpu_has_smap(void)   { return !!(g_features_leaf7_ebx & CPU_FEATURE_SMAP); }
-int cpu_has_umip(void)   { return !!(g_features_leaf7_ecx & CPU_FEATURE_UMIP); }
-int cpu_has_pku(void)    { return !!(g_features_leaf7_ecx & CPU_FEATURE_PKU); }
-int cpu_has_ibrs(void)   { return !!(g_features_leaf7_edx & CPU_FEATURE_IBRS_IBPB); }
-int cpu_has_stibp(void)  { return !!(g_features_leaf7_edx & CPU_FEATURE_STIBP); }
-int cpu_has_ssbd(void)   { return !!(g_features_leaf7_edx & CPU_FEATURE_SSBD); }
-int cpu_has_md_clear(void) { return !!(g_features_leaf7_edx & CPU_FEATURE_MD_CLEAR); }
-int cpu_has_mtrr(void)   { return !!(g_features_edx & CPU_FEATURE_MTRR); }
-int cpu_has_pge(void)    { return !!(g_features_edx & CPU_FEATURE_PGE); }
-int cpu_has_pae(void)    { return !!(g_features_edx & CPU_FEATURE_PAE); }
-int cpu_has_apic(void)   { return !!(g_features_edx & CPU_FEATURE_APIC); }
 int cpu_has_x2apic(void) { return !!(g_features_ecx & CPU_FEATURE_X2APIC); }
-int cpu_has_htt(void)    { return !!(g_features_edx & CPU_FEATURE_HTT); }
-int cpu_has_nx(void)     { return !!(g_features_ext_edx & CPU_FEATURE_NX); }
-int cpu_has_gbpages(void){ return !!(g_features_ext_edx & CPU_FEATURE_GBPAGES); }
-int cpu_has_rdtscp(void) { return !!(g_features_ext_edx & CPU_FEATURE_RDTSCP); }
-int cpu_has_invpcid(void){ return !!(g_features_leaf7_ebx & CPU_FEATURE_INVPCID); }
 int cpu_has_rdrand(void) { return !!(g_features_ecx & CPU_FEATURE_RDRAND); }
-int cpu_has_arat(void) {
-    uint32_t eax;
-    cpuid_raw(6, &eax, &(uint32_t){0}, &(uint32_t){0}, &(uint32_t){0});
-    return !!(eax & CPU_FEATURE_ARAT);
-}
 int cpu_has_invariant_tsc(void) { return g_invariant_tsc; }
-int cpu_has_hypervisor(void) { return !!(g_features_ecx & CPU_FEATURE_HYPERVISOR); }
-
 // Leaf 0x15H gives the exact TSC:core-crystal ratio, from which the TSC
 // frequency follows once the crystal is known; leaf 0x16H reports the base
 // frequency, which is the rate an invariant TSC counts at.  Prefer the exact
