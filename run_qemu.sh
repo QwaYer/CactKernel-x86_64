@@ -49,7 +49,7 @@ if [[ -z "$ISO" || ! -f "$ISO" ]]; then
   exit 1
 fi
 
-exec qemu-system-i386 \
+exec qemu-system-x86_64 \
     -accel kvm \
     -cpu host \
     -smp 4 \

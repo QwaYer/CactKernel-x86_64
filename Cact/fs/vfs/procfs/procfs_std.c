@@ -375,7 +375,7 @@ int _uname_read(uint32_t off, uint32_t size, char *buf) {
     const char *sysname  = "CactOS";
     const char *nodename = procfs_get_nodename();
     const char *release  = kernel_version;
-    const char *machine  = "i686";
+    const char *machine  = "x86_64";
     char version[65];
     snprintf(version, sizeof(version), "#1 %s", kernel_build_time);
 
@@ -475,7 +475,7 @@ int _version_read(uint32_t off, uint32_t size, char *buf) {
     #define _V(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
 
     _V("Cact Kernel ");  _V(kernel_version_meta);    _V("\n");
-    _V("Arch: x86 (i686)\n");
+    _V("Arch: x86_64\n");
     _V("Compiler: ");    _V(kernel_compiler);   _V("\n");
     _V("Built by: ");    _V(kernel_builder);    _V("\n");
     _V("Commit: ");     _V(kernel_commit_hash); _V("\n");

@@ -113,7 +113,7 @@ qemu_args=(
   -no-reboot -no-shutdown
 )
 
-qemu-system-i386 "${qemu_args[@]}" >/dev/null 2>&1 &
+qemu-system-x86_64 "${qemu_args[@]}" >/dev/null 2>&1 &
 qemu_pid=$!
 
 cleanup() {
