@@ -266,8 +266,8 @@ pub(crate) fn ustack_phys_by_idx(p: &ProcMeta, idx: usize) -> *mut c_void {
     }
 }
 
-pub(crate) fn ustack_kernel_byte_mut(p: &ProcMeta, uva: u32) -> *mut u8 {
-    let base = p.ustack_virt;
+pub(crate) fn ustack_kernel_byte_mut(p: &ProcMeta, uva: u64) -> *mut u8 {
+    let base = p.ustack_virt as u64;
     let off = uva.wrapping_sub(base) as usize;
     debug_assert!(off < USER_STACK_BYTES as usize);
     let pi = off / PAGE_SIZE as usize;
@@ -278,12 +278,13 @@ pub(crate) fn ustack_kernel_byte_mut(p: &ProcMeta, uva: u32) -> *mut u8 {
     unsafe { ustack_phys_by_idx(p, pi).cast::<u8>().add(po) }
 }
 
-pub(crate) fn ustack_write_u32(p: &ProcMeta, uva: u32, val: u32) {
+/// Store one 8-byte word of the initial user-stack image.
+pub(crate) fn ustack_write_u64(p: &ProcMeta, uva: u64, val: u64) {
     // SAFETY: `ustack_kernel_byte_mut` yields a pointer inside a user-stack backing page for the
-    // caller-supplied in-window `uva`, and callers only pass word-aligned addresses (the stack
-    // slots they decrement by 4), so the 4-byte store is aligned and in bounds.
+    // caller-supplied in-window `uva`, and callers only pass 8-byte-aligned addresses (the stack
+    // slots they step by 8), so the 8-byte store is aligned and in bounds.
     unsafe {
-        *(ustack_kernel_byte_mut(p, uva) as *mut u32) = val;
+        *(ustack_kernel_byte_mut(p, uva) as *mut u64) = val;
     }
 }
 
@@ -590,21 +591,28 @@ pub(crate) fn calc_highest_mapped_va(pd: *mut u64) -> u32 {
     0
 }
 
-pub(crate) fn push_empty_args(p: &ProcMeta, sp: &mut u32) {
-    *sp -= 4;
-    ustack_write_u32(p, *sp, 0);
+/// Build the empty initial stack image the exec/entry convention expects:
+/// `[rsp] = argc`, `[rsp+8] = argv`, `[rsp+16] = envp`, with `argv`/`envp`
+/// pointing at lone NULL terminators.  Every entry is an 8-byte word and `rsp`
+/// is left 16-byte aligned (the AMD64 process-entry convention).
+pub(crate) fn push_empty_args(p: &ProcMeta, sp: &mut u64) {
+    // envp array: a single NULL terminator.
+    *sp -= 8;
+    ustack_write_u64(p, *sp, 0);
     let envp_vaddr = *sp;
 
-    *sp -= 4;
-    ustack_write_u32(p, *sp, 0);
+    // argv array: a single NULL terminator.
+    *sp -= 8;
+    ustack_write_u64(p, *sp, 0);
     let argv_vaddr = *sp;
 
-    *sp -= 4;
-    ustack_write_u32(p, *sp, envp_vaddr);
-    *sp -= 4;
-    ustack_write_u32(p, *sp, argv_vaddr);
-    *sp -= 4;
-    ustack_write_u32(p, *sp, 0);
+    // Place the 24-byte argc/argv/envp triple so that argc (the initial %rsp)
+    // lands 16-byte aligned; the 24-byte triple is not a multiple of 16, so
+    // aligning its base here may leave an 8-byte pad below the arrays.
+    *sp = (*sp - 24) & !0xF;
+    ustack_write_u64(p, *sp + 16, envp_vaddr);
+    ustack_write_u64(p, *sp + 8, argv_vaddr);
+    ustack_write_u64(p, *sp, 0);
 }
 
 /// # Safety

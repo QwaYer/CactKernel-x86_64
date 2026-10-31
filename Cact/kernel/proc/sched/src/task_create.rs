@@ -10,7 +10,7 @@ use crate::sync::{irq_spinlock_acquire, irq_spinlock_release};
 use crate::task::{
     kstack_alloc, kstack_free, calc_highest_mapped_va, current_task, free_user_stack_pages, map_user_stack_in_pd,
     next_pid, proc_shared_alloc, push_empty_args, task_list_add, task_setup_sigreturn, task_zero_init,
-    ustack_write_u32, ProcMeta, TaskStruct, SCHEDULER_LOCK, KERNEL_BASE, KERNEL_STACK_SIZE,
+    ustack_write_u64, ProcMeta, TaskStruct, SCHEDULER_LOCK, KERNEL_BASE, KERNEL_STACK_SIZE,
     USER_CODE_SEL, USER_DATA_SEL, USER_STACK_BYTES, USER_STACK_PAGES,
 };
 
@@ -181,7 +181,6 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
     frame[7] = entry_point as u64;
     frame[8] = USER_CODE_SEL as u64;
     frame[9] = 0x0000_0202;
-    frame[10] = (ustack_virt + USER_STACK_BYTES - 4) as u64;
     frame[11] = USER_DATA_SEL as u64;
 
     t_ref.esp        = (stack_top - 12 * 8) as u64;
@@ -189,6 +188,13 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
     p_ref.ustack_phys = ustack_pages[0];
     p_ref.ustack_phys_extra = [ustack_pages[1], ustack_pages[2], ustack_pages[3]];
     p_ref.ustack_virt = ustack_virt;
+
+    // The initial user-stack image (the SysV/AMD64 argc/argv/envp triple); built
+    // after `ustack_virt` is set because the stack writers resolve it against it.
+    let mut sp = (ustack_virt + USER_STACK_BYTES) as u64;
+    push_empty_args(p_ref, &mut sp);
+    frame[10] = sp;
+
     // SAFETY: `next_pid` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let pid = unsafe { next_pid };
     t_ref.pid = pid;
@@ -300,12 +306,12 @@ pub unsafe extern "C" fn create_task_with_entry(
     unsafe { (*shared).brk_current = highest };
 
     let ustack_top = p.ustack_virt + USER_STACK_BYTES;
-    let mut sp = ustack_top - 4;
+    let mut sp = ustack_top as u64;
     push_empty_args(p, &mut sp);
     // SAFETY: `stk` is the frame base, so offset 10 (the IRETQ RSP slot) is in bounds.
     let rsp_slot = unsafe { stk.add(10) };
     // SAFETY: `rsp_slot` is that in-bounds slot.
-    unsafe { *rsp_slot = sp as u64 };
+    unsafe { *rsp_slot = sp };
 
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };
@@ -456,30 +462,31 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     }
 
     let ustack_top = p.ustack_virt + USER_STACK_BYTES;
-    let mut sp = ustack_top - 4;
+    let mut sp = ustack_top as u64;
 
     // auxv goes between envp's NULL and the top of the stack (init has no
     // argv/envp strings, so it sits directly above the empty envp array).
+    // SysV AMD64 auxv: (u64 tag, u64 value) pairs, terminated by AT_NULL.
     if has_interp {
-        const AT_PHDR: u32 = 3;
-        const AT_PHENT: u32 = 4;
-        const AT_PHNUM: u32 = 5;
-        const AT_PAGESZ: u32 = 6;
-        const AT_BASE: u32 = 7;
-        const AT_ENTRY: u32 = 9;
-        let auxv: [(u32, u32); 6] = [
-            (AT_PHDR, interp_info.main_phdr),
-            (AT_PHENT, 32),
-            (AT_PHNUM, interp_info.main_phnum),
+        const AT_PHDR: u64 = 3;
+        const AT_PHENT: u64 = 4;
+        const AT_PHNUM: u64 = 5;
+        const AT_PAGESZ: u64 = 6;
+        const AT_BASE: u64 = 7;
+        const AT_ENTRY: u64 = 9;
+        let auxv: [(u64, u64); 6] = [
+            (AT_PHDR, interp_info.main_phdr as u64),
+            (AT_PHENT, 56), // sizeof(Elf64_Phdr)
+            (AT_PHNUM, interp_info.main_phnum as u64),
             (AT_PAGESZ, 4096),
-            (AT_BASE, interp_info.interp_base),
-            (AT_ENTRY, interp_info.main_entry),
+            (AT_BASE, interp_info.interp_base as u64),
+            (AT_ENTRY, interp_info.main_entry as u64),
         ];
-        sp -= 4; ustack_write_u32(p, sp, 0); // auxv terminator (val)
-        sp -= 4; ustack_write_u32(p, sp, 0); // auxv terminator (tag)
+        sp -= 8; ustack_write_u64(p, sp, 0); // auxv terminator (val)
+        sp -= 8; ustack_write_u64(p, sp, 0); // auxv terminator (tag)
         for i in (0..6).rev() {
-            sp -= 4; ustack_write_u32(p, sp, auxv[i].1);
-            sp -= 4; ustack_write_u32(p, sp, auxv[i].0);
+            sp -= 8; ustack_write_u64(p, sp, auxv[i].1);
+            sp -= 8; ustack_write_u64(p, sp, auxv[i].0);
         }
     }
 
@@ -487,7 +494,7 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     // SAFETY: `stk` is the frame base, so offset 10 (the IRETQ RSP slot) is in bounds.
     let rsp_slot = unsafe { stk.add(10) };
     // SAFETY: `rsp_slot` is that in-bounds slot.
-    unsafe { *rsp_slot = sp as u64 };
+    unsafe { *rsp_slot = sp };
 
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };

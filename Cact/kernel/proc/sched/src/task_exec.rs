@@ -8,7 +8,7 @@ use crate::ffi::{self, ContextFrame, PAGE_SIZE};
 use crate::sync::{irq_spinlock_acquire, irq_spinlock_release};
 use crate::task::{
     map_sigreturn_trampoline_on_pd, map_user_stack_in_pd, ustack_kernel_byte_mut,
-    ustack_write_u32, ProcMeta, EXEC_MAX_ARGS, EXEC_MAX_ENVS,
+    ustack_write_u64, ProcMeta, EXEC_MAX_ARGS, EXEC_MAX_ENVS,
     EXEC_MAX_STRLEN, KERNEL_STACK_SIZE, MAX_FD, NSIG, SCHEDULER_LOCK, SIG_DFL,
     TASK_SHM_MAX, USER_STACK_BYTES, USER_STACK_PAGES, current_task,
 };
@@ -256,10 +256,10 @@ pub unsafe extern "C" fn task_exec(
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let ustack_virt = unsafe { (*p).ustack_virt };
     let ustack_top = ustack_virt + USER_STACK_BYTES;
-    let mut sp     = ustack_top - 4;
+    let mut sp     = ustack_top as u64;
 
-    let mut argv_vaddrs: [u32; 256] = [0; 256];
-    let mut envp_vaddrs: [u32; 256] = [0; 256];
+    let mut argv_vaddrs: [u64; 256] = [0; 256];
+    let mut envp_vaddrs: [u64; 256] = [0; 256];
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let argc = match copy_strings_to_ustack(argv, EXEC_MAX_ARGS, unsafe { &*p }, &mut sp, &mut argv_vaddrs) {
@@ -302,45 +302,48 @@ pub unsafe extern "C" fn task_exec(
         }
     };
 
-    // auxv pairs (Linux i386 stack layout): written just above envp's NULL,
-    // below the argv/envp string area. Only the PT_INTERP path uses them;
+    // auxv pairs (SysV AMD64 stack layout): (u64 tag, u64 value) entries
+    // written just above envp's NULL, below the argv/envp string area, then
+    // terminated by AT_NULL.  Only the PT_INTERP path uses them;
     // kernel-dynlink binaries keep the plain stack.
-    const AT_PHDR: u32 = 3;
-    const AT_PHENT: u32 = 4;
-    const AT_PHNUM: u32 = 5;
-    const AT_PAGESZ: u32 = 6;
-    const AT_BASE: u32 = 7;
-    const AT_ENTRY: u32 = 9;
-    let mut auxv: [(u32, u32); 8] = [(0, 0); 8];
+    const AT_PHDR: u64 = 3;
+    const AT_PHENT: u64 = 4;
+    const AT_PHNUM: u64 = 5;
+    const AT_PAGESZ: u64 = 6;
+    const AT_BASE: u64 = 7;
+    const AT_ENTRY: u64 = 9;
+    let mut auxv: [(u64, u64); 8] = [(0, 0); 8];
     let mut auxc = 0usize;
     if has_interp {
-        auxv[auxc] = (AT_PHDR, interp_info.main_phdr); auxc += 1;
-        auxv[auxc] = (AT_PHENT, 32);                  auxc += 1; // sizeof(Elf32_Phdr)
-        auxv[auxc] = (AT_PHNUM, interp_info.main_phnum); auxc += 1;
-        auxv[auxc] = (AT_PAGESZ, 4096);               auxc += 1;
-        auxv[auxc] = (AT_BASE, interp_info.interp_base); auxc += 1;
-        auxv[auxc] = (AT_ENTRY, interp_info.main_entry); auxc += 1;
+        auxv[auxc] = (AT_PHDR, interp_info.main_phdr as u64); auxc += 1;
+        auxv[auxc] = (AT_PHENT, 56);                          auxc += 1; // sizeof(Elf64_Phdr)
+        auxv[auxc] = (AT_PHNUM, interp_info.main_phnum as u64); auxc += 1;
+        auxv[auxc] = (AT_PAGESZ, 4096);                       auxc += 1;
+        auxv[auxc] = (AT_BASE, interp_info.interp_base as u64); auxc += 1;
+        auxv[auxc] = (AT_ENTRY, interp_info.main_entry as u64); auxc += 1;
     }
     if auxc > 0 {
-        sp -= 4;
+        sp -= 8;
         // SAFETY: `p` is the live current task's `ProcMeta`.
-        ustack_write_u32(unsafe { &*p }, sp, 0); // auxv terminator (val)
-        sp -= 4;
+        ustack_write_u64(unsafe { &*p }, sp, 0); // auxv terminator (val)
+        sp -= 8;
         // SAFETY: `p` is the live current task's `ProcMeta`.
-        ustack_write_u32(unsafe { &*p }, sp, 0); // auxv terminator (tag)
+        ustack_write_u64(unsafe { &*p }, sp, 0); // auxv terminator (tag)
         for i in (0..auxc).rev() {
-            sp -= 4;
+            sp -= 8;
             // SAFETY: `p` is the live current task's `ProcMeta`.
-            ustack_write_u32(unsafe { &*p }, sp, auxv[i].1);
-            sp -= 4;
+            ustack_write_u64(unsafe { &*p }, sp, auxv[i].1);
+            sp -= 8;
             // SAFETY: `p` is the live current task's `ProcMeta`.
-            ustack_write_u32(unsafe { &*p }, sp, auxv[i].0);
+            ustack_write_u64(unsafe { &*p }, sp, auxv[i].0);
         }
     }
 
     // The pointer-layout block below stays identical for both exec paths.
-    let ptr_overhead = (argc as u32 + envc as u32 + 5) * 4;
-    if sp < ustack_virt + ptr_overhead {
+    // argv/envp arrays: (argc+1)+(envc+1) words; the argc/argv/envp triple is
+    // 3 words plus up to 1 word of 16-byte alignment pad.
+    let ptr_overhead = (argc as u64 + envc as u64 + 6) * 8;
+    if sp < ustack_virt as u64 + ptr_overhead {
         // SAFETY: `printk` takes a static NUL-terminated byte string.
         unsafe { ffi::printk(c"exec: abort: stack layout preflight failed\n".as_ptr().cast()) };
         // SAFETY: `p` is the live current task's `ProcMeta`.
@@ -356,35 +359,35 @@ pub unsafe extern "C" fn task_exec(
         return -1;
     }
 
-    sp -= 4;
+    sp -= 8;
     // SAFETY: `p` is the live current task's `ProcMeta`.
-    ustack_write_u32(unsafe { &*p }, sp, 0);
+    ustack_write_u64(unsafe { &*p }, sp, 0);
     for i in (0..envc).rev() {
-        sp -= 4;
+        sp -= 8;
         // SAFETY: `p` is the live current task's `ProcMeta`.
-        ustack_write_u32(unsafe { &*p }, sp, envp_vaddrs[i]);
+        ustack_write_u64(unsafe { &*p }, sp, envp_vaddrs[i]);
     }
     let envp_arr = sp;
 
-    sp -= 4;
+    sp -= 8;
     // SAFETY: `p` is the live current task's `ProcMeta`.
-    ustack_write_u32(unsafe { &*p }, sp, 0);
+    ustack_write_u64(unsafe { &*p }, sp, 0);
     for i in (0..argc).rev() {
-        sp -= 4;
+        sp -= 8;
         // SAFETY: `p` is the live current task's `ProcMeta`.
-        ustack_write_u32(unsafe { &*p }, sp, argv_vaddrs[i]);
+        ustack_write_u64(unsafe { &*p }, sp, argv_vaddrs[i]);
     }
     let argv_arr = sp;
 
-    sp -= 4;
+    // Place the 24-byte argc/argv/envp triple so that argc (the initial %rsp)
+    // lands 16-byte aligned, per the AMD64 process-entry convention.
+    sp = (sp - 24) & !0xF;
     // SAFETY: `p` is the live current task's `ProcMeta`.
-    ustack_write_u32(unsafe { &*p }, sp, envp_arr);
-    sp -= 4;
+    ustack_write_u64(unsafe { &*p }, sp + 16, envp_arr);
     // SAFETY: `p` is the live current task's `ProcMeta`.
-    ustack_write_u32(unsafe { &*p }, sp, argv_arr);
-    sp -= 4;
+    ustack_write_u64(unsafe { &*p }, sp + 8, argv_arr);
     // SAFETY: `p` is the live current task's `ProcMeta`.
-    ustack_write_u32(unsafe { &*p }, sp, argc as u32);
+    ustack_write_u64(unsafe { &*p }, sp, argc as u64);
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     unsafe { (*p).pending_signals = 0 };
@@ -512,8 +515,8 @@ pub unsafe extern "C" fn task_exec(
             "push {entry}",
             "iretq",
             pd    = in(reg) pd_val as u64,
-            sp    = in(reg) sp_u as u64,
-            entry = in(reg) entry_u as u64,
+            sp    = in(reg) sp_u,
+            entry = in(reg) entry_u,
             options(noreturn),
         );
     }
@@ -523,8 +526,8 @@ fn copy_strings_to_ustack(
     src:    *mut *mut u8,
     max:    usize,
     p:      &ProcMeta,
-    sp:     &mut u32,
-    vaddrs: &mut [u32; 256],
+    sp:     &mut u64,
+    vaddrs: &mut [u64; 256],
 ) -> Option<usize> {
     if src.is_null() {
         return Some(0);
@@ -560,18 +563,18 @@ fn copy_strings_to_ustack(
             return None;
         }
 
-        if *sp < p.ustack_virt + (len + 1 + count * 4) as u32 {
+        if *sp < p.ustack_virt as u64 + (len + 1 + count * 8) as u64 {
             return None;
         }
 
-        *sp = (*sp).wrapping_sub(len as u32 + 1);
+        *sp = (*sp).wrapping_sub(len as u64 + 1);
         for j in 0..=len {
             // SAFETY: the string is bounded by `len`, so `j <= len` is in bounds.
             let byte_ptr = unsafe { s.add(j) };
             // SAFETY: `byte_ptr` is that in-bounds byte.
             let byte = unsafe { *byte_ptr };
             // SAFETY: `ustack_kernel_byte_mut` bounds its offset against `USER_STACK_BYTES`.
-            unsafe { *(ustack_kernel_byte_mut(p, *sp + j as u32)) = byte };
+            unsafe { *(ustack_kernel_byte_mut(p, *sp + j as u64)) = byte };
         }
         *vaddr = *sp;
         count += 1;
