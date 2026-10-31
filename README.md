@@ -1,17 +1,17 @@
-# 🌵 CactKernel/x86_32
+# 🌵 CactKernel/x86_64
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-2.0.0-green.svg?style=for-the-badge" alt="Version: 2.0.0">
+  <img src="https://img.shields.io/badge/version-3.0.0-green.svg?style=for-the-badge" alt="Version: 3.0.0">
   <img src="https://img.shields.io/badge/license-GPLv3-blue.svg?style=for-the-badge" alt="License: GPLv3">
-  <img src="https://img.shields.io/badge/arch-i686-red.svg?style=for-the-badge" alt="Arch: i686">
+  <img src="https://img.shields.io/badge/arch-x86_64-red.svg?style=for-the-badge" alt="Arch: x86_64">
   <img src="https://img.shields.io/badge/language-C%2FRust%2FASM-orange.svg?style=for-the-badge" alt="Language: C/Rust/ASM">
   <img src="https://img.shields.io/badge/boot-Multiboot2-purple.svg?style=for-the-badge" alt="Multiboot2">
   <img src="https://img.shields.io/badge/output-cact.iso-0369a1.svg?style=for-the-badge" alt="cact.iso">
-  <img src="https://img.shields.io/badge/status-2.0.0-yellow.svg?style=for-the-badge" alt="2.0.0">
+  <img src="https://img.shields.io/badge/status-3.0.0-yellow.svg?style=for-the-badge" alt="3.0.0">
 </p>
 
 <p align="center">
-  A <strong>hybrid monolithic kernel</strong> for <strong>i686</strong> (32-bit x86 protected mode).<br>
+  A <strong>hybrid monolithic kernel</strong> for <strong>x86_64</strong> (64-bit long mode — higher-half kernel, real direct map).<br>
   Low-level code in <strong>C</strong> and <strong>NASM</strong>; the <strong>physical/virtual memory manager</strong>, <strong>MLFQ scheduler</strong> with <strong>threads + futex</strong>, <strong>synchronization primitives</strong>, the <strong>energy (C-state) + SMP governor</strong>, <strong>TLS 1.3 (Rustls)</strong>, <strong>ECDSA P-256 module signing</strong>, the <strong>TCP/UDP/DNS stack (smoltcp)</strong>, the in-kernel <strong>802.11 station engine</strong>, the <strong>DRM/KMS core</strong>, and the <strong>VFS</strong> live in <strong>Rust</strong> crates <code>cact_mm</code>, <code>sched</code>, <code>cact_sync</code>, <code>cact_crypto</code> (vendored <code>rustls</code>/<code>webpki</code>), <code>cact_net</code>, <code>cact80211</code>, <code>cact_drm</code>, and <code>cact_vfs</code>.
 </p>
 
@@ -23,7 +23,7 @@
 |---|---|
 | **Syscalls** | 15 core traps — authoritative enum in [`syscalls.h`](Cact/kernel/core/syscall/syscalls.h) (`SYSCALL_COUNT`); everything else via VFS-node ioctls ([`ioctl_abi.h`](Cact/kernel/core/syscall/ioctl_abi.h)) |
 | **CPU ISRs** | 32 (IDT) + IRQ stubs via I/O APIC |
-| **PMM range** | All usable frames below 4 GiB, up to the **runtime** PCI-hole ceiling `pmm::ram_end()` from the Multiboot2 map (default `0xC000_0000`); arrays sized for the 4 GiB worst case |
+| **PMM range** | Every frame the **Multiboot2 map** reports as available — low RAM below the PCI hole **and** RAM above 4 GiB — reached through the direct map; the bitmap/refcount arrays are sized from the map at boot |
 | **MAX_FD** | 256 file descriptors per task (`rust_mm` FFI) |
 | **Kernel sockets** | `KSOCK_MAX` 16 VFS socket nodes; `TCP_MAX_SOCKETS` 8; `UDP_SOCK_MAX` 8 (see `rust_net` / `tcp.h`); blocking TCP `connect`/`read`/`write`, `getsockname`/`getpeername`, `O_NONBLOCK`, `-EINTR` on a pending signal |
 | **xHCI** | ~32 KiB host stack (USB 3.x) |
@@ -35,7 +35,7 @@
 | **GPU / DRM / KMS** | In-tree Rust `cact_drm` core (`Cact/drivers/gpu`): GEM on memfd, dumb buffers, mmap, atomic modeset, planes, cursors, PRIME, syncobj, events; `/dev/dri/cardN` + `renderDN`; display drivers out-of-tree as **`.cctk`** |
 | **ext4** | Out-of-tree **`.cctk`** module (`EXT4-for-Cact-x86_32`) — read/write, inode operations |
 | **TLS 1.3** | Rustls-based, in-kernel |
-| **Task struct** | 48 bytes; thread state lives in `ProcMeta`/`ProcShared` |
+| **Task struct** | 80 bytes; thread state lives in `ProcMeta`/`ProcShared` |
 
 ---
 
@@ -58,7 +58,7 @@ From the workspace root (QEMU-oriented full rebuild):
 ```sh
 python3 CactBridge-x86/build.py --non-gui-iso      # full ISO (+ QEMU with --run)
 # Kernel only (expects ../LocalRepoCactOS-x86_32/cctkfs.img already packed):
-cd CactKernel-x86_32 && meson setup build-meson --cross-file cross/i686-cact-clang.ini && ninja -C build-meson
+cd CactKernel-x86_64 && meson setup build-meson --cross-file cross/x86_64-cact-clang.ini && ninja -C build-meson
 ```
 
 Hardware-focused ISO without relying on a root disk layout: `meson configure build-meson -Diso_grub_cfg=grub.cfg.ramroot` before building `cact.iso`.
@@ -77,20 +77,20 @@ Use sibling **[CactOS-x86_32](https://github.com/QwaYer/CactOS-x86_32)**: from t
 
 | Tool | Notes |
 |------|-------|
-| `clang -m32` | Compiles the kernel; freestanding, so no 32-bit libc is needed |
+| `clang -m64` | Compiles the kernel; freestanding, so no libc is needed |
 | `nasm` | Multiboot2 entry + interrupt stubs |
-| `ld -m elf_i386` | GNU binutils — the default linker (`-Dlinker=lld` works once `BLOCK(4K)` leaves `linker.ld`) |
+| `ld -m elf_x86_64` | GNU binutils — the default linker (`-Dlinker=lld` works once `BLOCK(4K)` leaves `linker.ld`) |
 | `meson` + `ninja` | Drive the build; every source directory owns a `meson.build` |
-| `cargo +nightly` | Builds the kernel Rust graph — `cact_mm`, `sched`, `cact_drm`, `cact_net`, `cact80211`, `cact_vfs`, `cact_crypto`/`cact_hmac_ffi` — as rlibs with **`-Z build-std=core,alloc,compiler_builtins`** and the **`i686-cact`** JSON target |
+| `cargo +nightly` | Builds the kernel Rust graph — `cact_mm`, `sched`, `cact_drm`, `cact_net`, `cact80211`, `cact_vfs`, `cact_crypto`/`cact_hmac_ffi` — as rlibs with **`-Z build-std=core,alloc,compiler_builtins`** and the **`x86_64-cact`** JSON target |
 | `grub-mkrescue` + `xorriso` | produces **`build-meson/cact.iso`** |
 | `qemu-img`, `mkfs.ext4`, `e2fsck` | For [`build_disk.sh`](build_disk.sh) |
 
 **Build (Meson + Ninja)**
 
-Every source directory owns a `meson.build` and produces its own static library; the C sources are compiled by `clang -m32` (freestanding) and linked against [`linker.ld`](linker.ld).
+Every source directory owns a `meson.build` and produces its own static library; the C sources are compiled by `clang -m64` (freestanding) and linked against [`linker.ld`](linker.ld).
 
 ```sh
-meson setup build-meson --cross-file cross/i686-cact-clang.ini
+meson setup build-meson --cross-file cross/x86_64-cact-clang.ini
 ninja -C build-meson             # kernel.bin + cact.iso (kernel-only GRUB)
 ninja -C build-meson iso-full    # cact-full.iso with cctkfs.img + localrepo.tar.zst
 ninja -C build-meson check       # headless QEMU boot check (COM1: userspace, vermagic, localrepo)
@@ -121,7 +121,7 @@ archive and the compressed **`localrepo.tar.zst`** archive (served in place as
 **Successful build footer** (version from [`VERSION`](VERSION), commit from `git`) — printed by `meson setup`:
 
 ```
-  Cact kernel 2.0.0+abi.0x87fb66d1.i686 (<short>)
+  Cact kernel 3.0.0+abi.0x87fb66d1.x86_64 (<short>)
   compiler: clang 22.1.8
   linker  : /usr/bin/ld
 
@@ -149,11 +149,11 @@ Optional: `meson configure build-meson -Dkern_debug=true` for richer symbols; QE
 ## 📂 Repository layout
 
 ```
-CactKernel-x86_32/
+CactKernel-x86_64/
 ├── Cact/
 │   ├── kernel/
-│   │   ├── core/        kernel entry, Multiboot2, syscall dispatch (sysenter), IRQ, klog, klib
-│   │   ├── cpudev/      CPUID feature/vendor detection, syscall mechanism select (SEP vs AMD)
+│   │   ├── core/        kernel entry, Multiboot2, syscall dispatch (SYSCALL), IRQ, klog, klib
+│   │   ├── cpudev/      CPUID feature/vendor detection, fast-syscall MSR setup (LSTAR/STAR/SFMASK)
 │   │   ├── memory/      rust_mm/ — PMM, VMM, page faults, mmap, memfd, swap, slab, SHM
 │   │   ├── proc/        task_struct, context switch, task.h, sched/ (Rust: MLFQ, threads, futex, energy, SMP)
 │   │   ├── sync/        locks, semaphores, sleeping mutexes (Rust + C FFI)
@@ -228,7 +228,7 @@ Order matters (e.g. **blkdev** before PCI so AHCI/NVMe can register).
 |---|-----------|
 | 1 | **GDT** → **CPU feature detection** (`cpudev_init`) → **x87 FPU + SSE** (`CR4.OSFXSR`; the compiler needs XMM for 64-bit ops) → **PMM boot-image reservation** → **PMM** (from MB2 mmap) → **VMM** → **kmalloc heap** → **paging on** |
 | 2 | **Slab allocator** + **page fault** handler (COW, demand zero, swap markers) |
-| 3 | **IDT** (256 vectors) + fast-syscall MSRs (`sysenter`/`syscall`) + **COM1 serial** (mirrors part of `kprint` / `klog` to host) |
+| 3 | **IDT** (256 vectors) + fast-syscall MSRs (`LSTAR`/`STAR`/`SFMASK`) + **COM1 serial** (mirrors part of `kprint` / `klog` to host) |
 | 4 | **Linear framebuffer** console + **PAT** write-combining for VRAM + **WB shadow** buffer, then terminal winsize from FB geometry |
 | 5 | **ACPI** — parse RSDP, MADT, FADT tables via ACPICA |
 | 6 | **Timekeeping** — TSC (ACPI PM timer fallback) + **LAPIC timer @ 100 Hz** scheduler tick; **CMOS RTC** civil wall clock; the **ksym vermagic** line |
@@ -252,7 +252,7 @@ Order matters (e.g. **blkdev** before PCI so AHCI/NVMe can register).
 **Typical serial / FB banner:**
 
 ```
-Cact Kernel 2.0.0+abi.0x87fb66d1.i686
+Cact Kernel 3.0.0+abi.0x87fb66d1.x86_64
 --------------------------
 [VER] commit=…  built=…
 Kernel is ready. Launching init…
@@ -265,13 +265,13 @@ Kernel is ready. Launching init…
 
 ## 🧠 Memory map (`rust_mm`)
 
-The PMM installs every **available** frame the **Multiboot2 memory map** reports — low RAM below the 32-bit PCI hole *and* any RAM above 4 GiB — so `-m 6G` manages all 6 GiB. `pmm::ram_end()` is the page-aligned top of usable RAM *below* the hole (default `PCI_HOLE_START`, `0xC000_0000`, e.g. `0xE000_0000` on a 3.5 GiB-hole board); physical addresses in `[ram_end, 4 GiB)` are device MMIO. The kernel reaches a frame — and every device register — through the **direct map** (`0xFFFF_8000_0000_0000`). The **identity map is gone** once `init_paging` runs, bar a single page: the AP trampoline at `0x8000`, which a woken core must execute at its physical address before it can jump to the higher half. Nothing else is identity-mapped, so no user VA window can displace a live frame — `USER_FRAME_CEIL` is gone with it. The free-frame bitmap and the per-frame refcounts are **sized at boot from the memory map** and carved out of the boot reservation (no 4 GiB static arrays); the direct map is built to match, giving above-4-GiB RAM windows a page directory from `kalloc`. The user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM extent. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB cctkfs staging buffer, static page tables, the trampoline page, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`) and its own arrays.
+The PMM installs every **available** frame the **Multiboot2 memory map** reports — low RAM below the PCI hole *and* any RAM above 4 GiB — so `-m 6G` manages all 6 GiB. `pmm::ram_end()` is the page-aligned top of usable RAM *below* the hole (default `PCI_HOLE_START`, `0xC000_0000`, e.g. `0xE000_0000` on a 3.5 GiB-hole board); physical addresses in `[ram_end, 4 GiB)` are device MMIO. The kernel reaches a frame — and every device register — through the **direct map** (`0xFFFF_8000_0000_0000`). The **identity map is gone** once `init_paging` runs, bar a single page: the AP trampoline at `0x8000`, which a woken core must execute at its physical address before it can jump to the higher half. Nothing else is identity-mapped, so no user VA window can displace a live frame — `USER_FRAME_CEIL` is gone with it. The free-frame bitmap and the per-frame refcounts are **sized at boot from the memory map** and carved out of the boot reservation (no 4 GiB static arrays); the direct map is built to match, giving above-4-GiB RAM windows a page directory from `kalloc`. The user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM extent. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB cctkfs staging buffer, static page tables, the trampoline page, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`) and its own arrays.
 
 | Symbol | Value | Meaning |
 |--------|-------|---------|
 | `MEM_START` | `0x00100000` | Conventional kernel load floor |
 | `PCI_HOLE_START` | `0xC0000000` | Default MMIO base; the effective low-RAM ceiling is `pmm::ram_end()` |
-| `LOW_MEM_END` | `0x1_0000_0000` | End of the 32-bit address space; the direct map treats `[ram_end, LOW_MEM_END)` as device space |
+| `LOW_MEM_END` | `0x1_0000_0000` | The 4 GiB boundary; the direct map treats `[ram_end, LOW_MEM_END)` as device space |
 | `RESERVED_END` | `0x20000000` (512 MiB) | Low memory never given to `kalloc`/user (floor; the boot modules and the PMM arrays raise it) |
 | `HEAP_START` / `HEAP_SIZE` | `0x20000000` / 16 MiB | Kernel heap window (floor; the PMM raises it above the boot modules) |
 | `HEAP_MAGIC` | `0xDEADBEEF` | Heap block canary |
@@ -610,7 +610,7 @@ The kernel only traps for 15 syscalls; everything else is a **VFS-node service**
 
 Authoritative ABI headers: [`syscalls.h`](Cact/kernel/core/syscall/syscalls.h) (15 trap numbers) and [`ioctl_abi.h`](Cact/kernel/core/syscall/ioctl_abi.h) (every relay command/protocol struct) — both must stay byte-for-byte in sync with **[CactLib `syscall.h`](https://github.com/QwaYer/CactLibc-x86_32/blob/main/include/syscall.h)**.
 
-Syscall dispatch uses the **`sysenter`/`sysexit`** instruction pair, with an AMD **`syscall`/`sysret`** fast path on CPUs that support it (see [`syscall_entries.asm`](Cact/kernel/core/syscall_entries.asm), `cpu_syscall_mech_*` in [`cpudev.c`](Cact/kernel/cpudev/cpudev.c)); the legacy **`int 0x80`** path has been removed, so SEP (or AMD SYSCALL) is required. Many syscalls take a **`struct syscall_frame*`** (full register snapshot) in the dispatcher — see [`mod.c`](Cact/kernel/core/syscall/mod.c) `_needs_frame()`.
+Syscall dispatch uses **`SYSCALL`/`SYSRET`** (long mode has no `SYSENTER`, and the legacy **`int 0x80`** path is gone): entry point in `LSTAR`, selectors in `STAR`, rflags mask in `SFMASK`, per-CPU kernel stack via `swapgs` (see [`syscall_entries.asm`](Cact/kernel/core/syscall_entries.asm), `cpu_syscall_mech_*` in [`cpudev.c`](Cact/kernel/cpudev/cpudev.c)). The kernel's `rax`/`rdi`/`rsi`/`rdx` convention is the AMD64 one; many syscalls take a **`struct syscall_frame*`** (full register snapshot) in the dispatcher — see [`mod.c`](Cact/kernel/core/syscall/mod.c) `_needs_frame()`.
 
 | ABI surface | Service |
 |-------|-------|
