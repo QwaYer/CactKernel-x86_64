@@ -185,8 +185,10 @@ typedef struct cact_proc_info {
 
 // /proc/self/cwd — read-only; content is the absolute cwd (no trailing NUL).
 
-// /proc/time — binary read-only (8 bytes), monotonic since boot.
-typedef struct cact_time { uint32_t sec; uint32_t usec; } cact_time_t;
+// /proc/time — binary read-only (16 bytes), monotonic since boot.  `sec` is
+// 64-bit (an unsigned 32-bit second count wraps in ~136 years — or in ~497 days
+// of 100 Hz monotonic ticks); `usec` is always < 1e6 and stays 32-bit.
+typedef struct cact_time { uint64_t sec; uint32_t usec; } cact_time_t;
 
 // /proc/wallclock — binary read-only, same cact_time_t layout: civil time,
 // seconds since the Unix epoch, taken from the CMOS RTC read at boot.  This is

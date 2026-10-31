@@ -442,7 +442,7 @@ int _wallclock_read(uint32_t off, uint32_t size, char *buf) {
         t.sec  = ticks / 100;
         t.usec = (ticks % 100) * (1000000 / 100);
     } else {
-        t.sec  = (uint32_t)(us / 1000000ull);
+        t.sec  = us / 1000000ull;
         t.usec = (uint32_t)(us % 1000000ull);
     }
     uint32_t len = sizeof(t);
