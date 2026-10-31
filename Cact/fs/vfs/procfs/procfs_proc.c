@@ -355,7 +355,7 @@ static int _self_ctl_ioctl(vfs_node_t *node, uint32_t cmd, void *arg) {
         proc_metadata_t* p = current_task->proc;
         uint32_t onstack = p->altstack_flags & CACT_SS_ONSTACK;  /* may be running on it now */
 
-        a.old_sp    = (uint32_t)p->altstack_sp;
+        a.old_sp    = p->altstack_sp;
         a.old_size  = p->altstack_size;
         a.old_flags = p->altstack_flags;
 
@@ -510,7 +510,7 @@ static int _self_ctl_ioctl(vfs_node_t *node, uint32_t cmd, void *arg) {
         return proc_thread_gettid();
 
     case CACT_PROCCTL_SET_TLS: {
-        uint32_t base = 0;
+        uint64_t base = 0;
         if (arg && copy_from_user(&base, arg, sizeof(base)) != 0) return -EFAULT;
         return proc_set_tls(base);
     }

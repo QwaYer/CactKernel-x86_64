@@ -457,7 +457,7 @@ fn handle_signal_bit(
 pub unsafe extern "C" fn task_sigaction(
     t:       *mut TaskStruct,
     signum:  u32,
-    handler: u32,
+    handler: u64,
     flags:   u32,
     mask:    u32,
 ) -> i32 {
@@ -470,7 +470,7 @@ pub unsafe extern "C" fn task_sigaction(
         return -1;
     }
 
-    if handler != SIG_DFL && handler != SIG_IGN && handler >= KERNEL_BASE {
+    if handler != SIG_DFL as u64 && handler != SIG_IGN as u64 && handler >= KERNEL_BASE as u64 {
         return -1;
     }
 
@@ -481,12 +481,12 @@ pub unsafe extern "C" fn task_sigaction(
     // SAFETY: `proc_ptr` is the task's live `ProcMeta`; `signum` was bounded against `NSIG`
     // above, so the handler write is in bounds.
     let p = unsafe { &mut *proc_ptr };
-    p.signal_handlers[signum as usize] = handler as u64;
+    p.signal_handlers[signum as usize] = handler;
     // The disposition's flags travel with the handler so delivery can honour
     // SA_ONSTACK (see deliver_pending_signal).
-    p.signal_flags[signum as usize] = if handler <= SIG_IGN { 0 } else { flags };
+    p.signal_flags[signum as usize] = if handler <= SIG_IGN as u64 { 0 } else { flags };
     // ...and so is the set the disposition asks to have blocked while it runs.
-    p.signal_masks[signum as usize] = if handler <= SIG_IGN { 0 } else { mask };
+    p.signal_masks[signum as usize] = if handler <= SIG_IGN as u64 { 0 } else { mask };
     0
 }
 

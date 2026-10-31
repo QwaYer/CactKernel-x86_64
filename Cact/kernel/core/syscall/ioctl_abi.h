@@ -228,18 +228,18 @@ typedef struct cact_uname {
 #define CACT_PROCCTL_GET_TID     0x3215  // self; arg=NULL; returns the calling task's tid
 #define CACT_PROCCTL_KILLPG      0x3216  // self; arg=cact_killpg_arg_t*  (killpg(pgid,sig))
 #define CACT_PROCCTL_SIGALTSTACK 0x3217  // self; arg=cact_sigaltstack_arg_t* (sigaltstack(2))
-#define CACT_PROCCTL_SET_TLS     0x3218  // self; arg=uint32_t* (the %gs thread pointer)
+#define CACT_PROCCTL_SET_TLS     0x3218  // self; arg=uint64_t* (the %gs thread pointer)
 #define CACT_PROCCTL_YIELD       0x3219  // self; arg=NULL; give up the CPU to another runnable task (sched_yield)
 #define CACT_PROCCTL_SIGWAIT     0x321A  // self; arg=cact_sigwait_arg_t* (sigwait/sigwaitinfo/sigtimedwait)
 #define CACT_PROCCTL_SIGQUEUE    0x321B  // self; arg=cact_sigqueue_arg_t* (sigqueue(2))
 
 typedef struct cact_thread_create_arg {
     void*    entry;      // user entry point (called as entry(arg))
-    uint32_t user_esp;   // initial user stack pointer (libc lays out the frame)
+    uint64_t user_esp;   // initial user stack pointer (libc lays out the frame)
     uint32_t flags;      // reserved, 0
-    uint32_t tls;        // this thread's %gs base (0 = none)
-    uint32_t set_child_tid;   // kernel writes the new tid here before it runs (0 = none)
-    uint32_t clear_child_tid; // join futex word the kernel zeroes on exit (0 = none)
+    uint64_t tls;        // this thread's %gs base (0 = none)
+    uint64_t set_child_tid;   // kernel writes the new tid here before it runs (0 = none)
+    uint64_t clear_child_tid; // join futex word the kernel zeroes on exit (0 = none)
 } cact_thread_create_arg_t;
 
 #define CACT_FUTEX_WAIT 0
@@ -251,7 +251,7 @@ typedef struct cact_thread_create_arg {
 #define CACT_FUTEX_WAKE_SHARED 3
 
 typedef struct cact_futex_arg {
-    uint32_t uaddr;      // futex word, user VA
+    uint64_t uaddr;      // futex word, user VA
     int32_t  op;         // CACT_FUTEX_WAIT[_SHARED] | CACT_FUTEX_WAKE[_SHARED]
     int32_t  val;        // WAIT: expected value; WAKE: count
     int32_t  timeout_ms; // WAIT: <= 0 means wait forever
@@ -263,7 +263,7 @@ typedef struct cact_signal_arg { uint32_t pid; uint32_t signum; } cact_signal_ar
 typedef struct cact_killpg_arg { uint32_t pgid; uint32_t signum; } cact_killpg_arg_t;
 typedef struct cact_sigaction_arg {
     uint32_t signum;
-    uint32_t handler;
+    uint64_t handler;
     uint32_t flags;      // sa_flags (CACT_SA_*); 0 for plain signal()
     uint32_t mask;       // sa_mask: signals blocked while this handler runs
 } cact_sigaction_arg_t;
@@ -292,10 +292,10 @@ typedef struct cact_sigaction_arg {
 //   sp!=0, size>=CACT_MINSIGSTKSZ - enable it at [sp, sp+size)
 // old_flags carries CACT_SS_ONSTACK while a handler is running on it.
 typedef struct cact_sigaltstack_arg {
-    uint32_t sp;
+    uint64_t sp;
     uint32_t size;
     uint32_t flags;
-    uint32_t old_sp;
+    uint64_t old_sp;
     uint32_t old_size;
     uint32_t old_flags;
 } cact_sigaltstack_arg_t;
@@ -931,14 +931,14 @@ typedef struct cact_wlan_status {
 #define CACT_MQ_DEFAULT_MAXMSG 10
 #define CACT_MQ_DEFAULT_MSGSIZE 8192
 
-// struct mq_attr as syscall and userspace agree on it (long == int32_t on
-// i686; the reserved words keep glibc's struct mq_attr layout).
+// struct mq_attr as syscall and userspace agree on it (long is 64-bit on
+// x86-64; the reserved words keep glibc's struct mq_attr layout).
 typedef struct cact_mq_attr {
-    int32_t mq_flags;     // O_NONBLOCK
-    int32_t mq_maxmsg;    // INIT: in; GETATTR/SETATTR-out: the queue's depth
-    int32_t mq_msgsize;   // INIT: in; GETATTR/SETATTR-out: max message bytes
-    int32_t mq_curmsgs;   // out: messages queued right now
-    int32_t reserved[4];
+    int64_t mq_flags;     // O_NONBLOCK
+    int64_t mq_maxmsg;    // INIT: in; GETATTR/SETATTR-out: the queue's depth
+    int64_t mq_msgsize;   // INIT: in; GETATTR/SETATTR-out: max message bytes
+    int64_t mq_curmsgs;   // out: messages queued right now
+    int64_t reserved[4];
 } cact_mq_attr_t;
 
 // One send/receive.  `timeout_ms` < 0 waits forever, 0 is a poll (EAGAIN when

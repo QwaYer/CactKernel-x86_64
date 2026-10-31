@@ -33,10 +33,10 @@ use crate::task::{
 #[no_mangle]
 pub unsafe extern "C" fn sched_create_thread(
     entry:    *const c_void,
-    user_esp: u32,
-    tls:      u32,
-    set_tid:  u32,
-    clr_tid:  u32,
+    user_esp: u64,
+    tls:      u64,
+    set_tid:  u64,
+    clr_tid:  u64,
 ) -> i32 {
     // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
     unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
@@ -142,8 +142,8 @@ pub unsafe extern "C" fn sched_create_thread(
     child_p.itimer_value      = 0;
     child_p.itimer_interval   = 0;
     child_p.is_thread         = 1;
-    child_p.clr_tid           = clr_tid as u64;  // join futex the kernel zeroes on exit
-    child_p.tls_base          = tls as u64;      // this thread's %fs base (0 = none)
+    child_p.clr_tid           = clr_tid;  // join futex the kernel zeroes on exit
+    child_p.tls_base          = tls;      // this thread's %fs base (0 = none)
     // SAFETY: `parent_proc` is the live parent's `ProcMeta`.
     child_p.tgid = unsafe { (*parent_proc).tgid };
     child_p.shared = parent_shared;
@@ -172,7 +172,7 @@ pub unsafe extern "C" fn sched_create_thread(
     frame[7] = entry as u64;
     frame[8] = USER_CODE_SEL as u64;
     frame[9] = 0x0000_0202;
-    frame[10] = user_esp as u64;
+    frame[10] = user_esp;
     frame[11] = USER_DATA_SEL as u64;
 
     child.esp = (stack_top - 12 * 8) as u64;
@@ -257,7 +257,7 @@ pub unsafe fn clear_child_tid_on_exit(t: *mut TaskStruct) {
 /// core right away, so the task sees the new `%gs` as soon as it returns to user
 /// space.  `base == 0` clears it (see `smp::set_tls_base`).
 #[no_mangle]
-pub unsafe extern "C" fn sched_set_tls(base: u32) -> i32 {
+pub unsafe extern "C" fn sched_set_tls(base: u64) -> i32 {
     let t = current_task();
     if t.is_null() {
         return -1;
@@ -268,7 +268,7 @@ pub unsafe extern "C" fn sched_set_tls(base: u32) -> i32 {
         return -1;
     }
     // SAFETY: `p` is that task's live `ProcMeta`.
-    unsafe { (*p).tls_base = base as u64 };
-    crate::smp::set_tls_base(crate::percpu::this_cpu(), base as u64);
+    unsafe { (*p).tls_base = base };
+    crate::smp::set_tls_base(crate::percpu::this_cpu(), base);
     0
 }

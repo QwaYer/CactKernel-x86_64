@@ -40,7 +40,7 @@
 
 typedef struct {
     uint64_t            pd;      /* private key: address-space identity (the PML4 pointer) */
-    uint32_t            uaddr;   /* private key: futex word, user VA */
+    uint64_t            uaddr;   /* private key: futex word, user VA */
     uint64_t            phys;    /* shared key: the word's physical address */
     struct task_struct* task;
 } futex_waiter_t;
@@ -57,7 +57,7 @@ extern void sched_task_exit(int exit_code);
  * -EAGAIN if the value already differed, -ETIMEDOUT, or -EINTR.  `shared`
  * selects the key: the physical address of the word, or (this address space,
  * uaddr). */
-static int futex_do_wait(uint32_t uaddr, int32_t val, int32_t timeout_ms, int shared) {
+static int futex_do_wait(uint64_t uaddr, int32_t val, int32_t timeout_ms, int shared) {
     uint32_t* word = (uint32_t*)(uintptr_t)uaddr;
     if (!validate_user_ptr(word, sizeof(uint32_t))) return -EFAULT;
     if (!current_task || !current_task->proc) return -EINVAL;
@@ -165,7 +165,7 @@ static int futex_do_wait(uint32_t uaddr, int32_t val, int32_t timeout_ms, int sh
  * physical address) or the private (pd, uaddr) pair.  The two kinds never
  * match each other.  Also used by the scheduler's thread-exit path through
  * cact_futex_wake_addr(). */
-static int futex_wake_key(uint64_t pd, uint32_t uaddr, uint64_t phys, int32_t count) {
+static int futex_wake_key(uint64_t pd, uint64_t uaddr, uint64_t phys, int32_t count) {
     if (count <= 0) count = 1;
 
     int woken = 0;
@@ -195,19 +195,19 @@ static int futex_wake_key(uint64_t pd, uint32_t uaddr, uint64_t phys, int32_t co
     return woken;
 }
 
-static int futex_wake_pd(uint64_t pd, uint32_t uaddr, int32_t count) {
+static int futex_wake_pd(uint64_t pd, uint64_t uaddr, int32_t count) {
     return futex_wake_key(pd, uaddr, 0, count);
 }
 
 /* Kernel FFI: the scheduler clears a thread's join word and wakes its waiters
  * when the thread exits (ROADMAP: clear_child_tid). */
 int cact_futex_wake_addr(uint64_t* pd, uint32_t* uaddr, int count) {
-    return futex_wake_pd((uint64_t)(uintptr_t)pd, (uint32_t)(uintptr_t)uaddr, count);
+    return futex_wake_pd((uint64_t)(uintptr_t)pd, (uint64_t)(uintptr_t)uaddr, count);
 }
 
 /* Wake up to `count` waiters on *uaddr: the caller's address space, or — when
  * `shared` — every process that maps the word's page. */
-static int futex_do_wake(uint32_t uaddr, int32_t count, int shared) {
+static int futex_do_wake(uint64_t uaddr, int32_t count, int shared) {
     if (!current_task) return -EINVAL;
     if (shared) {
         uint64_t phys = vmm_get_phys(current_task->page_directory, uaddr);
@@ -241,7 +241,7 @@ int proc_thread_create(const void* arg) {
 /* CACT_PROCCTL_SET_TLS: install the calling task's %gs base.  The base becomes
  * the ring-3 thread pointer, so it must be a user address and 4-byte aligned
  * (the compiler TLS model uses at least that); 0 clears it. */
-int proc_set_tls(uint32_t base) {
+int proc_set_tls(uint64_t base) {
     if (!current_task) return -EINVAL;
     if (base != 0) {
         if (base < USER_SPACE_START || base >= KERNEL_BASE) return -EINVAL;

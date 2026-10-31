@@ -363,7 +363,7 @@ void task_signal_locked(uint32_t pid, uint32_t signal);
    this so they can return -EINTR instead of delaying the signal's delivery. */
 uint32_t task_signal_pending_current(void);
 void task_handle_signals(struct task_struct* t);
-int  task_sigaction(struct task_struct* t, uint32_t signum, uint32_t handler,
+int  task_sigaction(struct task_struct* t, uint32_t signum, uint64_t handler,
                     uint32_t flags, uint32_t mask);
 void task_setup_sigreturn(struct task_struct* t);
 int  task_sigprocmask(struct task_struct* t, int how, const uint32_t* set, uint32_t* oldset);
@@ -394,11 +394,11 @@ int task_park_state(uint32_t blocked_state);
  * user stack pointer `user_esp`.  `clr_tid` is a user word the kernel zeroes
  * (and futex-wakes) when the thread exits, or 0.  Returns the new tid (>0) or a
  * negative error. */
-int  sched_create_thread(void* entry, uint32_t user_esp, uint32_t tls,
-                         uint32_t set_tid, uint32_t clr_tid);
+int  sched_create_thread(void* entry, uint64_t user_esp, uint64_t tls,
+                         uint64_t set_tid, uint64_t clr_tid);
 /* Set the calling task's `%gs` base (CACT_PROCCTL_SET_TLS) and load it on this
  * core; 0 clears it.  Returns 0 or a negative error. */
-int  sched_set_tls(uint32_t base);
+int  sched_set_tls(uint64_t base);
 /* Wake up to `count` futex waiters on `uaddr` in address space `pd` (kernel FFI
  * used by the scheduler's thread-exit path). */
 int  cact_futex_wake_addr(uint64_t* pd, uint32_t* uaddr, int count);
@@ -412,7 +412,7 @@ int  proc_thread_exit(uint32_t code);
 int  proc_thread_gettid(void);
 int  proc_futex(const void* arg);
 /* CACT_PROCCTL_SET_TLS: validate `base` and install it as the caller's %gs. */
-int  proc_set_tls(uint32_t base);
+int  proc_set_tls(uint64_t base);
 
 struct task_struct* create_task_with_entry(void*                entry,
                                              uint64_t*            pd,
