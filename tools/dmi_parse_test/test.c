@@ -1,6 +1,6 @@
 /*
  * Host-side test for the SMBIOS entry-point discovery in
- * Cact/drivers/quirks/acpi/dmi.c (+ the EFI configuration-table lookup in
+ * Cact/drivers/dmi/dmi.c (+ the EFI configuration-table lookup in
  * Cact/drivers/acpi/efi_config.c).
  *
  * Both files are compiled *unmodified* against the stub headers in ./stub;
@@ -21,7 +21,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "dmi.h"            /* the real Cact/drivers/quirks/acpi/dmi.h */
+#include "dmi.h"            /* the real Cact/drivers/dmi/dmi.h */
 #include "efi_config.h"     /* the real Cact/drivers/acpi/efi_config.h */
 
 /* --- emulated physical address space ------------------------------------- */

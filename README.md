@@ -166,12 +166,13 @@ CactKernel-x86_64/
 │   │   ├── acpi/        ACPICA engine — AML interpreter, MADT/APIC/FADT tables, C-states, power
 │   │   ├── block/       blkdev, page cache, partition scan (MBR/GPT)
 │   │   ├── firmware/    request_firmware()/release_firmware() for modules (cctkfs blobs, .zst)
+│   │   ├── dmi/         SMBIOS board identity (vendor/product/BIOS) for quirks and /proc/dmi
 │   │   ├── gpu/         DRM uapi + KMS core (crates kms + rust_drm) — GEM, dumb buffers, modeset
 │   │   ├── input/       USB HID only (PS/2 removed in 2.0)
 │   │   ├── timer/       ktime (TSC primary, ACPI PM fallback), LAPIC scheduler tick, CMOS RTC, tick counter
 │   │   ├── initfs/      cctkfs staging + module blob reader
 │   │   ├── pci/         enumerator, PCIe ECAM, MSI/MSI-X, ELF module loader, mod_tag verify
-│   │   ├── quirks/      per-machine workarounds (acpi DMI, xhci PCI-ID flags; pci/ empty)
+│   │   ├── quirks/      per-machine workarounds (xhci PCI-ID flags; pci/ empty)
 │   │   ├── tty/         VT console + line discipline (Alt+F<n>)
 │   │   ├── usb/         xhci + HID + hub
 │   │   ├── video/       framebuffer console, PSF2 font parser, PAT WC + shadow blit
@@ -396,7 +397,8 @@ deeply each core may idle:
 | **Firmware** | `request_firmware()` / `release_firmware()` (ksym) — stage a blob from **cctkfs**, transparently **`.zst`**-decompressed | Build-time table only (no on-demand loader/workqueue) |
 | **Zstd** | In-kernel zstd decompressor (`Cact/drivers/zstd`, vendored from Linux `lib/zstd`) | Used by the firmware loader to expand `.zst` blobs (whole-buffer, single-frame, ≤4 GiB) |
 | **PCI** | Config scan, **PCIe ECAM**, MSI/MSI-X vector pool, driver table, **modblob** loader, ECDSA P-256 + vermagic verification | Loads ET_REL modules from **cctkfs** or path (user-driven via kmod syscalls) |
-| **Quirks** | Per-machine workarounds: `quirks/acpi` (DMI board quirks) and `quirks/xhci` (PCI-ID flag table) | `quirks/pci/` is currently empty |
+| **DMI / SMBIOS** | Board identity (`Cact/drivers/dmi`): entry point from the **EFI configuration table** under UEFI, else the **F-segment** scan; 64-bit (`_SM3_`) and 32-bit (`_SM_`) entry points | Feeds the board quirks and `/proc/dmi` |
+| **Quirks** | Per-machine workarounds: `quirks/acpi` (HP 290 G1 `_OSC`) and `quirks/xhci` (PCI-ID flag table) | `quirks/pci/` is currently empty |
 | **Network** | **virtio-net** (`.cctk`); in-kernel **802.11** engine (`cact80211`) for Wi-Fi radios | Default NIC under QEMU; other NICs packaged as **`.cctk`** (e.g. Marvell **Yukon**); **RT3070** USB Wi-Fi via the `RT2800USB` module, whose driver is now a *dumb radio* |
 | **ACPI** | ACPICA — RSDP, MADT, FADT, APIC table parsing, `_CST` C-states, power (S5/reset) | Since 2.0 |
 

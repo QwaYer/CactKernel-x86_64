@@ -115,6 +115,7 @@ cact_includes = include_directories(
   'Cact/drivers/pci/loader',
   'Cact/drivers/initfs',
   'Cact/drivers/firmware',
+  'Cact/drivers/dmi',
   'Cact/drivers/pci/msi',
   'Cact/drivers/pci/pcie',
   'Cact/drivers/block/blkdev',
@@ -260,6 +261,7 @@ subdir('Cact/drivers/block/blkdev')
 subdir('Cact/drivers/block/pagecache')
 subdir('Cact/drivers/initfs')
 subdir('Cact/drivers/firmware')
+subdir('Cact/drivers/dmi')
 subdir('Cact/drivers/input')
 subdir('Cact/drivers/pci')
 subdir('Cact/drivers/pci/enum')

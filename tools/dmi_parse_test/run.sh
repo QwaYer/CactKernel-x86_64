@@ -2,7 +2,7 @@
 #
 # Build and run the host-side SMBIOS discovery test (tools/dmi_parse_test).
 #
-# Cact/drivers/quirks/acpi/dmi.c and Cact/drivers/acpi/efi_config.c are compiled
+# Cact/drivers/dmi/dmi.c and Cact/drivers/acpi/efi_config.c are compiled
 # unmodified for the host against the stub headers in ./stub, with test.c
 # emulating the physical address space the probe walks.  Nothing here is linked
 # into the kernel.
@@ -30,11 +30,11 @@ cflags=(-std=gnu17 -Wall -Wextra -O1)
 # multiboot2.h are stubbed.
 "$cc" "${cflags[@]}" \
     -I "$here/stub" \
-    -I "$root/Cact/drivers/quirks/acpi" \
+    -I "$root/Cact/drivers/dmi" \
     -I "$root/Cact/drivers/acpi" \
     -o "$out" \
     "$here/test.c" \
-    "$root/Cact/drivers/quirks/acpi/dmi.c" \
+    "$root/Cact/drivers/dmi/dmi.c" \
     "$root/Cact/drivers/acpi/efi_config.c"
 
 exec "$out"
