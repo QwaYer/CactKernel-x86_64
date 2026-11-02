@@ -1,11 +1,20 @@
 /*
  * SMBIOS/DMI probing (board identification).
  *
- * The SMBIOS entry point lives in the firmware BIOS area between 0xF0000 and
- * 0xFFFFF, exactly like the ACPI RSDP, and the same temporary physical map
- * helpers are used to reach it.  Two entry point formats are accepted:
+ * The SMBIOS entry point comes from one of two places, depending on how the
+ * machine was booted:
  *
- *   2.1+  anchor "_SM_"  (contains the 16-bit structure table length)
+ *   UEFI    the firmware publishes it through the EFI configuration table
+ *           (SMBIOS3_TABLE_GUID, else SMBIOS_TABLE_GUID) — see efi_config.h.
+ *           UEFI firmware does *not* keep the entry point in the F-segment, so
+ *           a scan limited to that range finds nothing at all on such a
+ *           machine.
+ *   legacy  the entry point lives in the firmware BIOS area between 0xF0000
+ *           and 0xFFFFF, exactly like the ACPI RSDP.
+ *
+ * Both entry point formats are accepted:
+ *
+ *   2.1+  anchor "_SM_"  (32-bit structure table address, 16-bit length)
  *   3.x   anchor "_SM3_" (64-bit table address; length from the maximum
  *         structure-table size field)
  *
@@ -17,6 +26,7 @@
 #include "kernel.h"
 #include "klib.h"
 #include "cact_acpi.h"
+#include "efi_config.h"
 #include "dmi.h"
 
 #define DMI_STR_MAX         64u
@@ -24,9 +34,18 @@
 #define SMBIOS_SCAN_START   0x000F0000u
 #define SMBIOS_SCAN_LEN     0x00010000u   /* 0xF0000..0xFFFFF */
 #define SMBIOS_SCAN_STEP    16u
-#define SMBIOS_TABLE_MAX    0x00010000u   /* 64 KB safety cap */
+#define SMBIOS_EPS_MAX      32u           /* longest entry point structure */
+/* Mapping cap for the structure table (not a validity test): it bounds how
+ * much of the shared temp-map window one probe can claim.  Types 0 and 1 sit
+ * at the front of the table, so a firmware that reports more than this is
+ * still identified from the first 64 KiB. */
+#define SMBIOS_TABLE_MAX    0x00010000u
 
 #define SMBIOS_END_TYPE     127u
+
+/* Entry point candidates tried in order; a handful covers every board seen
+ * (EFI 64/32-bit, then the F-segment scan). */
+#define DMI_MAX_CAND        8
 
 static char dmi_vendor[DMI_STR_MAX];
 static char dmi_product[DMI_STR_MAX];
@@ -51,6 +70,13 @@ static uint16_t dmi_get16(const uint8_t *p)
 static uint32_t dmi_get32(const uint8_t *p)
 {
     uint32_t v;
+    memcpy(&v, p, sizeof(v));
+    return v;
+}
+
+static uint64_t dmi_get64(const uint8_t *p)
+{
+    uint64_t v;
     memcpy(&v, p, sizeof(v));
     return v;
 }
@@ -132,70 +158,135 @@ static const uint8_t *dmi_next_structure(const uint8_t *st, const uint8_t *end)
     return (q > end) ? end : q;
 }
 
-static int dmi_locate_eps(uint32_t *addr_out, uint32_t *len_out)
+/* A located SMBIOS entry point: where its structure table is, how long the
+ * firmware says that table is, and which of the two formats carried it. */
+struct dmi_eps {
+    uint64_t table;      /* physical address of the structure table */
+    uint32_t len;        /* structure table length in bytes */
+    int      smbios3;    /* 64-bit (SMBIOS 3.x) entry point */
+};
+
+/* Validate one entry point structure (@p, 32 bytes) and pull the structure
+ * table address out of it.  Returns 1 when accepted, 0 otherwise. */
+static int dmi_parse_eps(const uint8_t *p, struct dmi_eps *out)
 {
-    void *m = acpi_temp_map(SMBIOS_SCAN_START, SMBIOS_SCAN_LEN);
-    if (!m)
+    uint8_t len;
+
+    if (p[0] != '_' || p[1] != 'S' || p[2] != 'M')
         return 0;
 
-    const uint8_t *p = m;
-    int found = 0;
+    if (p[3] == '3' && p[4] == '_') {
+        /* SMBIOS 3.x: "_SM3_" anchor, checksum at 0x05, entry point length at
+         * 0x06, maximum structure-table size at 0x0C, 64-bit table address at
+         * 0x10.  The table address is genuinely 64-bit — firmware is free to
+         * keep the table above 4 GiB, and the mapping window accepts it. */
+        len = p[6];
+        if (len < 0x18 || len > SMBIOS_EPS_MAX || !dmi_checksum(p, len))
+            return 0;
 
-    for (uint32_t off = 0; off + 0x20 <= SMBIOS_SCAN_LEN; off += SMBIOS_SCAN_STEP) {
-        if (p[off] != '_' || p[off + 1] != 'S' || p[off + 2] != 'M')
+        uint32_t size = dmi_get32(p + 0x0C);
+        uint64_t addr = dmi_get64(p + 0x10);
+        if (addr == 0 || size == 0)
+            return 0;
+
+        out->table   = addr;
+        out->len     = size;
+        out->smbios3 = 1;
+        return 1;
+    }
+
+    if (p[3] == '_') {
+        /* SMBIOS 2.1+: "_SM_" anchor, entry point length at 0x05 and the
+         * legacy DMI header ("_DMI_") embedded at 0x10. */
+        len = p[5];
+        if (len < 0x1E || len > SMBIOS_EPS_MAX || !dmi_checksum(p, len))
+            return 0;
+
+        if (p[0x10] != '_' || p[0x11] != 'D' || p[0x12] != 'M' ||
+            p[0x13] != 'I' || p[0x14] != '_')
+            return 0;
+        if (!dmi_checksum(p + 0x10, 15))
+            return 0;
+
+        uint16_t size = dmi_get16(p + 0x16);
+        uint32_t addr = dmi_get32(p + 0x18);
+        if (addr == 0 || size == 0)
+            return 0;
+
+        out->table   = addr;
+        out->len     = size;
+        out->smbios3 = 0;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* Collect the entry point candidates, most preferred first: the EFI
+ * configuration table (64-bit form first, per SMBIOS 3.0 §5.2), then every
+ * 16-byte-aligned candidate in the F-segment, 64-bit ones before 32-bit ones.
+ * Up to @max candidates are written; returns the number found. */
+static int dmi_locate(struct dmi_eps *out, const char **src, int max)
+{
+    int n = 0;
+    uint8_t buf[SMBIOS_EPS_MAX];
+    uint64_t phys = 0;
+
+    /* 1. EFI configuration table — the only place UEFI publishes this. */
+    for (int i = 0; i < 2 && n < max; i++) {
+        const uint8_t *guid = i == 0 ? EFI_GUID_SMBIOS3 : EFI_GUID_SMBIOS;
+        const char    *name = i == 0 ? "EFI/SMBIOS3" : "EFI/SMBIOS";
+
+        if (!efi_config_lookup(guid, &phys))
             continue;
 
-        if (p[off + 3] == '_') {
-            /* SMBIOS 2.1+ entry point ("_SM_" .. "_DMI_"). */
-            uint8_t len = p[off + 5];
-            uint32_t addr, table_len;
-
-            if (len < 0x1E || len > 0x20 || !dmi_checksum(p + off, len))
-                continue;
-            if (p[off + 0x10] != '_' || p[off + 0x11] != 'D' ||
-                p[off + 0x12] != 'M' || p[off + 0x13] != 'I' ||
-                p[off + 0x14] != '_')
-                continue;
-            if (!dmi_checksum(p + off + 0x10, 15))
-                continue;
-
-            table_len = dmi_get16(p + off + 0x16);
-            addr      = dmi_get32(p + off + 0x18);
-            if (addr == 0 || table_len == 0 || table_len > SMBIOS_TABLE_MAX)
-                continue;
-
-            *addr_out = addr;
-            *len_out  = table_len;
-            found = 1;
-            break;
+        void *m = acpi_temp_map(phys, SMBIOS_EPS_MAX);
+        if (!m) {
+            pr_warn("%s: EFI %s entry point at 0x%llx does not map\n",
+                    "smbios", name, (unsigned long long)phys);
+            continue;
         }
+        memcpy(buf, m, SMBIOS_EPS_MAX);
+        acpi_temp_unmap(m, SMBIOS_EPS_MAX);
 
-        if (p[off + 3] == '3' && p[off + 4] == '_') {
-            /* SMBIOS 3.x entry point ("_SM3_"): 5-byte anchor, checksum at
-             * +5, length at +6, max structure-table size at +0x0C and the
-             * 64-bit structure table address at +0x10. */
-            uint8_t len = p[off + 6];
-            uint32_t addr, addr_hi, max_size;
-
-            if (len < 0x18 || !dmi_checksum(p + off, len))
-                continue;
-
-            max_size = dmi_get32(p + off + 0x0C);
-            addr     = dmi_get32(p + off + 0x10);
-            addr_hi  = dmi_get32(p + off + 0x14);
-            if (addr_hi != 0 || addr == 0 ||
-                max_size == 0 || max_size > SMBIOS_TABLE_MAX)
-                continue;
-
-            *addr_out = addr;
-            *len_out  = max_size;
-            found = 1;
-            break;
+        if (dmi_parse_eps(buf, &out[n])) {
+            src[n++] = name;
+        } else {
+            pr_warn("%s: EFI %s entry point at 0x%llx did not validate\n",
+                    "smbios", name, (unsigned long long)phys);
         }
     }
 
-    acpi_temp_unmap(m, SMBIOS_SCAN_LEN);
-    return found;
+    /* 2. F-segment scan (legacy BIOS boot, or a UEFI machine that also keeps a
+     *    legacy copy).  The whole window is scanned rather than stopping at
+     *    the first structurally valid entry point: firmware that ships a stale
+     *    or unreadable legacy entry point next to a working 64-bit one must not
+     *    have the latter shadowed. */
+    void *seg = acpi_temp_map(SMBIOS_SCAN_START, SMBIOS_SCAN_LEN);
+    if (!seg)
+        return n;
+
+    const uint8_t *p = seg;
+
+    for (int pass = 0; pass < 2 && n < max; pass++) {
+        for (uint32_t off = 0; off + SMBIOS_EPS_MAX <= SMBIOS_SCAN_LEN;
+             off += SMBIOS_SCAN_STEP) {
+            if (p[off] != '_' || p[off + 1] != 'S' || p[off + 2] != 'M')
+                continue;
+            if ((p[off + 3] == '3') != (pass == 0))
+                continue;
+
+            memcpy(buf, p + off, SMBIOS_EPS_MAX);
+            if (dmi_parse_eps(buf, &out[n])) {
+                src[n] = out[n].smbios3 ? "F-segment _SM3_" : "F-segment _SM_";
+                n++;
+                break;                       /* at most one per pass */
+            }
+        }
+    }
+
+    acpi_temp_unmap(seg, SMBIOS_SCAN_LEN);
+    return n;
 }
 
 static int dmi_parse_table(const uint8_t *table, uint32_t len)
@@ -238,21 +329,48 @@ static int dmi_collect_once(void)
     if (dmi_state != 0)
         return dmi_state;
 
+    /* The probe reads firmware memory through the ACPI OSL window, which only
+     * exists once AcpiOsInitialize() has run.  Report "not yet" without
+     * caching it, so a late caller still gets a real answer. */
+    if (!acpi_temp_map_ready())
+        return 0;
+
     dmi_state = -1;
 
-    uint32_t addr = 0, len = 0;
-    if (dmi_locate_eps(&addr, &len)) {
-        void *m = acpi_temp_map(addr, len);
-        if (m) {
-            if (dmi_parse_table((const uint8_t *)m, len))
-                dmi_state = 1;
-            acpi_temp_unmap(m, len);
+    struct dmi_eps eps[DMI_MAX_CAND];
+    const char *src[DMI_MAX_CAND];
+    int n = dmi_locate(eps, src, DMI_MAX_CAND);
+
+    for (int i = 0; i < n; i++) {
+        uint32_t len = eps[i].len;
+        if (len > SMBIOS_TABLE_MAX) {
+            pr_info("%s: %s table is %u B — reading the first %u B\n",
+                    "smbios", src[i], (unsigned)len, (unsigned)SMBIOS_TABLE_MAX);
+            len = SMBIOS_TABLE_MAX;
         }
+
+        void *m = acpi_temp_map(eps[i].table, len);
+        if (!m) {
+            pr_warn("%s: %s table at 0x%llx does not map\n", "smbios", src[i],
+                    (unsigned long long)eps[i].table);
+            continue;
+        }
+
+        int ok = dmi_parse_table((const uint8_t *)m, len);
+        acpi_temp_unmap(m, len);
+
+        if (ok) {
+            pr_info("dmi: %s / %s (BIOS %s) [%s]",
+                    dmi_vendor, dmi_product, dmi_bios_version, src[i]);
+            dmi_state = 1;
+            break;
+        }
+        pr_info("%s: %s table at 0x%llx carries no usable type 1 structure\n",
+                "smbios", src[i], (unsigned long long)eps[i].table);
     }
 
-    if (dmi_state == 1)
-        pr_info("dmi: %s / %s (BIOS %s)",
-                dmi_vendor, dmi_product, dmi_bios_version);
+    if (dmi_state != 1)
+        pr_info("dmi: no usable SMBIOS table (%d candidate(s) tried)\n", n);
 
     return dmi_state;
 }
