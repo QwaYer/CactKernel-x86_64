@@ -79,16 +79,10 @@ int acpi_init(void)
 
     {
         ACPI_PHYSICAL_ADDRESS rsdp_phys = AcpiOsGetRootPointer();
-        if (rsdp_phys) {
-            char buf[48];
-            char hex[16];
-            strcpy(buf, "acpi: RSDP at 0x");
-            snprintf(hex, sizeof(hex), "0x%x", (unsigned)((uint32_t)rsdp_phys));
-            strcat(buf, hex);
-            pr_info("%s", buf);
-        } else {
+        if (rsdp_phys)
+            pr_info("acpi: RSDP at 0x%llx\n", (unsigned long long)rsdp_phys);
+        else
             pr_warn("%s: RSDP not found\n", "acpi");
-        }
     }
 
     pr_info("acpi: initialization complete");
