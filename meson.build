@@ -363,6 +363,15 @@ run_target('iso-full',
 run_target('check',
   command: [bash, src_root / 'tools/cact_check.sh'])
 
+# Host-side test for firmware-table discovery (SMBIOS entry point and the EFI
+# configuration table): compiles the real dmi.c/efi_config.c for the host
+# against stub kernel headers and emulates the physical address space.  Covers
+# what no QEMU firmware produces — a 64-bit SMBIOS 3.x table above 4 GiB and a
+# stale legacy entry point next to a working one.
+run_target('dmi-parse-test',
+  command: [bash, src_root / 'tools/dmi_parse_test/run.sh',
+            build_root / 'dmi_parse_test'])
+
 # ------------------------------------------------------------------------------
 # Housekeeping targets (make clean / acpica-clean / acpica-update)
 # ------------------------------------------------------------------------------
@@ -393,4 +402,5 @@ message('  linker  : ' + ld.full_path())
 message('')
 message('  ninja -C build-meson          -> kernel.bin + cact.iso')
 message('  ninja -C build-meson iso-full -> cact-full.iso')
+message('  ninja -C build-meson dmi-parse-test -> host-side firmware-table test')
 message('')
