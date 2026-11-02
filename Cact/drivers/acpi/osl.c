@@ -34,6 +34,11 @@ static struct acpi_mapping acpi_mappings[ACPI_OSL_MAX_MAPPINGS];
 static spinlock_t          acpi_mappings_lock;
 static UINT32              acpi_mapping_next_va = 0;  /* set in AcpiOsInitialize() */
 
+int acpi_temp_map_ready(void)
+{
+    return acpi_mapping_next_va != 0;
+}
+
 void* acpi_temp_map(UINT64 phys, UINT32 size)
 {
     UINT64 offset    = phys & 0xFFF;
