@@ -8,7 +8,7 @@
 #include "usb.h"
 #include "pci_enum.h"
 #include "sync.h"
-#include "xhci_quirks.h"
+#include "quirks.h"
 
 #define XHCI_CAP_CAPLENGTH   0x00
 #define XHCI_CAP_HCIVERSION  0x02

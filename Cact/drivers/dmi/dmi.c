@@ -84,15 +84,6 @@ static uint64_t dmi_get64(const uint8_t *p)
     return v;
 }
 
-static int dmi_prefix(const char *s, const char *prefix)
-{
-    while (*prefix) {
-        if (*s++ != *prefix++)
-            return 0;
-    }
-    return 1;
-}
-
 static int dmi_contains(const char *haystack, const char *needle)
 {
     for (; *haystack; haystack++) {
@@ -378,19 +369,19 @@ static int dmi_collect_once(void)
     return dmi_state;
 }
 
-int dmi_is_hp_290g1(void)
+/* Does the running board's SMBIOS identity contain @vendor_sub / @product_sub?
+ * Each is a case-sensitive substring of the reported string; a NULL argument
+ * matches any value.  Returns 0 when the firmware exposes no usable SMBIOS.
+ * This is identification only — what workaround a matching board needs lives
+ * in the quirk blacklist (drivers/quirks). */
+int dmi_matches(const char *vendor_sub, const char *product_sub)
 {
     if (dmi_collect_once() <= 0)
         return 0;
 
-    /* Manufacturer is "HP" / "HP Inc." on modern boards, "Hewlett-Packard"
-     * on older ones. */
-    if (strcmp(dmi_vendor, "Hewlett-Packard") != 0 &&
-        !dmi_prefix(dmi_vendor, "HP"))
+    if (vendor_sub && !dmi_contains(dmi_vendor, vendor_sub))
         return 0;
-
-    /* HP 290 G1 SFF / Microtower (Intel B360). */
-    if (!dmi_contains(dmi_product, "290 G1"))
+    if (product_sub && !dmi_contains(dmi_product, product_sub))
         return 0;
 
     return 1;

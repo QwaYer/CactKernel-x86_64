@@ -336,7 +336,7 @@ void xhci_handle_irq(usb_hc_t *hc) {
          * with the quirk active we ack it so it can never cascade into a
          * chipset-triggered system reboot. */
         xhci_op_write32(priv, XHCI_OP_USBSTS, XHCI_STS_HSE);
-        if (priv->quirks & XHCI_QUIRK_SPURIOUS_REBOOT) {
+        if (priv->quirks & QUIRK_XHCI_SPURIOUS_REBOOT) {
             pr_warn("xhci: spurious host error ignored (Intel quirk)");
         } else {
             /* A real HSE puts the xHC into a fatal state: clearing the bit is

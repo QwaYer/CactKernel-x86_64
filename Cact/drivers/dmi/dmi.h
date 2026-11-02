@@ -9,15 +9,19 @@
  *
  * Firmware-provided SMBIOS tables are the only reliable way to tell which
  * physical board we are running on; PCI/ACPI only identify chipsets and
- * AML blobs, not the product.  dmi_is_hp_290g1() returns 1 when the SMBIOS
- * system information (type 1) reports an HP "290 G1" desktop (the Intel
- * B360 SFF/microtower that ships the broken _OSC AML), and 0 otherwise —
- * including every board that does not expose SMBIOS at all.
+ * AML blobs, not the product.
  *
- * This is identification only — the workaround a caller applies to a given
- * board lives with that caller (e.g. drivers/quirks/acpi for _OSC).
+ * This layer only *reports* identity — it knows no board by name.  A caller
+ * that cares about a particular machine asks dmi_matches() with the vendor and
+ * product substrings it is looking for; the decision of what workaround to
+ * apply to that board lives in the quirk blacklist (drivers/quirks).
+ *
+ * dmi_matches() returns 1 when SMBIOS identifies a board whose system vendor
+ * and product name both contain the given substrings (a NULL argument matches
+ * any value), and 0 otherwise — including any machine that does not expose
+ * SMBIOS at all.
  */
-int dmi_is_hp_290g1(void);
+int dmi_matches(const char *vendor_sub, const char *product_sub);
 
 /*
  * Raw SMBIOS identity (system vendor / product name / BIOS version) as the

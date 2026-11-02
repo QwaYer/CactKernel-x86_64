@@ -5,7 +5,7 @@
 
 #include "xhci.h"
 #include "xhci_internal.h"
-#include "xhci_quirks.h"
+#include "quirks.h"
 #include "usb.h"
 #include "pci_enum.h"
 #include "pci_driver.h"
@@ -55,8 +55,8 @@ static int xhci_pci_probe(pci_device_t *pdev) {
     pcidev_enable_bus_master(pdev);
     pcidev_disable_intx(pdev);
 
-    uint32_t quirks = xhci_quirks_for(pdev);
-    if (quirks & XHCI_QUIRK_SPURIOUS_REBOOT)
+    uint32_t quirks = quirks_for_pci(pdev->vendor_id, pdev->device_id);
+    if (quirks & QUIRK_XHCI_SPURIOUS_REBOOT)
         pr_info("%s: spurious-reboot quirk active\n", "xhci");
 
     /* msidev picks the best mechanism the controller offers and does the

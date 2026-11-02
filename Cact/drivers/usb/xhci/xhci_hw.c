@@ -67,7 +67,7 @@ static int xhci_program_regs(xhci_priv_t *priv) {
     xhci_rt_write32(priv, 0x20 + XHCI_IMAN, 0x3);
 
     uint32_t run_cmd = XHCI_CMD_RS | XHCI_CMD_INTE;
-    if (priv->quirks & XHCI_QUIRK_SPURIOUS_REBOOT) {
+    if (priv->quirks & QUIRK_XHCI_SPURIOUS_REBOOT) {
         /* Intel 300-series can raise a spurious host-system-error that trips
          * a chipset reboot; keep HSEE disabled so it can never fire. */
         pr_info("%s: HSE interrupt masked (spurious-reboot quirk)\n", "xhci");
@@ -185,7 +185,7 @@ int xhci_init_one(uint64_t mmio, uint32_t quirks) {
         }
     }
 
-    if (priv->quirks & XHCI_QUIRK_INTEL_HOST)
+    if (priv->quirks & QUIRK_XHCI_INTEL_HOST)
         xhci_udelay(5000);   /* Intel hosts need extra settle after reset */
 
     priv->dcbaa = (uint64_t *)kmalloc_aligned((priv->max_slots + 1) * sizeof(uint64_t), 64);

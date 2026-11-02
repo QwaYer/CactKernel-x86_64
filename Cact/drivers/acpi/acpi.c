@@ -6,7 +6,7 @@
 #include "klib.h"
 #include "acpi.h"
 #include "cact_acpi.h"
-#include "acpi_quirks.h"
+#include "quirks.h"
 
 static int acpi_initialized = 0;
 
@@ -173,8 +173,9 @@ void acpi_osc_pcie_init(void)
     if (!acpi_initialized)
         return;
 
-    /* Manufacturer quirk: some boards ship a broken _OSC method. */
-    if (acpi_board_quirks() & ACPI_QUIRK_DISABLE_OSC) {
+    /* Manufacturer quirk: some boards ship a broken _OSC method; the quirk
+     * blacklist (drivers/quirks) knows which. */
+    if (quirks_for_board() & QUIRK_ACPI_DISABLE_OSC) {
         pr_info("acpi: _OSC skipped (board quirk: broken _OSC AML)");
         return;
     }

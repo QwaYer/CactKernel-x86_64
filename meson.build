@@ -127,8 +127,7 @@ cact_includes = include_directories(
   'Cact/drivers/usb/xhci',
   'Cact/drivers/usb/hid',
   'Cact/drivers/usb/hub',
-  'Cact/drivers/quirks/acpi',
-  'Cact/drivers/quirks/xhci',
+  'Cact/drivers/quirks',
   'Cact/drivers/timer',
   'Cact/fs/vfs',
   'Cact/fs/pipe',
@@ -271,8 +270,7 @@ subdir('Cact/drivers/pci/driver')
 subdir('Cact/drivers/pci/loader')
 subdir('Cact/drivers/pci/msi')
 subdir('Cact/drivers/pci/pcie')
-subdir('Cact/drivers/quirks/acpi')
-subdir('Cact/drivers/quirks/xhci')
+subdir('Cact/drivers/quirks')
 subdir('Cact/drivers/timer')
 subdir('Cact/drivers/tty')
 subdir('Cact/drivers/usb')
