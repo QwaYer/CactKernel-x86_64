@@ -161,7 +161,6 @@ cact_includes = include_directories(
   'Cact/drivers/gpu/drm',
   'Cact/drivers/gpu/drm/uapi',
   'Cact/drivers/acpi',
-  'Cact/drivers/acpi/include',
   'Cact/drivers/acpi/acpica/source/include',
   'Cact/kernel/core/syscall/process',
   'Cact/kernel/core/syscall/io',

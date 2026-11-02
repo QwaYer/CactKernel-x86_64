@@ -4,7 +4,7 @@
 
 """vendor_sync.py — refresh the vendored third-party trees from their upstreams.
 
-The kernel vendors six third-party trees (each has an UPSTREAM.md next to it).
+The kernel vendors five third-party trees (each has an UPSTREAM.md next to it).
 None is verbatim upstream: every one is upstream *pruned* of what the kernel does
 not build and *patched* in a few recorded places.  So "sync" means: fetch the
 upstream ref, re-apply the recorded patches, and diff the result against what is
@@ -168,24 +168,6 @@ MANIFEST: dict[str, dict] = {
         # an ABI: CactOS's copies are older than this ref and adapted by hand, so
         # the tool shows the drift and a human merges it together with cact_drm
         "manual": ["drm.h", "drm_mode.h", "drm_fourcc.h"],
-        "spdx": {},
-        "edits": [],
-    },
-    "acpica-platform": {
-        "dest": "Cact/drivers/acpi/include/platform",
-        # Pinned to the ACPICA commit whose licence (BSD-2-Clause-Patent OR
-        # GPL-2.0-only) is the one these files declare.  Upstream has since
-        # moved to BSD-3-Clause OR GPL-2.0-only (see the UPSTREAM.md) - bumping
-        # this SHA means updating the SPDX line in both files.
-        "origin": {"kind": "git", "url": "https://github.com/acpica/acpica",
-                   "ref": "bc7b8aad0613f03a968d93a92ea025a517936350"},
-        "map": [["source/include/platform/acenv.h", "acenv.h"],
-                ["source/include/platform/acintel.h", "acintel.h"]],
-        "drop": [],
-        "keep": ["UPSTREAM.md"],
-        # tailored to this kernel by hand (width, asm macros, BREAKPOINT3); a
-        # re-sync is a careful manual merge, not a copy
-        "manual": ["acenv.h", "acintel.h"],
         "spdx": {},
         "edits": [],
     },

@@ -80,7 +80,7 @@ upstream ref, its local edits and its overrides next to the code:
 * [`Cact/crypto/vendor/UPSTREAM.md`](Cact/crypto/vendor/UPSTREAM.md) — rustls / rustls-pki-types / rustls-webpki
 * [`Cact/drivers/zstd/UPSTREAM.md`](Cact/drivers/zstd/UPSTREAM.md) — zstd (from the Linux kernel)
 * [`Cact/drivers/gpu/drm/uapi/UPSTREAM.md`](Cact/drivers/gpu/drm/uapi/UPSTREAM.md) — DRM uapi headers (MIT)
-* [`Cact/drivers/acpi/include/platform/UPSTREAM.md`](Cact/drivers/acpi/include/platform/UPSTREAM.md) — ACPICA platform headers
+* [`Cact/drivers/acpi/PLATFORM.md`](Cact/drivers/acpi/PLATFORM.md) — which ACPI platform layer is actually compiled
 
 Do not edit a vendored file in place except to re-add a stripped licence header;
 otherwise it stops being diffable against upstream.
