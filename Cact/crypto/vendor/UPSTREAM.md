@@ -7,11 +7,14 @@ Use [`tools/vendor_sync.py`](../../../tools/vendor_sync.py) to see the exact
 state and to refresh it — it fetches the upstream ref, re-applies every recorded
 edit, and diffs the result against what is committed here.
 
-| Directory | Upstream | Ref | SPDX |
-|---|---|---|---|
-| `rustls-0.23.40/` | <https://github.com/rustls/rustls> | tag `v/0.23.40` | `Apache-2.0 OR ISC OR MIT` |
-| `rustls-webpki/` | <https://github.com/rustls/webpki> | tag `v/0.103.11` | `ISC` |
-| `rustls-pki-types/` | crates.io `rustls-pki-types` 1.12.0 | crate tarball (USTC mirror) | `MIT OR Apache-2.0` |
+| Directory | Upstream | Ref | Commit at last `check` | SPDX |
+|---|---|---|---|---|
+| `rustls-0.23.40/` | <https://github.com/rustls/rustls> | tag `v/0.23.40` | `b44c09fbca5172b3f5e5ed6ba2ffe6fcd934e07a` | `Apache-2.0 OR ISC OR MIT` |
+| `rustls-webpki/` | <https://github.com/rustls/webpki> | tag `v/0.103.11` | `57bc62ce538c2d0d31d44b3eb8c58e6a0a764b47` | `ISC` |
+| `rustls-pki-types/` | crates.io `rustls-pki-types` 1.12.0 | crate tarball (USTC mirror) | upstream `4b52db8f3983f4311b10a2e9bf3d61f075a70f21` | `MIT OR Apache-2.0` |
+
+Each tree equals "upstream + the edits in `tools/vendor_sync.py`'s manifest":
+`check` proves it and `update` reproduces it bit for bit.
 
 ## What is pruned
 
