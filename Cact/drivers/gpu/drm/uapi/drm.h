@@ -1,3 +1,19 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * Header for the Direct Rendering Manager
+ *
+ * Author: Rickard E. (Rik) Faith <faith@valinux.com>
+ *
+ * Acknowledgments:
+ * Dec 1999, Richard Henderson <rth@twiddle.net>, move to generic cmpxchg.
+ */
+
+/*
+ * Copyright 1999 Precision Insight, Inc., Cedar Park, Texas.
+ * Copyright 2000 VA Linux Systems, Inc., Sunnyvale, California.
+ * All rights reserved.
+ */
+
 #ifndef _DRM_H_
 #define _DRM_H_
 

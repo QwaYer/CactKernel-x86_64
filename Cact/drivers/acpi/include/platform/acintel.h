@@ -1,3 +1,13 @@
+/* SPDX-License-Identifier: (BSD-2-Clause-Patent OR GPL-2.0-only) AND GPL-3.0-or-later */
+/* Copyright (c) 1999-2026 Intel Corporation */
+/* Copyright (C) 2026 CactOS Project */
+
+/*
+ * Adapted from Intel ACPICA (source/include/platform/acenv.h|acintel.h);
+ * CactOS uses the BSD-2-Clause-Patent option.  Upstream: https://github.com/acpica/acpica
+ * See Cact/drivers/acpi/include/platform/UPSTREAM.md.
+ */
+
 #ifndef __ACINTEL_H__
 #define __ACINTEL_H__
 

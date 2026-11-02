@@ -1,3 +1,18 @@
+/* SPDX-License-Identifier: GPL-2.0+ OR BSD-3-Clause */
+/* ******************************************************************
+ * bitstream
+ * Part of FSE library
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
+ *
+ * You can contact the author at :
+ * - Source repository : https://github.com/Cyan4973/FiniteStateEntropy
+ *
+ * This source code is licensed under both the BSD-style license (found in the
+ * LICENSE file in the root directory of this source tree) and the GPLv2 (found
+ * in the COPYING file in the root directory of this source tree).
+ * You may select, at your option, one of the above-listed licenses.
+****************************************************************** */
+
 #ifndef BITSTREAM_H_MODULE
 #define BITSTREAM_H_MODULE
 

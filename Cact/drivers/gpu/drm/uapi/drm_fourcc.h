@@ -1,3 +1,8 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * Copyright 2011 Intel Corporation
+ */
+
 #ifndef DRM_FOURCC_H
 #define DRM_FOURCC_H
 

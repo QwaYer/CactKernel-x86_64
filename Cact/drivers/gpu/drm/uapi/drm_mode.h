@@ -1,3 +1,12 @@
+/* SPDX-License-Identifier: MIT */
+/*
+ * Copyright (c) 2007 Dave Airlie <airlied@linux.ie>
+ * Copyright (c) 2007 Jakob Bornecrantz <wallbraker@gmail.com>
+ * Copyright (c) 2008 Red Hat Inc.
+ * Copyright (c) 2007-2008 Tungsten Graphics, Inc., Cedar Park, TX., USA
+ * Copyright (c) 2007-2008 Intel Corporation
+ */
+
 #ifndef _DRM_MODE_H
 #define _DRM_MODE_H
 
