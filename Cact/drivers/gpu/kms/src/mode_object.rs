@@ -161,7 +161,7 @@ pub extern "C" fn drm_mode_crtc_init(dev: *mut DrmDevice, index: i32, name: *con
     if dev_index_used(unsafe { (*dev).crtcs.as_slice() }, slot) {
         return -22;
     }
-    let mem = cact_mm::kmalloc(core::mem::size_of::<Crtc>() as u32) as *mut Crtc;
+    let mem = cact_mm::kmalloc(core::mem::size_of::<Crtc>()) as *mut Crtc;
     if mem.is_null() {
         return -12;
     }
@@ -226,7 +226,7 @@ pub extern "C" fn drm_mode_encoder_init(
     if dev_index_used(unsafe { (*dev).encoders.as_slice() }, slot) {
         return -22;
     }
-    let mem = cact_mm::kmalloc(core::mem::size_of::<Encoder>() as u32) as *mut Encoder;
+    let mem = cact_mm::kmalloc(core::mem::size_of::<Encoder>()) as *mut Encoder;
     if mem.is_null() {
         return -12;
     }

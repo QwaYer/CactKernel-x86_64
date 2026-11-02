@@ -71,10 +71,15 @@ pub extern "C" fn init_heap() {
 /// every `HeapBlock` link hold direct-map VAs: the whole allocator works in one
 /// address space, and `kmalloc` hands the caller exactly the block address.
 #[unsafe(no_mangle)]
-pub extern "C" fn kmalloc(size: u32) -> *mut u8 {
-    if size == 0 {
+pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
+    // A `HeapBlock` keeps its size in a `u32` and the window is a few MiB, so a
+    // request the header cannot represent is unservable.  `MAX_BLOCK` leaves room
+    // for the header and the rounding below to stay within `u32`.
+    const MAX_BLOCK: usize = u32::MAX as usize - 64;
+    if size == 0 || size > MAX_BLOCK {
         return core::ptr::null_mut();
     }
+    let size = size as u32;
     let user_size = (size + 7) & !7;
     let mut size = user_size + 4;
     size = (size + 7) & !7;
@@ -164,7 +169,7 @@ pub extern "C" fn kmalloc(size: u32) -> *mut u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn kmalloc_aligned(size: u32, align: u32) -> *mut u8 {
+pub extern "C" fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
     let align = if align < 4 { 4 } else { align };
     let raw = kmalloc(size + align + 4);
     if raw.is_null() {
@@ -176,7 +181,7 @@ pub extern "C" fn kmalloc_aligned(size: u32, align: u32) -> *mut u8 {
     // `kfree` reads it back and re-derives the VA through the direct map.
     let raw_phys = v2p(raw) as u32;
     let addr = (raw as usize) + 4;
-    let aligned = (addr + align as usize - 1) & !(align as usize - 1);
+    let aligned = (addr + align - 1) & !(align - 1);
     // SAFETY: `kmalloc_aligned` reserved four extra bytes below `aligned` for
     // exactly this back-pointer; `aligned` is inside the block just returned by
     // `kmalloc`, which lives in the heap window.

@@ -112,7 +112,7 @@ fn ensure_capacity_locked(s: &mut MemFd, need_pages: u32) -> bool {
         // leave `cap` short of `need_pages` and the loop terminates.
         cap = core::cmp::min(cap.saturating_add(MEMFD_PAGES_GROW), MEMFD_PAGES_MAX);
     }
-    let bytes = cap * core::mem::size_of::<*mut u8>() as u32;
+    let bytes = cap as usize * core::mem::size_of::<*mut u8>();
     let new_arr = kmalloc(bytes) as *mut *mut u8;
     if new_arr.is_null() {
         return false;

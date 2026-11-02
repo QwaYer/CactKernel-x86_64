@@ -46,7 +46,7 @@ sysret_t sys_poll(struct syscall_frame *regs) {
     if (!validate_user_ptr(fds_user, (uint32_t)nfds * sizeof(struct pollfd))) return -1;
 
     // Copy fds from user to kernel buffer for safe access across schedule()
-    struct pollfd *fds = (struct pollfd *)kmalloc((uint32_t)nfds * sizeof(struct pollfd));
+    struct pollfd *fds = (struct pollfd *)kmalloc((size_t)nfds * sizeof(struct pollfd));
     if (!fds) return -1;
     if (copy_from_user(fds, fds_user, (uint32_t)nfds * sizeof(struct pollfd)) != 0) {
         kfree(fds);

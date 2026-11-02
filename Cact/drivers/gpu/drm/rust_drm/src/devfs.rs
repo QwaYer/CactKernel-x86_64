@@ -155,7 +155,7 @@ pub extern "C" fn drm_devfs_add_device(dev: *mut DrmDevice) -> c_int {
     }
     let mut name = [0u8; 32];
 
-    let card = cact_mm::kmalloc(core::mem::size_of::<VfsNode>() as u32) as *mut VfsNode;
+    let card = cact_mm::kmalloc(core::mem::size_of::<VfsNode>()) as *mut VfsNode;
     if card.is_null() {
         return -12;
     }
@@ -174,7 +174,7 @@ pub extern "C" fn drm_devfs_add_device(dev: *mut DrmDevice) -> c_int {
     /* A render node is published for every device: Mesa's virgl and GBM
      * both prefer it when they only need GEM, and it can never become
      * master. */
-    let render = cact_mm::kmalloc(core::mem::size_of::<VfsNode>() as u32) as *mut VfsNode;
+    let render = cact_mm::kmalloc(core::mem::size_of::<VfsNode>()) as *mut VfsNode;
     if render.is_null() {
         // SAFETY: `card` was allocated by `kmalloc` above and has not been
         // published, so freeing it here is valid.

@@ -9,7 +9,7 @@ use crate::types::{Skb, SKB_MAX_SIZE};
 
 #[no_mangle]
 pub extern "C" fn skb_alloc() -> *mut Skb {
-    let ptr = ffi_kernel::kmalloc(core::mem::size_of::<Skb>() as u32) as *mut Skb;
+    let ptr = ffi_kernel::kmalloc(core::mem::size_of::<Skb>()) as *mut Skb;
     if ptr.is_null() {
         return core::ptr::null_mut();
     }

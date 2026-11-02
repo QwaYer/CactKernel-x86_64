@@ -363,7 +363,7 @@ unsafe fn pipe_write(p: *mut Pipe, size: u32, buffer: *mut c_char) -> i32 {
 
 unsafe fn make_node(p: *mut Pipe, name: *const c_char, is_write: u32) -> *mut VfsNode {
     // SAFETY: kmalloc returns a zeroable block of `size_of::<VfsNode>()` or null.
-    let n = cact_mm::kmalloc(size_of::<VfsNode>() as u32) as *mut VfsNode;
+    let n = cact_mm::kmalloc(size_of::<VfsNode>()) as *mut VfsNode;
     if n.is_null() {
         return ptr::null_mut();
     }
@@ -395,7 +395,7 @@ unsafe fn make_node(p: *mut Pipe, name: *const c_char, is_write: u32) -> *mut Vf
 #[no_mangle]
 pub unsafe extern "C" fn pipe_create(pipefd: *mut *mut VfsNode, flags: i32) -> i32 {
     // SAFETY: `pipefd` is a caller-provided two-element array.
-    let p = cact_mm::kmalloc(size_of::<Pipe>() as u32) as *mut Pipe;
+    let p = cact_mm::kmalloc(size_of::<Pipe>()) as *mut Pipe;
     if p.is_null() {
         return -1;
     }

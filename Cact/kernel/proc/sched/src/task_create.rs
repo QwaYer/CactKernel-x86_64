@@ -23,12 +23,12 @@ use crate::task::{
 /// interrupts disabled or the scheduler lock free.
 #[no_mangle]
 pub unsafe extern "C" fn create_task(entry_point: *const c_void) -> *mut TaskStruct {
-    let t = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>() as u32) as *mut TaskStruct;
+    let t = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if t.is_null() {
         return ptr::null_mut();
     }
 
-    let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>() as u32) as *mut ProcMeta;
+    let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if p.is_null() {
         // SAFETY: `t` is a live allocation owned here.
         unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
@@ -104,12 +104,12 @@ pub unsafe extern "C" fn create_task(entry_point: *const c_void) -> *mut TaskStr
 }
 
 fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *mut TaskStruct {
-    let t = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>() as u32) as *mut TaskStruct;
+    let t = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if t.is_null() {
         return ptr::null_mut();
     }
 
-    let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>() as u32) as *mut ProcMeta;
+    let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if p.is_null() {
         // SAFETY: `t` is a live allocation owned here.
         unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };

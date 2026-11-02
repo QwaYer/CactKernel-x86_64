@@ -47,7 +47,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         return ptr::null_mut();
     }
 
-    let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>() as u32) as *mut TaskStruct;
+    let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if child_raw.is_null() {
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
@@ -56,7 +56,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         return ptr::null_mut();
     }
 
-    let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>() as u32) as *mut ProcMeta;
+    let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if child_p_raw.is_null() {
         // SAFETY: `child_raw` is a live allocation owned here.
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
@@ -200,7 +200,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { (*child_shared).brk_current = p_cur };
     }
 
-    let child_fds = cact_mm::kmalloc(core::mem::size_of::<ffi::TaskFdTable>() as u32) as *mut ffi::TaskFdTable;
+    let child_fds = cact_mm::kmalloc(core::mem::size_of::<ffi::TaskFdTable>()) as *mut ffi::TaskFdTable;
     if child_fds.is_null() {
         for page in ustack_pages {
             // SAFETY: each entry is a page allocated by `kalloc` above.
@@ -239,7 +239,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
 
     child_p.fds = child_fds;
 
-    let child_mmap = cact_mm::kmalloc(core::mem::size_of::<MmapTable>() as u32) as *mut MmapTable;
+    let child_mmap = cact_mm::kmalloc(core::mem::size_of::<MmapTable>()) as *mut MmapTable;
     if child_mmap.is_null() {
         // SAFETY: `child_fds` is a live allocation owned here.
         unsafe { cact_mm::kfree((child_fds as *mut c_void) as *mut u8) };

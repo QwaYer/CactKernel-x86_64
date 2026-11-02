@@ -47,7 +47,7 @@ pub unsafe extern "C" fn file_alloc(node: *mut VfsNode) -> *mut File {
     }
     // SAFETY: `kmalloc` returns a block of exactly `size_of::<File>()` bytes or
     // null; we fully initialise it before returning it to the caller.
-    let f = cact_mm::kmalloc(size_of::<File>() as u32) as *mut File;
+    let f = cact_mm::kmalloc(size_of::<File>()) as *mut File;
     if f.is_null() {
         unsafe {
             printk(b"vfs: cannot allocate file\n\0".as_ptr() as *const c_char);

@@ -734,7 +734,7 @@ unsafe fn node_refcount(node: *mut VfsNode) -> &'static AtomicU32 {
 /// exclusively for the duration of the call, or null (a node with a null `priv_`
 /// is then created).
 unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
-    let node = ffi_kernel::kmalloc(core::mem::size_of::<VfsNode>() as u32).cast::<VfsNode>();
+    let node = ffi_kernel::kmalloc(core::mem::size_of::<VfsNode>()).cast::<VfsNode>();
     if node.is_null() {
         return core::ptr::null_mut();
     }

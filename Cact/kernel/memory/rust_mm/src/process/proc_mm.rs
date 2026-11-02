@@ -24,7 +24,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u
     // whole call, and the allocator/logging calls in between never touch it.
     let t = unsafe { &mut *t };
     if t.pages.is_null() {
-        t.pages = kmalloc(PROC_INITIAL_PAGES * core::mem::size_of::<*mut u8>() as u32)
+        t.pages = kmalloc(PROC_INITIAL_PAGES as usize * core::mem::size_of::<*mut u8>())
             as *mut *mut u8;
         if t.pages.is_null() {
             // SAFETY: `printk` expects a NUL-terminated static string; the
@@ -43,7 +43,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u
 
     if t.count >= t.capacity {
         let new_cap = t.capacity + PROC_GROW_STEP;
-        let new_arr = kmalloc(new_cap * core::mem::size_of::<*mut u8>() as u32) as *mut *mut u8;
+        let new_arr = kmalloc(new_cap as usize * core::mem::size_of::<*mut u8>()) as *mut *mut u8;
         if new_arr.is_null() {
             // SAFETY: NUL-terminated static string, as above.
             unsafe { printk(c"proc-mm: ERR: grow alloc failed\n".as_ptr() as *const u8) };

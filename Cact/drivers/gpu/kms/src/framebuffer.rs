@@ -209,7 +209,7 @@ pub extern "C" fn drm_fb_handle_init(
         return -22;
     }
 
-    let mem = cact_mm::kmalloc(core::mem::size_of::<Framebuffer>() as u32) as *mut Framebuffer;
+    let mem = cact_mm::kmalloc(core::mem::size_of::<Framebuffer>()) as *mut Framebuffer;
     if mem.is_null() {
         return -12;
     }

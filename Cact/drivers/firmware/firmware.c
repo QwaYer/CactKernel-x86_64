@@ -49,7 +49,7 @@ static uint8_t *fw_load_zst_initfs(const char *path, uint32_t *out_len) {
     if (!raw_size)
         return NULL;
 
-    copy = (uint8_t *)kmalloc((uint32_t)raw_size);
+    copy = (uint8_t *)kmalloc(raw_size);
     if (!copy)
         return NULL;
 
@@ -110,7 +110,7 @@ static uint8_t *fw_load_zst_vfs(const char *path, uint32_t *out_len) {
         return NULL;
     }
 
-    uint8_t *copy = (uint8_t *)kmalloc((uint32_t)raw_size);
+    uint8_t *copy = (uint8_t *)kmalloc(raw_size);
     if (!copy) {
         kfree(comp);
         return NULL;

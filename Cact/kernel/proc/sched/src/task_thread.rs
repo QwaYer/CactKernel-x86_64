@@ -68,13 +68,13 @@ pub unsafe extern "C" fn sched_create_thread(
         return -3;
     }
 
-    let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>() as u32) as *mut TaskStruct;
+    let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if child_raw.is_null() {
         // SAFETY: the lock was acquired above.
         unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
         return -4;
     }
-    let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>() as u32) as *mut ProcMeta;
+    let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if child_p_raw.is_null() {
         // SAFETY: `child_raw` is a live allocation owned here.
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };

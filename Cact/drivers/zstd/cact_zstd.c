@@ -30,10 +30,6 @@ size_t cact_zstd_frame_size(const void *src, size_t src_size)
 	size = ZSTD_getFrameContentSize(src, src_size);
 	if (size == ZSTD_CONTENTSIZE_UNKNOWN || size == ZSTD_CONTENTSIZE_ERROR)
 		return 0;
-	/* The callers index the result with uint32_t; a larger frame cannot be
-	 * staged in the 32-bit kernel anyway. */
-	if (size > 0xFFFFFFFFull)
-		return 0;
 
 	return (size_t)size;
 }
@@ -52,7 +48,7 @@ size_t cact_zstd_decompress(const void *src, size_t src_size,
 	ws_size = ZSTD_estimateDCtxSize();
 	/* zstd requires the workspace 8-byte aligned; kmalloc() only guarantees
 	 * the heap's block alignment, so ask for an explicitly aligned block. */
-	ws = kmalloc_aligned((uint32_t)ws_size, 16);
+	ws = kmalloc_aligned(ws_size, 16);
 	if (!ws)
 		return 0;
 

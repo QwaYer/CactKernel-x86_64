@@ -221,7 +221,7 @@ void fb_enable_shadow(void) {
         return;
     }
     size_t shadow_bytes = fb_pitch_s * fb_height_s;
-    uint32_t* shadow = (uint32_t*)kmalloc_aligned((uint32_t)shadow_bytes, 4096);
+    uint32_t* shadow = (uint32_t*)kmalloc_aligned(shadow_bytes, 4096);
     if (!shadow) {
         pr_warn("%s: shadow buffer alloc failed — direct mode\n", "fb");
         return;

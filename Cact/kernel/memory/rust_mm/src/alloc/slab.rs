@@ -188,7 +188,7 @@ pub unsafe extern "C" fn slab_cache_create(
     }
     obj_size = align_up(obj_size, 8);
 
-    let cache = kmalloc(core::mem::size_of::<SlabCache>() as u32) as *mut SlabCache;
+    let cache = kmalloc(core::mem::size_of::<SlabCache>()) as *mut SlabCache;
     if cache.is_null() {
         return core::ptr::null_mut();
     }

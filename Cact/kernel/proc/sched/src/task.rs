@@ -61,7 +61,7 @@ pub unsafe fn kstack_alloc() -> *mut u32 {
     // compiler emits `movaps` for it, so a stack that is only 8-aligned would
     // fault the first time a task spills SSE state.  `kfree` recognises the
     // aligned block through the back-pointer `kmalloc_aligned` leaves.
-    let p = cact_mm::kmalloc_aligned(KERNEL_STACK_SIZE as u32, 16) as *mut u32;
+    let p = cact_mm::kmalloc_aligned(KERNEL_STACK_SIZE, 16) as *mut u32;
     if !p.is_null() {
         // SAFETY: `p` is a live `KERNEL_STACK_SIZE` block, so its first word is in bounds.
         unsafe { *p = KERNEL_STACK_CANARY };
@@ -336,7 +336,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
     // SAFETY: `p` is a fresh, exclusively owned `ProcMeta`, now zeroed.
     let p = unsafe { &mut *p };
 
-    let fds = cact_mm::kmalloc(core::mem::size_of::<ffi::TaskFdTable>() as u32) as *mut ffi::TaskFdTable;
+    let fds = cact_mm::kmalloc(core::mem::size_of::<ffi::TaskFdTable>()) as *mut ffi::TaskFdTable;
     if fds.is_null() {
         return false;
     }
@@ -344,7 +344,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
     unsafe { ffi::memory_set(fds as *mut c_void, 0, core::mem::size_of::<ffi::TaskFdTable>()) };
     p.fds = fds;
 
-    let mmap_tbl = cact_mm::kmalloc(core::mem::size_of::<MmapTable>() as u32) as *mut MmapTable;
+    let mmap_tbl = cact_mm::kmalloc(core::mem::size_of::<MmapTable>()) as *mut MmapTable;
     if mmap_tbl.is_null() {
         // SAFETY: `fds` is a live allocation owned here, so releasing it is sound.
         unsafe { cact_mm::kfree((fds as *mut c_void) as *mut u8) };
@@ -381,7 +381,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
 /// `page_dir` must be null or a live address space owned by the new thread group.
 #[no_mangle]
 pub unsafe extern "C" fn proc_shared_alloc(page_dir: *mut u64) -> *mut ProcShared {
-    let s = cact_mm::kmalloc(core::mem::size_of::<ProcShared>() as u32) as *mut ProcShared;
+    let s = cact_mm::kmalloc(core::mem::size_of::<ProcShared>()) as *mut ProcShared;
     if s.is_null() {
         return ptr::null_mut();
     }
@@ -481,7 +481,7 @@ pub unsafe extern "C" fn task_init() {
 /// Must be called during single-threaded bring-up (boot, or an AP before that
 /// AP runs any other code).
 pub unsafe fn alloc_idle_task() -> *mut TaskStruct {
-    let idle = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>() as u32) as *mut TaskStruct;
+    let idle = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if idle.is_null() {
         return ptr::null_mut();
     }

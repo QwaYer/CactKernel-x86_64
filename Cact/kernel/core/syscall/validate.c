@@ -54,7 +54,7 @@ char* copy_path_from_user(const char* user_str) {
     if (!validate_user_str(user_str)) return 0;
     int len = 0;
     while (user_str[len] && len < USER_STR_MAX - 1) len++;
-    char* buf = (char*)kmalloc((uint32_t)len + 1);
+    char* buf = (char*)kmalloc((size_t)len + 1);
     if (!buf) return 0;
     int i;
     for (i = 0; i < len; i++) buf[i] = user_str[i];

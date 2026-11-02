@@ -73,7 +73,7 @@ pub extern "C" fn drm_gem_create(dev: *mut DrmDevice, size: u32) -> *mut GemObje
     if dev.is_null() || size == 0 {
         return core::ptr::null_mut();
     }
-    let obj = cact_mm::kmalloc(core::mem::size_of::<GemObject>() as u32) as *mut GemObject;
+    let obj = cact_mm::kmalloc(core::mem::size_of::<GemObject>()) as *mut GemObject;
     if obj.is_null() {
         return core::ptr::null_mut();
     }
@@ -527,7 +527,7 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
         return -22;
     }
 
-    let obj = cact_mm::kmalloc(core::mem::size_of::<GemObject>() as u32) as *mut GemObject;
+    let obj = cact_mm::kmalloc(core::mem::size_of::<GemObject>()) as *mut GemObject;
     if obj.is_null() {
         return -12;
     }

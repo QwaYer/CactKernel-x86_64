@@ -500,8 +500,8 @@ void elf_load_exec_symtab(const char* path, struct proc_metadata* proc) {
         str_sh = &shdrs[sym_sh->sh_link];
 
     if (sym_sh && str_sh && sym_sh->sh_size > 0) {
-        proc->exec_symtab = kmalloc((uint32_t)sym_sh->sh_size);
-        proc->exec_strtab = kmalloc((uint32_t)str_sh->sh_size);
+        proc->exec_symtab = kmalloc(sym_sh->sh_size);
+        proc->exec_strtab = kmalloc(str_sh->sh_size);
         if (proc->exec_symtab && proc->exec_strtab) {
             read_vfs(file, sym_sh->sh_offset, (uint32_t)sym_sh->sh_size,
                      (char*)proc->exec_symtab);

@@ -36,7 +36,7 @@ unsafe impl GlobalAlloc for CactAllocator {
         // `layout.align()` a power of two, which is what `kmalloc_aligned`
         // requires; the returned block belongs to the caller.  The call itself
         // is safe (allocation has no preconditions).
-        cact_mm::kmalloc_aligned(layout.size() as u32, layout.align() as u32)
+        cact_mm::kmalloc_aligned(layout.size(), layout.align())
     }
 
     /// # Safety

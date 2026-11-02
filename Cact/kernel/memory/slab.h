@@ -43,7 +43,7 @@ void          slab_cache_destroy(slab_cache_t* cache);
 void          slab_cache_shrink(slab_cache_t* cache);
 void          slab_print_stats(const slab_cache_t* cache);
 void          slab_init(void);
-void*         slab_kmalloc(uint32_t size);
+void*         slab_kmalloc(size_t size);
 void          slab_kfree(void* ptr);
 uint32_t      slab_total_bytes(void);
 

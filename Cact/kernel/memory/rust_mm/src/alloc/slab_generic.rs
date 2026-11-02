@@ -65,7 +65,7 @@ pub extern "C" fn slab_init() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn slab_kmalloc(size: u32) -> *mut u8 {
+pub extern "C" fn slab_kmalloc(size: usize) -> *mut u8 {
     if size == 0 {
         return core::ptr::null_mut();
     }
@@ -73,7 +73,7 @@ pub extern "C" fn slab_kmalloc(size: u32) -> *mut u8 {
     // and never mutated afterwards, so this read races nothing.
     let caches = unsafe { KStatic::get_mut(G_GENERIC_CACHES.as_ptr()) };
     for i in 0..GENERIC_CACHE_COUNT {
-        if size <= GENERIC_SIZES[i] {
+        if size <= GENERIC_SIZES[i] as usize {
             // SAFETY: `caches[i]` is a live cache pointer installed by `slab_init`
             // and never destroyed.
             return unsafe { slab_alloc(caches[i]) };

@@ -655,7 +655,7 @@ pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_voi
         }
     }
 
-    let node = cact_mm::kmalloc(core::mem::size_of::<VfsNode>() as u32) as *mut VfsNode;
+    let node = cact_mm::kmalloc(core::mem::size_of::<VfsNode>()) as *mut VfsNode;
     if node.is_null() {
         return -12;
     }
@@ -673,7 +673,7 @@ pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_voi
         node.fops = core::ptr::addr_of_mut!(SYNC_FILE_FOPS);
     }
 
-    let r = cact_mm::kmalloc(core::mem::size_of::<SyncFileRef>() as u32) as *mut SyncFileRef;
+    let r = cact_mm::kmalloc(core::mem::size_of::<SyncFileRef>()) as *mut SyncFileRef;
     if r.is_null() {
         // SAFETY: `node` is the un-published node allocated above.
         unsafe { cact_mm::kfree(node as *mut u8) };
