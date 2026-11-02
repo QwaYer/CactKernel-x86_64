@@ -67,4 +67,17 @@ and note how you verified it.
 ## License
 
 By contributing you agree that your work is licensed under the repository's
-**GPLv3** (see [`LICENSE`](LICENSE)).
+**GPLv3 or later** (see [`LICENSE`](LICENSE)).
+
+Every source file carries an SPDX header. CactOS's own code is
+`SPDX-License-Identifier: GPL-3.0-or-later`, `Copyright (C) 2026 CactOS Project`;
+vendored third-party code keeps its upstream identifier. The vendored trees and
+the procedure to refresh them are documented next to the code:
+
+* [`Cact/crypto/vendor/UPSTREAM.md`](Cact/crypto/vendor/UPSTREAM.md) — rustls / rustls-pki-types / rustls-webpki
+* [`Cact/drivers/zstd/UPSTREAM.md`](Cact/drivers/zstd/UPSTREAM.md) — zstd (from the Linux kernel)
+* [`Cact/drivers/gpu/drm/uapi/UPSTREAM.md`](Cact/drivers/gpu/drm/uapi/UPSTREAM.md) — DRM uapi headers (MIT)
+* [`Cact/drivers/acpi/include/platform/UPSTREAM.md`](Cact/drivers/acpi/include/platform/UPSTREAM.md) — ACPICA platform headers
+
+Do not edit a vendored file in place except to re-add a stripped licence header;
+otherwise it stops being diffable against upstream.
