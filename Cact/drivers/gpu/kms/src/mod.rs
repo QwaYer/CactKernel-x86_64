@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The KMS layer's Rust sources.
 //!
 //! This directory is the KMS half of the GPU stack: the modesetting object

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The atomic modeset API: `DRM_IOCTL_MODE_ATOMIC`.
 //!
 //! A client hands over a list of objects, and for each of them a list of

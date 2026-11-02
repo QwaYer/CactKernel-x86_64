@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The kernel's single Rust archive.  Every kernel Rust crate is an rlib, so
 # they call each other with plain `use`; this staticlib depends on all of them
 # and pulls them into one archive, which is what keeps every symbol (and every

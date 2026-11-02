@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Socket buffer (`Skb`) helpers: allocate/free and push/put data for the C networking path.
 
 

@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #ifndef PROCFS_INTERNAL_H
 #define PROCFS_INTERNAL_H
 

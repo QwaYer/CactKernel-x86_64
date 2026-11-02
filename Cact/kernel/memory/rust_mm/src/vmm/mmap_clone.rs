@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! mmap table cloning (fork) and teardown. Split out of `mmap.rs` so the
 //! COW/private-PDE machinery stays together with its two main users.
 

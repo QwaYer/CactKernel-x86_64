@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Kernel page tables (four-level), the linear map of RAM, per-process maps,
 //! and the C-exported VMM helpers.
 //!

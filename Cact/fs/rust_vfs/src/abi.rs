@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! `#[repr(C)]` mirrors of the C VFS structs (`Cact/fs/vfs/vfs.h`).
 //!
 //! The layout is pinned by compile-time asserts so a field inserted on the C

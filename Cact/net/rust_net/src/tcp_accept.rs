@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! accept() hand-off between a listening slot and an established child slot.
 
 use smoltcp::socket::tcp;

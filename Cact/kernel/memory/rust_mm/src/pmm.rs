@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Physical memory manager: bitmap of free frames, per-page refcounts, and `kalloc`/`free_page`.
 //!
 //! Addresses are 64-bit and the bitmap/refcount arrays are sized at boot from

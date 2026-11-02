@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI — device/context management: slot enabling, device addressing,
  * endpoint configuration, port operations, and interrupt endpoint slots. */
 

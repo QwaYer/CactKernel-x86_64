@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! User thread creation (`CACT_PROCCTL_THREAD_CREATE`).
 //!
 //! A thread is an ordinary `TaskStruct`, but it shares its thread group's

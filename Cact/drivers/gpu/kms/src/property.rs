@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Properties: the device-wide list, the attachment table, and the
 //! GETPROPERTY / OBJ_GETPROPERTIES / OBJ_SETPROPERTY ioctls.
 //!

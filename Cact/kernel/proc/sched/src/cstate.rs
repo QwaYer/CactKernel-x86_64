@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! C-state controller (Step 2 of the energy governor).
 //!
 //! Owns the per-platform C-state descriptors (calibrated residency/latency and

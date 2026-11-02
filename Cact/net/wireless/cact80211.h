@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #ifndef CACT80211_H
 #define CACT80211_H
 

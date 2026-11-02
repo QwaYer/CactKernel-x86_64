@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Runtime IPv4 settings in **host** byte order (mutable globals updated from C).
 //!
 //! The boot state is all-zero — "no address, no route, no resolver" — and

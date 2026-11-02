@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! AES-128 (encrypt-only), the block cipher under CCMP.
 //!
 //! Ported from the RT2800USB module's `rt2800_aes.c`, which was verified

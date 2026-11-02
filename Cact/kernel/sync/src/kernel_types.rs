@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Layout-fixed C types shared with the kernel FFI layer.
 //!
 //! This module is the *single* Rust definition of these C structures:

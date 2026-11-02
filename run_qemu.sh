@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # Launch QEMU for CactKernel.
 # On the first run without a disk: ./build_disk.sh is called automatically (empty ext4).
 # Full cycle (drivers + cctkfs + ISO): ../CactBridge-x86/build.py --non-gui-iso

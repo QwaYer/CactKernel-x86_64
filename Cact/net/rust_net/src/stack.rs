@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! smoltcp integration: Ethernet PHY shim, interface setup, ICMP, and the central poll loop.
 //!
 //! IPv4 addressing is owned by userspace: `rust_net_set_ipv4_config` (see

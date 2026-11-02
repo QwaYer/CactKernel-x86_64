@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure sibling-aware core placement policy (PLAN-2.0.0 P1.2).
 //!
 //! On an SMT machine two busy threads must not both sit on the two logical CPUs

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Per-CPU scheduler state.
 //!
 //! The scheduler historically kept a single global `current_task`, `fpu_owner`

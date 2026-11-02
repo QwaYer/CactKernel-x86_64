@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #ifndef INITFS_MODBLOB_H
 #define INITFS_MODBLOB_H
 

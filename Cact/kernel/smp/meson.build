@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The SMP trampoline is assembled as a flat binary and embedded in the link.
 #
 # The Makefile embedded it with

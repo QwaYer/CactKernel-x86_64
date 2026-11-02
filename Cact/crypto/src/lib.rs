@@ -1,4 +1,7 @@
 #![no_std]
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
 // Safety baseline: unsafe ops inside `unsafe fn` bodies must be explicit, and every

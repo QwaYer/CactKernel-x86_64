@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Device lifecycle: allocation, registration (which publishes `/dev/dri/cardN`
 //! and calls the driver's `load()`), unregistration, and the global device
 //! table.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Sleeping mutex: FIFO wait queue, [`crate::spinlock::spinlock_t`] for the wait list,
 //! and scheduler integration when the lock is held (block current task, yield).
 

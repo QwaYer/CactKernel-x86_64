@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The kernel's Rust link crate.
 //!
 //! Every kernel Rust crate is an `rlib` so that Rust code can call Rust code

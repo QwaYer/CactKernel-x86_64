@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Signal delivery, sigaction/sigprocmask syscall support, and alarm/itimer
 //! bookkeeping.
 

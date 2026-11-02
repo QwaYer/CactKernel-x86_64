@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Counting semaphore with a bounded FIFO waiter list; uses the scheduler when `down`
 //! must block on a zero count.
 

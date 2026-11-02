@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Fixed-size shared-memory segment table: attach/detach, refcount, and page mapping into a PD.
 
 use crate::ffi::*;

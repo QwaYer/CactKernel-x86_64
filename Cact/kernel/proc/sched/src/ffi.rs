@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Foreign-function declarations for the C kernel: memory, VMM, ELF, VFS, context switch.
 //!
 //! `ContextFrame` matches the interrupt stack frame layout on iret/syscall boundaries.

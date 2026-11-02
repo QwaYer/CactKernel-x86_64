@@ -1,3 +1,6 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Copyright (C) 2026 CactOS Project
+
 [bits 64]
 
 ; Control-register helpers.  CR0/CR2/CR3 are 64-bit registers in long mode and

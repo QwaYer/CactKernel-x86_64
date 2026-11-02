@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Load balancing & task migration (Step 6 of the energy governor).
 //!
 //! The scheduler keeps a ready queue per logical core, so a task is made

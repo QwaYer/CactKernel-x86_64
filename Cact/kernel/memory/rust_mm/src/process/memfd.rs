@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! memfd: anonymous, RAM-backed file objects (Linux memfd_create).
 //!
 //! Each object owns a growable array of reference-counted physical frames.

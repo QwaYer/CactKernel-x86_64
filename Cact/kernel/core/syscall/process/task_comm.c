@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /*
  * task_comm.c — per-process command names (the value behind /proc/<pid>/comm).
  *

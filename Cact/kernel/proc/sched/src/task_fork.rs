@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Process forking (`task_fork`), exit/wait machinery, and zombie reaping.
 
 use cact_mm::vmm_create_address_space;

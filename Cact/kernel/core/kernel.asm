@@ -1,3 +1,6 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Copyright (C) 2026 CactOS Project
+
 ; ---------------------------------------------------------------------------
 ; Cact OS — x86_64 boot: Multiboot2 entry point and long-mode bootstrap
 ; ---------------------------------------------------------------------------

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Growable array of per-process physical pages (`ProcPageTracker`) and teardown helpers.
 
 use crate::ffi::*;

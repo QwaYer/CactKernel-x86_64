@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Task subsystem hub: global state, task list management, shared helpers,
 //! and re-exports of the lifecycle submodules (`create`, `exec`, `fork`,
 //! `signal`, `sigreturn`).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Multi-level feedback queue: per-priority ready queues, voluntary sleep queue,
 //! periodic priority boost, and the main `schedule` / `on_timer_tick` entry points.
 //!

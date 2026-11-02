@@ -1,4 +1,7 @@
 #![no_std]
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 #![feature(sync_unsafe_cell)]
 #![allow(non_camel_case_types)]
 #![allow(non_snake_case)]

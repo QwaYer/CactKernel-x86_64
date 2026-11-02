@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 kernel_libs += static_library('cact_pci_msi',
   files(
     'msidev.c',   # vector pool, IDT stubs, dispatch, msidev_register()

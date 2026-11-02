@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! File-description objects, path resolution and stat helpers, ported from
 //! `Cact/fs/vfs/vfs_file.c`.
 //!

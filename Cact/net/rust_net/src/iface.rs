@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Per-interface enumeration for userspace (`ip`, `sysinfo`).
 //!
 //! Before loopback existed the stack had exactly one interface, so userspace

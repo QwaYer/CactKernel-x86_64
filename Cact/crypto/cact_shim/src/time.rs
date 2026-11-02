@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 use core::fmt;
 use core::ops::{Add, AddAssign, Sub, SubAssign};
 

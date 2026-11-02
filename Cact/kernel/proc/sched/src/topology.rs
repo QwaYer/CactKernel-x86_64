@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure CPUID topology decoding (Intel leaf `0xB`/`0x1F`, with the older
 //! leaf `4` + leaf `1` HTT fallback).
 //!

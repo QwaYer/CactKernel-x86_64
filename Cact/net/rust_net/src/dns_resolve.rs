@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Blocking DNS A-record resolution over UDP port 53 using a dedicated smoltcp UDP socket.
 
 use core::ffi::{c_char, c_int};

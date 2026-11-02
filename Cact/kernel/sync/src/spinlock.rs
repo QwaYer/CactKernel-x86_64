@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Ticketless spinlock (`pause` while spinning) and IRQ-disabling variant that saves
 //! the IF flag so `release` restores interrupts only if they were enabled on `acquire`.
 

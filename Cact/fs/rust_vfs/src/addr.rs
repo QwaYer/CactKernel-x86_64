@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Generic inode address space: a per-file page cache any filesystem can use.
 //!
 //! An address space is identified by `(owner, ino)` — the filesystem instance

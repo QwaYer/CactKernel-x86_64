@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! sigreturn trampoline installation: a per-process user page that issues the
 //! `SYS_SIGRETURN` syscall after a signal handler returns.
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! RNG adapters.  Both types draw from the kernel CSPRNG in [`crate::rng`];
 //! there is no second generator hiding here any more.
 

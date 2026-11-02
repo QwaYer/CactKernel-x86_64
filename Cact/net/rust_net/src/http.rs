@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! HTTP/1.1 client for in-kernel use: `http://` and `https://` requests over
 //! smoltcp TCP sockets, with TLS handled by rustls (see [`crate::tls`]).
 //!

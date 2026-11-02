@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! `/dev/wlan0`: the engine's control surface for the userspace supplicant.
 //!
 //! Linux-shaped split: the kernel runs scan / auth / assoc / the datapath / CCMP,

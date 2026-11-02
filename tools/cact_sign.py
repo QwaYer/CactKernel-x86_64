@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """cact_sign.py — Sign a .cctk module with an ECDSA P-256 signature.
 
 Appends the module trailer (see tools/modsign.py):

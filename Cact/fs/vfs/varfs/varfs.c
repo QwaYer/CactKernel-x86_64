@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #include "varfs.h"
 #include "vfs.h"
 #include "kernel.h"

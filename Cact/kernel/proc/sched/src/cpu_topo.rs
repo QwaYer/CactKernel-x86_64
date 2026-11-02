@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Boot-time CPU topology (PLAN-2.0.0 P1.2).
 //!
 //! Reads CPUID leaf `0xB`/`0x1F` (falling back to leaf `1` HTT + leaf `4`) via

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The VFS core, ported from `Cact/fs/vfs/vfs.c` (plus `listdir_vfs` from
 //! `vfs_ops.c`).
 //!

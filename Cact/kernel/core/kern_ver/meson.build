@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # Build timestamp, generated at build time into its own translation unit.
 # Computing it at configure time (as before) stamped only the last `meson
 # setup`, so the boot banner kept reporting an old time and made a freshly

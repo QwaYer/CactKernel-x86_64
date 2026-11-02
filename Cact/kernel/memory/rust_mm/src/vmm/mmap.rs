@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! `mmap` / `munmap` implementation: private PDEs, file-backed mappings, and COW with the VMM.
 
 use crate::ffi::*;

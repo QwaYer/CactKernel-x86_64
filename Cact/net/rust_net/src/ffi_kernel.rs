@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Kernel services used by the Rust network stack: heap, logging, scheduler hooks, VFS, I/O ports.
 //!
 //! All symbols are implemented in C and linked into the final kernel image.

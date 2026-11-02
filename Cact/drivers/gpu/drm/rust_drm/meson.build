@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The DRM/KMS core's dominant half: the Rust crate that owns the object model
 # and the ioctl decoding.  Built like rust_mm / rust_net — a cargo staticlib
 # with its own i686-cact target, linked into the kernel inside the --start-group

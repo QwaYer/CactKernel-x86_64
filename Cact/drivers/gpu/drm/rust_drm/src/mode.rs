@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Display modes: the kernel's `struct drm_display_mode`, the uapi
 //! `struct drm_mode_modeinfo`, the conversions between them, and the
 //! fourcc -> bits-per-pixel table.

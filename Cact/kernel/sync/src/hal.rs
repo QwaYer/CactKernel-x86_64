@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! x86 helpers used by locks: `pause` for spin-wait backoff, `cli`/`sti` and EFLAGS
 //! snapshot/restore for [`crate::spinlock::irq_spinlock_t`]. All `unsafe` assembly is
 //! isolated here.

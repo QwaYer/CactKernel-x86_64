@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Directory-entry cache for the Rust VFS core.
 //!
 //! Keyed on `(parent_node, name) -> child_node`.  Only *positive* `walk()`

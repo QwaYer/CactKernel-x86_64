@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #include "klib.h"
 // Compare strings until mismatch or '\0'
 int compare_string(const char* s1, const char* s2) {

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Weak link boundary into the scheduler and console.
 //!
 //! Declares `extern "C"` items (`schedule`, `printk`,

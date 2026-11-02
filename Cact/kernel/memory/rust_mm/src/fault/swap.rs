@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Swap backing store: slot bitmap, clock hand, and C callbacks for block read/write.
 //!
 //! Encodes swapped-out PTEs with `PAGE_SWAPPED`; cooperates with the page-fault path.

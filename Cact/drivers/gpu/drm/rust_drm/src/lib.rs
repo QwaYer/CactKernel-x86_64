@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The DRM/KMS core — entirely Rust.
 //!
 //! This crate owns the whole core: the device and object model, GEM, KMS,

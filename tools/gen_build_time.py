@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """Write cact_build_time.c with the current build timestamp.
 
 meson re-runs this on every build (`build_always_stale` in

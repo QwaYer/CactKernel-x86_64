@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! TLS via vendored rustls: full handshake and application data transfer over a
 //! connected TCP socket, driven by a poll/sleep loop so it works with the
 //! non-blocking smoltcp-backed `tcp_*` layer.

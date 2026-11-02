@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 // crypt.rs — /dev/crypto userspace FFI (linked into the kernel via the
 // cact_hmac_ffi staticlib).
 //

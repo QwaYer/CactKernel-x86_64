@@ -1,3 +1,6 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Copyright (C) 2026 CactOS Project
+
 [bits 64]
 
 ; I/O port access primitives — System V AMD64 calling convention.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Intrusive free-list heap in the `[HEAP_START, HEAP_START+HEAP_SIZE)` window,
 //! which starts where the PMM's boot reservation ends (see
 //! `pmm::heap_start()` — the reservation covers the bootloader's module images).

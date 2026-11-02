@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pipes, ported from `Cact/fs/pipe/pipe.c` and corrected.
 //!
 //! The C original double-counted open ends (`pipe_create` set both counters to

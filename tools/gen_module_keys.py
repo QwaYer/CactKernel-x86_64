@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """gen_module_keys.py — Generate the ECDSA P-256 module-signing key pair.
 
 Creates (if missing) the private key at

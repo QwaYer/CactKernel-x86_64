@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Syncobj: the fence objects a client waits on and signals.
 //!
 //! Two flavours, fixed at creation as in Linux: a **binary** object has one

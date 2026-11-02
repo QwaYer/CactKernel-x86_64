@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Wire-format headers, socket limits, and C-layout structs shared with the NIC/VFS layers.
 
 use core::ffi::{c_char, c_int, c_void};

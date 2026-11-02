@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI quirks — per-device workaround table.
  *
  * First matching entry wins.  The trailing PCI_ANY_ID row is the default

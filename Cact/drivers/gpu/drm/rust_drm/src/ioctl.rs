@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The ioctl entry point: the dispatcher that splits the legacy range from the
 //! KMS range and from driver-private commands, plus the legacy (pre-KMS) ioctls
 //! themselves.

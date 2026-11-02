@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* EFI configuration table lookup — see efi_config.h. */
 
 #include "kernel.h"

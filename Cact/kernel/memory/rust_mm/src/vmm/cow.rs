@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Copy-on-write fork of a process address space.
 //!
 //! Skips the mmap window (mmap_table_clone handles those) and shares the

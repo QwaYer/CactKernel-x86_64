@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! 802.11 frame construction and parsing for the station engine.
 //!
 //! Only what a 2.4 GHz legacy STA needs (no HT/VHT): probe request, open-system

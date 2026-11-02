@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 use super::{Read, Result, Write};
 use alloc::vec::Vec;
 use core::cmp;

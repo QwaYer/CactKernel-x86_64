@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # `cact_vfs` is the Rust core of the VFS: path resolution, the dentry cache,
 # the mount tree, symlinks and node lifetime.  It is an rlib; the kernel's
 # single Rust archive is built by `Cact/kernel/kernel_rust` (see its src/lib.rs).

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Hierarchical timer wheel (`WHEEL_SIZE` slots) for `sleep_until` timeouts.
 //!
 //! Tasks chain through `wait_next`. `timer_wheel_tick` runs from the timer path;

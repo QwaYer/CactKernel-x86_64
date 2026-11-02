@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """cact_sign_cctkfs.py — Sign all .cctk modules inside a cctkfs archive.
 
 Reads cctkfs.img, signs each module data blob with an ECDSA P-256 signature

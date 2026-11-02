@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Master/Worker core roles and the per-core C-state model.
 //!
 //! Foundation (Step 1) of the energy-aware scheduler extension: every logical

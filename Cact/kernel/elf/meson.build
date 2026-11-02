@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # mod_tag.c includes the generated mod_pubkey_gen.h: the ECDSA public key that
 # verifies every loadable module.  The header derives from the private key
 # alone, so it is regenerated when the key pair changes.

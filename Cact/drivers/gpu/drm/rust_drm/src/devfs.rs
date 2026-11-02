@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! `/dev/dri` registration: a devfs directory driver that walks and lists
 //! `cardN` / `renderDN` and owns their `vfs_node_t`.
 //!

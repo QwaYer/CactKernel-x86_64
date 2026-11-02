@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """modsign.py — CactOS loadable-module signing (vermagic + ECDSA P-256).
 
 Shared library and CLI used by cact_sign.py, cact_sign_cctkfs.py and

@@ -1,4 +1,7 @@
 #![no_std]
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 #![allow(internal_features)]
 // Safety baseline: implicit unsafe ops inside `unsafe fn` bodies are rejected, and
 // every `unsafe` block must carry a SAFETY comment (enforced under clippy).

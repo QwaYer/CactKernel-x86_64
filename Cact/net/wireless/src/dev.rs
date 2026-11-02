@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The 802.11 station engine state and protocol logic.
 //!
 //! One radio (the board has one Wi-Fi dongle), so the engine keeps a single

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! `execve`-style task replacement: resolve + load a new ELF image into a
 //! fresh address space, copy argv/envp into the new user stack, and iretd.
 

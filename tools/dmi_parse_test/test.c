@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /*
  * Host-side test for the SMBIOS entry-point discovery in
  * Cact/drivers/dmi/dmi.c (+ the EFI configuration-table lookup in

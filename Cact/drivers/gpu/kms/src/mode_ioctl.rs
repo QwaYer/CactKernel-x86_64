@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The KMS ioctl table plus the resource-listing ioctls: GETRESOURCES,
 //! GETCONNECTOR, GETENCODER, GETPLANERESOURCES, GETPLANE.
 //!

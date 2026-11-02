@@ -1,4 +1,7 @@
 #![allow(dead_code)]
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 
 //! Physical layout constants, PTE/PDE flags, `extern "C"` kernel entry points, and boot MMAP types.
 //!

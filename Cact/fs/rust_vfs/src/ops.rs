@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Generic VFS operation wrappers, ported from `Cact/fs/vfs/vfs_ops.c`.
 //!
 //! These are the entry points the C syscall layer and the C filesystems call:

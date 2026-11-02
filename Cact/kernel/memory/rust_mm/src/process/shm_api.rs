@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Shared-memory attach/detach/ctl syscall entry points. Split out of `shm.rs`.
 
 use crate::ffi::*;

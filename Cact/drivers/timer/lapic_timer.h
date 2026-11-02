@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #ifndef CACT_LAPIC_TIMER_H
 #define CACT_LAPIC_TIMER_H
 

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! GEM buffer objects, client handle tables, mmap offsets and the dumb-buffer
 //! ioctls, plus PRIME buffer sharing.
 //!

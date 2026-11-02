@@ -1,3 +1,6 @@
+; SPDX-License-Identifier: GPL-3.0-or-later
+; Copyright (C) 2026 CactOS Project
+
 ; AP trampoline — copied to low memory (0x8000) and executed by worker cores
 ; after an INIT-SIPI wake.  Runs in real mode, brings the core up into IA-32e
 ; (long mode) with the kernel's own page tables, then jumps to the C entry

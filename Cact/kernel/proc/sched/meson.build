@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The sync crate is a path dependency of sched (and is listed as a prerequisite
 # of the sched archive in the Makefile), so its sources are scanned as build
 # inputs here rather than built into an archive of their own.  The

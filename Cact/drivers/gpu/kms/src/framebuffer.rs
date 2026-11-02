@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Framebuffer objects and their ioctls: ADDFB, ADDFB2, RMFB, GETFB2, DIRTYFB.
 //!
 //! A framebuffer pins the GEM object it scans out; a CRTC keeps its own

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 #
 # Build one of the kernel's Rust static libraries and stage the archive at a
 # path Meson can depend on.

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 option('kern_debug', type: 'boolean', value: false,
   description: 'Build the kernel with -g -Og for QEMU+GDB debugging (make KERN_DEBUG=1)')
 

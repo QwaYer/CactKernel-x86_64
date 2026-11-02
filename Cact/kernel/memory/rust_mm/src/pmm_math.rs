@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure physical-memory math: page/address conversion, bitmap indexing, region
 //! clipping and the RAM/MMIO boundary computation.
 //!

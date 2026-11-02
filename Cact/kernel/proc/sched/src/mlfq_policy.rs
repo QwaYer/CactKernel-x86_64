@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure MLFQ scheduling policy: level ids, quanta, level clamping, the
 //! highest-runnable-level selection, and the periodic priority boost.
 //!

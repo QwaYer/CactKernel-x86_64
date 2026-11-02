@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI — host controller bring-up, root-port probing, and hotplug.
  *
  * The register programming is factored out of xhci_init_one() so the fatal

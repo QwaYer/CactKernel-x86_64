@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Out-of-memory killer: scores user tasks by resident page count and signals a victim.
 //!
 //! Runs with the scheduler lock held while walking the global task list.

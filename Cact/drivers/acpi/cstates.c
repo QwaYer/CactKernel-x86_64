@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /*
  * ACPI _CST probe: read the processor C-state descriptors and publish them to
  * the scheduler's energy model (sched/src/cstate.rs).

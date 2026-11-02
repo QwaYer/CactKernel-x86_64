@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* The image is loaded by GRUB at 1 MiB and entered in 32-bit protected mode,
    so .boot -- the multiboot2 header and the code that builds the page tables
    and turns long mode on -- is linked at that physical address.  Everything

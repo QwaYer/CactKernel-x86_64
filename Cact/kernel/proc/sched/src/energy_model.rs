@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure energy-governor model: C-state ids, the published energy costs, and the
 //! benefit/cost decision functions.
 //!

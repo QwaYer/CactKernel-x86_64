@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure load-balance policy: which core should hand one ready task to which.
 //!
 //! Step 6 of the energy governor splits in two halves.  This module is the

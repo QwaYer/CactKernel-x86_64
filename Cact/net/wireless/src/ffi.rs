@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! FFI surface: the handful of C kernel services the 802.11 engine needs.
 //!
 //! Rust↔Rust calls (the skb helpers, `register_netdev`, `netif_rx`) go through

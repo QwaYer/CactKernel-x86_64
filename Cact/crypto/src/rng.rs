@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Kernel CSPRNG — the single source of randomness for the whole system.
 //!
 //! A ChaCha20-based DRBG in the shape Linux uses for its CRNG: a 32-byte key

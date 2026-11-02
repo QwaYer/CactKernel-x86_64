@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Vblank accounting and the per-client event queue that `read()` on a card fd
 //! drains in the `drm_event_vblank` form libdrm expects.
 //!

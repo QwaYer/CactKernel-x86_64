@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The CRTC ioctls: GETCRTC, SETCRTC (the non-atomic modeset, including
 //! connector/encoder resolution) and PAGE_FLIP.
 //!

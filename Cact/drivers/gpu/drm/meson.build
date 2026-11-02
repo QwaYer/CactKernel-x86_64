@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The DRM core is entirely Rust now: the crate in rust_drm/ owns the device and
 # object model, GEM, KMS, events and the ioctl layer.  This directory keeps only
 # the C driver ABI (drm_drv.h) and the userspace ABI (uapi/) next to it, plus

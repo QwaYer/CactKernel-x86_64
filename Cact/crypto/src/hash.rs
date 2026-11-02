@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 use alloc::boxed::Box;
 use rustls::crypto::hash::{Context, Hash, Output};
 use sha2::{Digest, Sha256, Sha384};

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Kernel synchronization primitives for Cact (`cact_sync`).
 //!
 //! Provides spinlocks, IRQ-aware spinlocks, mutexes, and counting semaphores that

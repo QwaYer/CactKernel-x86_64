@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Slab allocator: per-cache freelists, optional ctor/dtor, and a set of generic size caches.
 
 use crate::ffi::*;

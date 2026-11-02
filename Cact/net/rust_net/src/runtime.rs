@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Driver registration, background `net_poll_task` poll thread, and RX entry from the NIC driver.
 //!
 //! `net_sema` serializes access between the interrupt/RX path and `net_poll_task`.

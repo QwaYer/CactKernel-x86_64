@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! C ABI of the DRM core — the symbols the kernel's C half calls.
 //!
 //! Migrated slice 1: the ioctl payload plumbing that used to live in

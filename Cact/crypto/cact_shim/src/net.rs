@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 pub mod tcp {
     use crate::io::{Read, Result, Write};
 

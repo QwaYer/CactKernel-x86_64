@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Per-open DRM client state and the VFS node operations.
 //!
 //! A card fd carries a client (GEM handle table, framebuffers, event queue)

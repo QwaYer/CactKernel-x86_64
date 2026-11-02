@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! TCP C ABI entry points. Split out of `tcp.rs`; shared state lives there.
 
 use core::net::Ipv4Addr;

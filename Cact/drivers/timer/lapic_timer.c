@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* LAPIC timer — the system scheduler tick.
  *
  * Calibrates the LAPIC timer against the ACPI PM timer (3.579545 MHz) and arms

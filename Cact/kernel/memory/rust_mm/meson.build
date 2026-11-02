@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # rust_mm uses the stable cargo front-end; its .cargo/config.toml points at
 # i686-cact.json and enables core/build-std.
 _rust_inputs = []

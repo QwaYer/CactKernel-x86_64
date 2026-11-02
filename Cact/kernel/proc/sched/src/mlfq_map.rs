@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! MLFQ <-> C-state mapping (Step 5 of the energy governor).
 //!
 //! Maps the four MLFQ levels onto core idle depths.  The interactive classes

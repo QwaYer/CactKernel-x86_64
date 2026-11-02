@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! ICMP echo (ping) helper: validates the destination and forwards to the stack layer.
 
 use core::ffi::c_int;

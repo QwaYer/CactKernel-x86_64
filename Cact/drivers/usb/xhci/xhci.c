@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI — PCI glue: driver registration, interrupt dispatch, MSI-X setup. */
 
 #include "xhci.h"

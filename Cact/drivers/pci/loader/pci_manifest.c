@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #include "pci_loader.h"
 #include "pci_loader_internal.h"
 #include "pci_driver.h"

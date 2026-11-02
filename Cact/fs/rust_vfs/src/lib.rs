@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Rust core of the CactOS VFS.
 //!
 //! This crate owns the mount table, symlinks, node lifetime and path

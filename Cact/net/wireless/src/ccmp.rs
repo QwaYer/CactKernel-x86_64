@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! CCMP (AES-CCM) for WPA2 data frames, in software — the mac80211-compatible
 //! profile.
 //!

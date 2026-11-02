@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 """Generate consolefont.psf (PSF2, 8x8, 256 glyphs) for the Cact kernel.
 
 Glyph source: the classic public-domain 8x8 bitmap set that used to be

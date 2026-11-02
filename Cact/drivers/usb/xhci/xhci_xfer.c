@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI — USB transfer paths: control, interrupt, and bulk. */
 
 #include "xhci.h"

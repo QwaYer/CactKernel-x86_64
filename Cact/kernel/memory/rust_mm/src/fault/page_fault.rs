@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! x86 `#PF` handler logic: COW, demand zero, swap-in, guard `CR3` during PTE walks.
 
 use crate::ffi::*;

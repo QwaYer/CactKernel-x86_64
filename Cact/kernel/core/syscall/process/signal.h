@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #ifndef SC_PROC_SIGNAL_H
 #define SC_PROC_SIGNAL_H
 

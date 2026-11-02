@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 kernel_objects += custom_target('asm-mm',
   input: 'mm.asm',
   output: 'mm.o',

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Decision engine (Step 4 of the energy governor).
 //!
 //! Runs periodically on the master core and decides, per worker core, whether

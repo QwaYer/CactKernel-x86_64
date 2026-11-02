@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 kernel_libs += static_library('cact_usb_hub',
   files('usb_hub.c'),
   include_directories: cact_includes,

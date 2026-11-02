@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 /* xHCI — command/event ring core: TRB enqueue, event draining, command
  * submission/wait, and the shared IRQ path. */
 

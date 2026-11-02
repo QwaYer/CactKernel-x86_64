@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Mirrors of the VFS/devfs structs the DRM node glue hands back to the kernel
 //! (`Cact/fs/vfs/vfs.h`, `Cact/fs/vfs/devfs/devfs.h`).
 //!

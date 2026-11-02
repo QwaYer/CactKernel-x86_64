@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Load monitoring (Step 3 of the energy governor).
 //!
 //! The master core samples, on every scheduler tick, per-core runnable load

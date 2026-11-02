@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # ==============================================================================
 # cact_check.sh — headless boot check for CactOS (PLAN-2.0.0 P2.3).
 #

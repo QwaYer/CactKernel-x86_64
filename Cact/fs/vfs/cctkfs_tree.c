@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #include "cctkfs_tree.h"
 #include "initfs_modblob.h"
 #include "kernel.h"

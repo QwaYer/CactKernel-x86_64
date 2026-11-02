@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The fence-free state a syncobj's behaviour reduces to.
 //!
 //! CactKernel's DRM core holds no fence objects, so what a client can observe of

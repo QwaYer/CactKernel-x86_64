@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! The driver-facing ("dumb radio") API: the ops a Wi-Fi driver registers with
 //! the in-kernel 802.11 engine, plus the engine's entry points.
 //!

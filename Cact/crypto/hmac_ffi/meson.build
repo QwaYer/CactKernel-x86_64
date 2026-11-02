@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 # The loadable-module signature is an ECDSA key pair now (see
 # Cact/kernel/elf/mod_tag.c and tools/modsign.py), so this crate no longer
 # embeds any signing secret; it only serves the /dev/crypto HMAC/HKDF requests.

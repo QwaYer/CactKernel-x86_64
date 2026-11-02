@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Signature verification for the schemes TLS certificates use: ECDSA
 //! P-256/P-384 and RSA PKCS#1 v1.5 / PSS.
 //!

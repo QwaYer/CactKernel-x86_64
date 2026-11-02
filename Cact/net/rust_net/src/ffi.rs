@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Small C-callable helpers: dotted IPv4 parsing and ping dispatch.
 //!
 //! String inputs are expected to be NUL-terminated C strings owned by the caller.

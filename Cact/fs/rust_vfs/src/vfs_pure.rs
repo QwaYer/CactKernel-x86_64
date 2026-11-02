@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
 //! Pure VFS helpers: the dcache bucket index and the fixed `child -> parent`
 //! map used to resolve `..` for dirfd-relative lookups.
 //!

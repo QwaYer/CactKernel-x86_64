@@ -1,3 +1,6 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* Copyright (C) 2026 CactOS Project */
+
 #include "unix_sock.h"
 #include "socket.h"
 #include "ioctl_abi.h"

@@ -1,3 +1,6 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
 _rust_inputs = []
 # The archive also links this crate's in-repo path dependencies (cact_crypto and
 # cact_shim), so their sources must be inputs too: without them ninja considers
