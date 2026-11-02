@@ -4,23 +4,25 @@
 
 """vendor_sync.py — refresh the vendored third-party trees from their upstreams.
 
-The kernel vendors four third-party trees (see the UPSTREAM.md next to each).
-Each one is upstream code *plus* a small, recorded set of CactOS edits, so
-"sync" means: fetch the upstream ref, re-apply the recorded edits, and compare
-the result with what is in the tree.  The recorded edits live in MANIFEST below;
-if upstream moves a brace the edit no longer applies and the tool says so rather
-than silently dropping it.
+The kernel vendors six third-party trees (each has an UPSTREAM.md next to it).
+None is verbatim upstream: every one is upstream *pruned* of what the kernel does
+not build and *patched* in a few recorded places.  So "sync" means: fetch the
+upstream ref, re-apply the recorded patches, and diff the result against what is
+committed here.
 
-    tools/vendor_sync.py list                  # trees, upstream refs, edit counts
-    tools/vendor_sync.py check [tree ...]       # fetch, re-apply, diff vs the tree
-    tools/vendor_sync.py update <tree> [...]    # rewrite the tree from upstream
+    tools/vendor_sync.py list                     # trees, upstream refs, patch counts
+    tools/vendor_sync.py check [tree ...]         # fetch, re-apply, diff vs the tree
+    tools/vendor_sync.py update <tree> [...]      # rewrite the tree from upstream
+    tools/vendor_sync.py check --refresh rustls   # ignore the fetch cache
 
 `check` never writes to the repository.  `update` does, so it refuses to run on a
-dirty working tree and prints a summary to review before `git add`.
+dirty tree and prints a summary to review before `git add`.  A patch that no
+longer applies is reported loudly instead of being dropped silently.
 
-Network notes for this machine: crates.io/static.crates.io are blocked, so
-crates come from the USTC mirror; github.com, raw.githubusercontent.com and
-git.kernel.org work.  Nothing here runs during a normal build.
+Fetches are cached under $XDG_CACHE_HOME/cact-vendor-sync and reused; pass
+--refresh to re-fetch.  Network notes for this machine: crates.io/static.crates.io
+are blocked, so crates come from the USTC mirror; github.com and git.kernel.org
+work.  Nothing here runs during a normal build.
 """
 
 from __future__ import annotations
@@ -40,51 +42,52 @@ TMP = os.path.join(
     os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "cact-vendor-sync"
 )
 MIRROR = "https://mirrors.ustc.edu.cn/crates.io/api/v1/crates"
+FRESH = False
 
 # --------------------------------------------------------------------------
 # Manifest: one entry per vendored tree.
 #
-# dest        where the tree lives in the repo
-# origin      how to fetch upstream:
-#               git   -> url + ref(tag) + optional subdir of the checkout
-#               crate -> name + version, from the USTC mirror
-# take        if set, only these paths (relative to the fetched root) are
-#             considered part of the vendored tree; everything else upstream
-#             is deliberately not vendored
-# drop        paths removed from the fetched tree before comparison
-# spdx        {glob-suffix: licence} - one `// SPDX-License-Identifier:` line
-#             is added at the top of every matching file
-# overrides   files kept as CactOS's own; upstream's copy is never copied over
-# edits       ordered text substitutions re-applied after each fetch; a
-#             substitution that no longer matches is reported as a failure
+#   dest    where the tree lives in the repo
+#   origin  how to fetch upstream:
+#             git   -> url, ref (tag/branch; "HEAD" = remote default branch,
+#                      unpinned), optional sparse path list, optional subdir
+#             crate -> name + version, from the USTC mirror
+#   take    if set, only these upstream paths are vendored (1:1 layout)
+#   map     if set, [upstream_path, repo_path] pairs (layout differs); a
+#           directory maps to a directory
+#   drop    upstream paths not vendored, relative to the *repo* layout
+#   keep    repo paths that are CactOS's own: never compared, never deleted
+#   manual  repo paths kept as ours; `check` reports how far they have drifted
+#           from current upstream, `update` never rewrites them
+#   spdx    {suffix: licence} - add `// SPDX-License-Identifier:` to matches
+#   rewrite_linux_includes
+#           if set, `<linux/X.h>` in every .c/.h becomes the path to
+#           <this dir>/X.h relative to the file (zstd's compat/ shims)
+#   edits   ordered literal substitutions re-applied after each fetch
 # --------------------------------------------------------------------------
 MANIFEST: dict[str, dict] = {
     "rustls": {
         "dest": "Cact/crypto/vendor/rustls-0.23.40",
         "origin": {"kind": "git", "url": "https://github.com/rustls/rustls",
                    "ref": "v/0.23.40"},
-        # the repo root, minus the workspace members we do not use and the
-        # test fixtures (several MB of .der/.bin)
+        # the repo root minus the workspace members we do not use and the test
+        # fixtures (several MB of .der/.bin)
         "take": [".cargo", ".github", ".gitignore", ".lycheeignore",
                  ".rustfmt.toml", ".rustfmt.unstable.toml", ".taplo.toml",
                  "Cargo.toml", "LICENSE", "LICENSE-APACHE", "LICENSE-ISC",
                  "LICENSE-MIT", "README.md", "rustls"],
         "drop": ["rustls/src/testdata", "rustls/tests/data"],
         "spdx": {".rs": "Apache-2.0 OR ISC OR MIT"},
-        "overrides": ["rustls/Cargo.toml", "rustls/build.rs"],
+        "manual": ["rustls/Cargo.toml", "rustls/build.rs"],
         "edits": [
-            {
-                "file": "rustls/src/lib.rs",
-                "find": "mod conn;\n",
-                "replace": "/// Connection APIs: the shared connection state and the client/server halves.\npub mod conn;\n",
-                "note": "cact_crypto/cact_net reach conn from outside the crate",
-            },
-            {
-                "file": "rustls/src/conn.rs",
-                "find": "pub(crate) mod unbuffered;\n",
-                "replace": "pub mod unbuffered;\n",
-                "note": "cact_crypto/cact_net reach unbuffered from outside the crate",
-            },
+            {"file": "rustls/src/lib.rs",
+             "find": "mod conn;\n",
+             "replace": "/// Connection APIs: the shared connection state and the client/server halves.\npub mod conn;\n",
+             "note": "cact_crypto/cact_net reach conn from outside the crate"},
+            {"file": "rustls/src/conn.rs",
+             "find": "pub(crate) mod unbuffered;\n",
+             "replace": "pub mod unbuffered;\n",
+             "note": "cact_crypto/cact_net reach unbuffered from outside the crate"},
         ],
     },
     "rustls-webpki": {
@@ -95,14 +98,12 @@ MANIFEST: dict[str, dict] = {
                  "Cargo.toml", "LICENSE", "README.md", "src"],
         "drop": [],
         "spdx": {".rs": "ISC"},
-        "overrides": ["Cargo.toml"],
+        "manual": ["Cargo.toml"],
         "edits": [
-            {
-                "file": "src/lib.rs",
-                "find": '#[cfg(any(feature = "std", test))]\nextern crate std;\n\n',
-                "replace": "",
-                "note": "no_std: the kernel has no std to link",
-            },
+            {"file": "src/lib.rs",
+             "find": '#[cfg(any(feature = "std", test))]\nextern crate std;\n\n',
+             "replace": "",
+             "note": "no_std: the kernel has no std to link"},
         ],
     },
     "rustls-pki-types": {
@@ -111,7 +112,77 @@ MANIFEST: dict[str, dict] = {
         "take": None,
         "drop": [".gitignore", "tests"],
         "spdx": {".rs": "MIT OR Apache-2.0"},
-        "overrides": [".cargo-checksum.json"],
+        "manual": [".cargo-checksum.json"],
+        "edits": [],
+    },
+    "zstd": {
+        "dest": "Cact/drivers/zstd",
+        "origin": {"kind": "git", "url": "https://github.com/torvalds/linux",
+                   "ref": "v7.3-rc4",
+                   "sparse": ["lib/zstd", "lib/xxhash.c", "include/linux/zstd.h",
+                              "include/linux/zstd_lib.h", "include/linux/zstd_errors.h",
+                              "include/linux/xxhash.h"]},
+        "map": [["lib/zstd/common", "common"],
+                ["lib/zstd/compress", "compress"],
+                ["lib/zstd/decompress", "decompress"],
+                ["lib/xxhash.c", "xxhash.c"],
+                ["include/linux/zstd.h", "compat/zstd.h"],
+                ["include/linux/zstd_lib.h", "compat/zstd_lib.h"],
+                ["include/linux/zstd_errors.h", "compat/zstd_errors.h"],
+                ["include/linux/xxhash.h", "compat/xxhash.h"]],
+        # Linux ships a few files we do not link (the module wrappers and the
+        # build file); they map to the dest root and are dropped here
+        "drop": ["decompress_sources.h", "Makefile", "zstd_common_module.c",
+                 "zstd_compress_module.c", "zstd_decompress_module.c"],
+        "keep": ["cact_zstd.c", "cact_zstd.h", "meson.build",
+                 "compat/compiler.h", "compat/errno.h", "compat/kernel.h",
+                 "compat/limits.h", "compat/math64.h", "compat/module.h",
+                 "compat/printk.h", "compat/stddef.h", "compat/string.h",
+                 "compat/swab.h", "compat/types.h", "compat/unaligned.h",
+                 "UPSTREAM.md"],
+        "spdx": {},
+        "manual": [],
+        "rewrite_linux_includes": "compat",
+        "edits": [
+            {"file": "compat/zstd.h", "find": "LINUX_ZSTD_H", "replace": "CACT_ZSTD_H",
+             "all": True, "note": "guard renamed (it is no longer the Linux header)"},
+            {"file": "xxhash.c",
+             "find": "/*\n * xxHash - Extremely Fast Hash algorithm\n",
+             "replace": "/*\n * SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only\n * xxHash - Extremely Fast Hash algorithm\n",
+             "note": "upstream has no SPDX line here; CactOS adds one"},
+            {"file": "compat/xxhash.h",
+             "find": "/*\n * xxHash - Extremely Fast Hash algorithm\n",
+             "replace": "/*\n * SPDX-License-Identifier: BSD-2-Clause OR GPL-2.0-only\n * xxHash - Extremely Fast Hash algorithm\n",
+             "note": "upstream has no SPDX line here; CactOS adds one"},
+        ],
+    },
+    "drm-uapi": {
+        "dest": "Cact/drivers/gpu/drm/uapi",
+        "origin": {"kind": "git", "url": "https://github.com/torvalds/linux",
+                   "ref": "v7.3-rc4", "sparse": ["include/uapi/drm"]},
+        "map": [["include/uapi/drm/drm.h", "drm.h"],
+                ["include/uapi/drm/drm_mode.h", "drm_mode.h"],
+                ["include/uapi/drm/drm_fourcc.h", "drm_fourcc.h"]],
+        "drop": [],
+        "keep": ["drm_ioctl.h", "drm_types.h", "UPSTREAM.md"],
+        # an ABI: CactOS's copies are older than this ref and adapted by hand, so
+        # the tool shows the drift and a human merges it together with cact_drm
+        "manual": ["drm.h", "drm_mode.h", "drm_fourcc.h"],
+        "spdx": {},
+        "edits": [],
+    },
+    "acpica-platform": {
+        "dest": "Cact/drivers/acpi/include/platform",
+        "origin": {"kind": "git", "url": "https://github.com/acpica/acpica",
+                   "ref": "HEAD"},
+        "map": [["source/include/platform/acenv.h", "acenv.h"],
+                ["source/include/platform/acintel.h", "acintel.h"]],
+        "drop": [],
+        "keep": ["UPSTREAM.md"],
+        # tailored to this kernel by hand (width, asm macros, BREAKPOINT3); a
+        # re-sync is a careful manual merge, not a copy
+        "manual": ["acenv.h", "acintel.h"],
+        "spdx": {},
         "edits": [],
     },
 }
@@ -120,40 +191,45 @@ MANIFEST: dict[str, dict] = {
 # --------------------------------------------------------------------------
 # fetching
 # --------------------------------------------------------------------------
-def fetch_git(url: str, ref: str, subdir: str | None) -> str:
-    out = os.path.join(TMP, "src")
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(TMP, exist_ok=True)
-    run(["git", "clone", "--quiet", "--depth", "1", "--branch", ref, url, out])
-    return os.path.join(out, subdir) if subdir else out
-
-
-def fetch_crate(name: str, version: str) -> str:
-    out = os.path.join(TMP, "src")
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(out)
-    url = f"{MIRROR}/{name}/{version}/download"
-    tarball = os.path.join(TMP, f"{name}-{version}.crate")
-    with urllib.request.urlopen(url, timeout=120) as r, open(tarball, "wb") as f:
-        shutil.copyfileobj(r, f)
-    with tarfile.open(tarball, "r:gz") as t:
-        t.extractall(out)
-    return os.path.join(out, f"{name}-{version}")
-
-
 def run(cmd: list[str], cwd: str | None = None) -> None:
     p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if p.returncode != 0:
         sys.exit(f"failed: {' '.join(cmd)}\n{p.stderr}")
 
 
-def fetch(tree: dict) -> str:
+def fetch(name: str, tree: dict) -> str:
     o = tree["origin"]
-    if o["kind"] == "git":
-        return fetch_git(o["url"], o["ref"], o.get("subdir"))
+    out = os.path.join(TMP, name, "src")
+    if os.path.isdir(out) and not FRESH:
+        return out
+    shutil.rmtree(out, ignore_errors=True)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     if o["kind"] == "crate":
-        return fetch_crate(o["name"], o["version"])
-    raise SystemExit(f"unknown origin kind {o['kind']!r}")
+        url = f"{MIRROR}/{o['name']}/{o['version']}/download"
+        tarball = os.path.join(TMP, f"{o['name']}-{o['version']}.crate")
+        with urllib.request.urlopen(url, timeout=300) as r, open(tarball, "wb") as f:
+            shutil.copyfileobj(r, f)
+        with tarfile.open(tarball, "r:gz") as t:
+            t.extractall(out)
+        return out
+    cmd = ["git", "clone", "--quiet", "--depth", "1"]
+    if o.get("sparse"):
+        cmd += ["--filter=blob:none", "--sparse"]
+    if o.get("ref") and o["ref"] != "HEAD":
+        cmd += ["--branch", o["ref"]]
+    cmd += [o["url"], out]
+    run(cmd)
+    if o.get("sparse"):
+        run(["git", "-C", out, "sparse-checkout", "set", *o["sparse"]])
+    return out
+
+
+def resolved_ref(name: str) -> str:
+    """The commit the cached fetch sits on - what to record in UPSTREAM.md."""
+    out = os.path.join(TMP, name, "src")
+    p = subprocess.run(["git", "-C", out, "rev-parse", "HEAD"],
+                       capture_output=True, text=True)
+    return p.stdout.strip() if p.returncode == 0 else ""
 
 
 # --------------------------------------------------------------------------
@@ -165,36 +241,86 @@ def read(path: str) -> str:
 
 
 def write(path: str, text: str) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "wb") as f:
         f.write(text.encode("utf-8", "surrogateescape"))
 
 
+def copy_into(src_root: str, rel: str, stage_dir: str, dest_rel: str) -> None:
+    src = os.path.join(src_root, rel)
+    if os.path.isdir(src):
+        for dirpath, _, filenames in os.walk(src):
+            for fn in filenames:
+                inner = os.path.relpath(os.path.join(dirpath, fn), src)
+                write(os.path.join(stage_dir, dest_rel, inner),
+                      read(os.path.join(dirpath, fn)))
+    else:
+        write(os.path.join(stage_dir, dest_rel), read(src))
+
+
 def stage(name: str, tree: dict) -> tuple[str, list[str], list[str]]:
-    src = fetch(tree)
+    src = fetch(name, tree)
     stage_dir = os.path.join(TMP, "stage")
     shutil.rmtree(stage_dir, ignore_errors=True)
-
-    take = tree.get("take")
     drop = {os.path.normpath(d) for d in tree.get("drop", [])}
-    for dirpath, dirnames, filenames in os.walk(src):
-        rel_dir = os.path.relpath(dirpath, src)
-        for fn in filenames:
-            rel = fn if rel_dir == "." else os.path.join(rel_dir, fn)
-            if take and not any(rel == t or rel.startswith(t + os.sep) for t in take):
+    pruned: list[str] = []
+
+    def wanted(rel: str) -> bool:
+        if any(rel == d or rel.startswith(d + os.sep) for d in drop):
+            pruned.append(rel)
+            return False
+        return True
+
+    if tree.get("map"):
+        for up, dest_rel in tree["map"]:
+            copy_into(src, up, stage_dir, dest_rel)
+        # drop anything the mapping pulled in that we do not vendor
+        for dirpath, dirnames, filenames in os.walk(stage_dir, topdown=True):
+            rel_dir = os.path.relpath(dirpath, stage_dir)
+            for fn in filenames:
+                rel = fn if rel_dir == "." else os.path.join(rel_dir, fn)
+                if not wanted(rel):
+                    os.remove(os.path.join(dirpath, fn))
+    else:
+        take = tree.get("take")
+        for dirpath, _, filenames in os.walk(src):
+            if os.path.relpath(dirpath, src).startswith(".git"):
                 continue
-            if any(rel == d or rel.startswith(d + os.sep) for d in drop):
-                continue
-            write(os.path.join(stage_dir, rel), read(os.path.join(dirpath, fn)))
+            for fn in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, fn), src)
+                if take and not any(rel == t or rel.startswith(t + os.sep) for t in take):
+                    continue
+                if wanted(rel):
+                    write(os.path.join(stage_dir, rel), read(os.path.join(dirpath, fn)))
 
     applied, failed = [], []
+
+    shim = tree.get("rewrite_linux_includes")
+    if shim:
+        for dirpath, _, filenames in os.walk(stage_dir):
+            for fn in filenames:
+                if not fn.endswith((".c", ".h")):
+                    continue
+                path = os.path.join(dirpath, fn)
+                text = read(path)
+                if "#include <linux/" not in text:
+                    continue
+                prefix = os.path.relpath(os.path.join(stage_dir, shim), dirpath)
+                if prefix == ".":
+                    prefix = ""
+                else:
+                    prefix += "/"
+                write(path, re.sub(r"#include <linux/([A-Za-z0-9_]+\.h)>",
+                                   lambda m: f'#include "{prefix}{m.group(1)}"', text))
+        applied.append(f"<linux/X.h> -> ({shim}/X.h relative to each file)")
+
     for e in tree["edits"]:
         path = os.path.join(stage_dir, e["file"])
         text = read(path)
         if e["find"] not in text:
             failed.append(f"{e['file']}: {e['note']}")
             continue
-        write(path, text.replace(e["find"], e["replace"], 1))
+        write(path, text.replace(e["find"], e["replace"], -1 if e.get("all") else 1))
         applied.append(f"{e['file']}: {e['note']}")
 
     for suffix, licence in tree["spdx"].items():
@@ -208,12 +334,11 @@ def stage(name: str, tree: dict) -> tuple[str, list[str], list[str]]:
                     continue
                 write(path, f"// SPDX-License-Identifier: {licence}\n\n{text}")
 
-    # Overrides stay ours; keep upstream's copy aside so `check` can say how far
-    # they have drifted (an upstream Cargo.toml that grew a feature we lack is
-    # exactly what a maintainer needs to see on a version bump).
+    # manually-merged files stay ours; keep upstream's copy aside so `check` can
+    # say how far they have drifted
     upstream_dir = os.path.join(TMP, "upstream")
     shutil.rmtree(upstream_dir, ignore_errors=True)
-    for rel in tree["overrides"]:
+    for rel in tree.get("manual", []):
         staged = os.path.join(stage_dir, rel)
         if os.path.exists(staged):
             write(os.path.join(upstream_dir, rel), read(staged))
@@ -235,13 +360,22 @@ def tree_files(root: str) -> set[str]:
     return out
 
 
+def diff_stat(upa: str, ours: str) -> str:
+    d = list(difflib.unified_diff(read(ours).splitlines(True), read(upa).splitlines(True), n=0))
+    plus = sum(1 for l in d if l.startswith("+") and not l.startswith("+++"))
+    minus = sum(1 for l in d if l.startswith("-") and not l.startswith("---"))
+    if plus == minus == 0:
+        return "identical to upstream"
+    return f"+{plus}/-{minus} lines vs upstream"
+
+
 def check(name: str, tree: dict) -> bool:
     stage_dir, applied, failed = stage(name, tree)
     ours = os.path.join(REPO, tree["dest"])
     a, b = tree_files(stage_dir), tree_files(ours)
-    overrides = set(tree["overrides"])
+    manual, keep = set(tree.get("manual", [])), set(tree.get("keep", []))
     differing, only_up = [], sorted(a - b)
-    only_ours = sorted(b - a - overrides)
+    only_ours = sorted(b - a - manual - keep)
 
     for rel in sorted(a & b):
         if read(os.path.join(stage_dir, rel)) != read(os.path.join(ours, rel)):
@@ -249,16 +383,19 @@ def check(name: str, tree: dict) -> bool:
 
     print(f"\n=== {name}  ({tree['dest']})")
     print(f"    upstream: {_describe(tree)}")
+    print(f"    fetched:  {resolved_ref(name) or 'n/a'}")
     for note in applied:
         print(f"    re-applied: {note}")
     for note in failed:
-        print(f"    !! edit no longer applies — merge by hand: {note}")
-    for rel in sorted(overrides):
+        print(f"    !! patch no longer applies — merge by hand: {note}")
+    drifting = 0
+    for rel in sorted(manual):
         up = os.path.join(TMP, "upstream", rel)
         if not os.path.exists(up):
             continue
-        delta = diff_stat(up, os.path.join(ours, rel))
-        print(f"    override, kept as ours: {rel}  (vs upstream: {delta} — review on a bump)")
+        stat = diff_stat(up, os.path.join(ours, rel))
+        drifting += stat != "identical to upstream"
+        print(f"    hand-merged, kept as ours: {rel}  ({stat})")
     for rel in only_ours:
         print(f"    stale (in repo, not upstream): {rel}")
     for rel in only_up:
@@ -268,26 +405,19 @@ def check(name: str, tree: dict) -> bool:
         d = difflib.unified_diff(
             read(os.path.join(ours, rel)).splitlines(True),
             read(os.path.join(stage_dir, rel)).splitlines(True),
-            "repo", "upstream+edits", n=1,
-        )
+            "repo", "upstream+edits", n=1)
         sys.stdout.write("".join(list(d)[:30]))
 
     ok = not (failed or differing or only_ours)
-    print(f"    -> {'in sync' if ok else 'DIFFERS (see above)'}")
+    tail = f" ({drifting} hand-merged file(s) — see above)" if drifting else ""
+    print(f"    -> {'in sync' + tail if ok else 'DIFFERS (see above)'}")
     return ok
-
-
-def diff_stat(upa: str, ours: str) -> str:
-    d = list(difflib.unified_diff(read(ours).splitlines(True), read(upa).splitlines(True), n=0))
-    plus = sum(1 for l in d if l.startswith("+") and not l.startswith("+++"))
-    minus = sum(1 for l in d if l.startswith("-") and not l.startswith("---"))
-    return "identical" if plus == minus == 0 else f"+{plus}/-{minus} lines"
 
 
 def _describe(tree: dict) -> str:
     o = tree["origin"]
     if o["kind"] == "git":
-        return f"{o['url']} @ {o['ref']}" + (f"/{o['subdir']}" if o.get("subdir") else "")
+        return f"{o['url']} @ {o['ref']}"
     return f"{o['name']} {o['version']} (crates.io via USTC mirror)"
 
 
@@ -297,26 +427,30 @@ def update(name: str, tree: dict) -> None:
         sys.exit("working tree is dirty — commit or stash first")
     stage_dir, applied, failed = stage(name, tree)
     ours = os.path.join(REPO, tree["dest"])
-    for rel in tree_files(ours):
-        if rel not in tree_files(stage_dir):
-            os.remove(os.path.join(ours, rel))
-    for rel in tree_files(stage_dir):
+    keep = set(tree.get("keep", []))
+    staged = tree_files(stage_dir)
+    for rel in tree_files(ours) - staged - keep:
+        os.remove(os.path.join(ours, rel))
+    for rel in staged:
         write(os.path.join(ours, rel), read(os.path.join(stage_dir, rel)))
-    print(f"{name}: rewrote {tree['dest']} from {_describe(tree)}")
+    print(f"{name}: rewrote {tree['dest']} from {_describe(tree)} ({resolved_ref(name) or ''})")
     for note in applied:
-        print(f"  edit: {note}")
+        print(f"  re-applied: {note}")
     for note in failed:
-        print(f"  !! edit not applied, merge by hand: {note}")
-    print("  review with `git diff`, then fix up any override that upstream changed")
+        print(f"  !! patch not applied, merge by hand: {note}")
+    print("  review with `git diff`, then fix up any hand-merged file upstream changed")
 
 
 # --------------------------------------------------------------------------
 def main() -> int:
+    global FRESH
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("action", choices=["list", "check", "update"])
     ap.add_argument("trees", nargs="*", help="subset of trees (default: all)")
+    ap.add_argument("--refresh", action="store_true", help="ignore the fetch cache")
     args = ap.parse_args()
+    FRESH = args.refresh
 
     names = args.trees or list(MANIFEST)
     for n in names:
@@ -328,7 +462,8 @@ def main() -> int:
             t = MANIFEST[n]
             print(f"{n:18} {t['dest']}")
             print(f"{'':18} {_describe(t)}")
-            print(f"{'':18} {len(t['edits'])} edit(s), {len(t['overrides'])} override(s)")
+            print(f"{'':18} {len(t['edits'])} patch(es), "
+                  f"{len(t.get('manual', []))} hand-merged, {len(t.get('keep', []))} own file(s)")
         return 0
 
     ok = True
