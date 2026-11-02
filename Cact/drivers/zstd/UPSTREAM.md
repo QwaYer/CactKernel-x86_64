@@ -12,8 +12,8 @@ Source snapshot: **Linux 7.3.0-rc4** (`lib/zstd/`, `lib/xxhash.c`,
 | Path | Origin | SPDX |
 |---|---|---|
 | `common/`, `compress/`, `decompress/` | Linux `lib/zstd/*` | `GPL-2.0+ OR BSD-3-Clause` (© Meta Platforms) |
-| `xxhash.c` | Linux `lib/xxhash.c` | `BSD-2-Clause OR GPL-2.0` (© Yann Collet) |
-| `compat/xxhash.h` | Linux `include/linux/xxhash.h` | `BSD-2-Clause OR GPL-2.0` (© Yann Collet) |
+| `xxhash.c` | Linux `lib/xxhash.c` | `BSD-2-Clause OR GPL-2.0-only` (© Yann Collet) |
+| `compat/xxhash.h` | Linux `include/linux/xxhash.h` | `BSD-2-Clause OR GPL-2.0-only` (© Yann Collet) |
 | `compat/zstd.h` | Linux `include/linux/zstd.h` | `GPL-2.0+ OR BSD-3-Clause` (© Meta Platforms) |
 | `compat/zstd_lib.h` | Linux `include/linux/zstd_lib.h` | `GPL-2.0+ OR BSD-3-Clause` (© Meta Platforms) |
 | `compat/zstd_errors.h` | Linux `include/linux/zstd_errors.h` | `GPL-2.0+ OR BSD-3-Clause` (© Meta Platforms) |
@@ -34,6 +34,11 @@ Two, both mechanical:
    `limits.h`, `math64.h`, `printk.h`, `swab.h`, `unaligned.h`, `zstd_errors.h`.
 
 Nothing else differs — the algorithms are untouched.
+
+Two files are the exception: upstream `xxhash.c` / `include/linux/xxhash.h` carry
+no `SPDX-License-Identifier` (only the inline BSD-2-Clause/GPL-2 text), so an
+SPDX line was added inside their existing licence comment.  Expect those two to
+show that one extra line when diffing against upstream.
 
 ## Re-sync procedure
 
