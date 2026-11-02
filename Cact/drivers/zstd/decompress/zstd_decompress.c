@@ -19,7 +19,6 @@
  * on stack (0), or into heap (1, default; requires malloc()).
  * Note that functions with explicit context such as ZSTD_decompressDCtx() are unaffected.
  */
-
 #ifndef ZSTD_HEAPMODE
 #  define ZSTD_HEAPMODE 1
 #endif

@@ -16,7 +16,6 @@
 /* **************************************************************
 *  Includes
 ****************************************************************/
-
 #include "../common/compiler.h"
 #include "../common/mem.h"        /* U32, U16, etc. */
 #include "../common/debug.h"      /* assert, DEBUGLOG */

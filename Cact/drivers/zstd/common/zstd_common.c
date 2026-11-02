@@ -14,7 +14,6 @@
 /*-*************************************
 *  Dependencies
 ***************************************/
-
 #define ZSTD_DEPS_NEED_MALLOC
 #include "error_private.h"
 #include "zstd_internal.h"

@@ -23,7 +23,6 @@
  * ZSTD_memset()
  * ZSTD_memmove()
  */
-
 #ifndef ZSTD_DEPS_COMMON
 #define ZSTD_DEPS_COMMON
 

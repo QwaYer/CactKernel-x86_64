@@ -16,7 +16,6 @@
 /* *************************************
 *  Dependencies
 ***************************************/
-
 #include "mem.h"
 #include "error_private.h"       /* ERR_*, ERROR */
 #define FSE_STATIC_LINKING_ONLY  /* FSE_MIN_TABLELOG */

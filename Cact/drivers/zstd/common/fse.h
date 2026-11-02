@@ -12,7 +12,6 @@
  * in the COPYING file in the root directory of this source tree).
  * You may select, at your option, one of the above-listed licenses.
 ****************************************************************** */
-
 #ifndef FSE_H
 #define FSE_H
 

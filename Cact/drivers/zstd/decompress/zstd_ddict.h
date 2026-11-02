@@ -9,6 +9,7 @@
  * You may select, at your option, one of the above-listed licenses.
  */
 
+
 #ifndef ZSTD_DDICT_H
 #define ZSTD_DDICT_H
 

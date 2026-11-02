@@ -15,7 +15,6 @@
 ****************************************************************** */
 
 /* --- dependencies --- */
-
 #include "../common/mem.h"             /* U32, BYTE, etc. */
 #include "../common/debug.h"           /* assert, DEBUGLOG */
 #include "../common/error_private.h"   /* ERROR */

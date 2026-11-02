@@ -12,7 +12,6 @@
  /*-*************************************
  *  Dependencies
  ***************************************/
-
 #include "zstd_compress_superblock.h"
 
 #include "../common/zstd_internal.h"  /* ZSTD_getSequenceLength */

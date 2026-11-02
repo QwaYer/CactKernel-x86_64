@@ -15,7 +15,6 @@
 /*-*******************************************************
 *  Dependencies
 *********************************************************/
-
 #include "../common/zstd_deps.h"   /* ZSTD_memcpy, ZSTD_memmove, ZSTD_memset */
 #include "../common/compiler.h"    /* prefetch */
 #include "../common/cpu.h"         /* bmi2 */
