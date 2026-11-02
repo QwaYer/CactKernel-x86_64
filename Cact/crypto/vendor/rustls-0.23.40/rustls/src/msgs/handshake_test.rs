@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use std::prelude::v1::*;
 use std::{format, println, vec};
 

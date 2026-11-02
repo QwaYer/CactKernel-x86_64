@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 /// A macro which defines an enum type.
 macro_rules! enum_builder {
     (

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Macros that bring a provider into the current scope.
 //!
 //! The selected provider module is bound as `provider`; you can rely on this

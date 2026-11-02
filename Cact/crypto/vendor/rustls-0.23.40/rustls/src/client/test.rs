@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 #![cfg(any(feature = "ring", feature = "aws_lc_rs"))]
 use alloc::boxed::Box;
 use alloc::vec;

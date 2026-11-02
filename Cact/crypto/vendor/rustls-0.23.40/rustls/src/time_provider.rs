@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! The library's source of time.
 
 use core::fmt::Debug;

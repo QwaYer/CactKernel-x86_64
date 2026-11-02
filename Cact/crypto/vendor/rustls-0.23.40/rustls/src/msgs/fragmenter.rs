@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use crate::Error;
 use crate::enums::{ContentType, ProtocolVersion};
 use crate::msgs::message::{OutboundChunks, OutboundPlainMessage, PlainMessage};

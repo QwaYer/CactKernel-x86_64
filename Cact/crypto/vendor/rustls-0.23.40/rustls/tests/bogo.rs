@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 // Runs the bogo test suite, in the form of a rust test.
 // Note that bogo requires a golang environment to build
 // and run.

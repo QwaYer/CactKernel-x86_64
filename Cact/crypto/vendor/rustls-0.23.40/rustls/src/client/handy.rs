@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use pki_types::ServerName;
 
 use crate::enums::SignatureScheme;

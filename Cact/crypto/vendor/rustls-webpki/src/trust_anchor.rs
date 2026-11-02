@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 use pki_types::{CertificateDer, TrustAnchor};
 
 use crate::cert::{Cert, lenient_certificate_serial_number};

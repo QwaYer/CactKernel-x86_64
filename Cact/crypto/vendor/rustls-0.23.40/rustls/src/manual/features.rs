@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 /*!
 
 The below list reflects the support provided with the default crate features.

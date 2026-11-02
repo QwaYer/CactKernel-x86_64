@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 /*! # A review of protocol vulnerabilities
 
 ## CBC MAC-then-encrypt ciphersuites

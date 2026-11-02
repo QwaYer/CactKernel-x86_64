@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 /*! # A review of TLS Implementation Vulnerabilities
 
 An important part of engineering involves studying and learning from the mistakes of the past.

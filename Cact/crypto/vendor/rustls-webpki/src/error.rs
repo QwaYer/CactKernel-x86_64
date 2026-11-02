@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 // Copyright 2015 Brian Smith.
 //
 // Permission to use, copy, modify, and/or distribute this software for any

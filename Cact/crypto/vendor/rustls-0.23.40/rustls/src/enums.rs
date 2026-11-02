@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 #![allow(non_camel_case_types)]
 #![allow(missing_docs)]
 use crate::msgs::codec::{Codec, Reader};

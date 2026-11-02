@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! # Rustls - a modern TLS library
 //!
 //! Rustls is a TLS library that aims to provide a good level of cryptographic security,

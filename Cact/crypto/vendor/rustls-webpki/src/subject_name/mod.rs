@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 // Copyright 2022 Rafael Fernández López.
 //
 // Permission to use, copy, modify, and/or distribute this software for any

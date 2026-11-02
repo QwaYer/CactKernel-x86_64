@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Key schedule maintenance for TLS1.3
 
 use alloc::boxed::Box;

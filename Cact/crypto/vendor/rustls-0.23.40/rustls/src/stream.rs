@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use core::ops::{Deref, DerefMut};
 use std::io::{BufRead, IoSlice, Read, Result, Write};
 

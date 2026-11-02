@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 /// Non-panicking `let (nonce, ciphertext) = ciphertext.split_at(...)`.
 // TODO(XXX): remove once MSRV reaches 1.80
 #[allow(dead_code)] // Complicated conditional compilation guards elided

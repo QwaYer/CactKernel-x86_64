@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::{cmp, mem};

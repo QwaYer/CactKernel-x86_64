@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! This program does benchmarking of the functions in verify.rs,
 //! that do certificate chain validation and signature verification.
 //!

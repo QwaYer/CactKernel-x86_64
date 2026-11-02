@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! The PKIX [`AlgorithmIdentifier`] type, and common values.
 //!
 //! If you need to use an [`AlgorithmIdentifier`] not defined here,

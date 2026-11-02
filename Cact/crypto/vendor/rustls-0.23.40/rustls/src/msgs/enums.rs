@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 #![allow(clippy::upper_case_acronyms)]
 #![allow(non_camel_case_types)]
 use crate::crypto::{KeyExchangeAlgorithm, hash};

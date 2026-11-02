@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 /// Decode base64 `input`, writing the result into `output`.
 ///
 /// `input` is treated as secret, so efforts are made to avoid

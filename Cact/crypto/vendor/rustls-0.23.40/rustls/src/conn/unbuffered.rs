@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Unbuffered connection API
 
 use alloc::vec::Vec;

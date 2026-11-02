@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! DNS name validation according to RFC1035, but with underscores allowed.
 
 #[cfg(all(feature = "alloc", feature = "std"))]

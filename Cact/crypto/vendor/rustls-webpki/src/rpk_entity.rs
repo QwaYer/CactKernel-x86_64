@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 use crate::error::Error;
 use crate::signed_data::SubjectPublicKeyInfo;
 use crate::{DerTypeId, der, signed_data};

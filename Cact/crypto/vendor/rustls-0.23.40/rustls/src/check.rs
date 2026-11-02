@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use crate::enums::{ContentType, HandshakeType};
 use crate::error::Error;
 use crate::log::warn;

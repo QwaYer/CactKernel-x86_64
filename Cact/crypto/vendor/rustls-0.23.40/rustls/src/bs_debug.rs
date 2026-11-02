@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use core::fmt;
 
 /// Alternative implementation of `fmt::Debug` for byte slice.

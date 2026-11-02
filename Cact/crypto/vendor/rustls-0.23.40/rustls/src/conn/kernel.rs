@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Kernel connection API.
 //!
 //! This module gives you the bare minimum you need to implement a TLS connection

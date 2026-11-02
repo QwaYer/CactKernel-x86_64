@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use alloc::vec::Vec;
 
 use super::{HEADER_SIZE, MAX_PAYLOAD, MessageError, PlainMessage};

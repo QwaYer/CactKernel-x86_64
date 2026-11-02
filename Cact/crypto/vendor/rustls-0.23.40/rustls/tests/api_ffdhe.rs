@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! This file contains tests that use the test-only FFDHE KX group (defined in submodule `ffdhe`)
 
 #![allow(clippy::duplicate_mod)]

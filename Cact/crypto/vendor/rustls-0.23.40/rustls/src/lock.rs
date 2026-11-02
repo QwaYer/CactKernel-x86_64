@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 #[cfg(not(feature = "std"))]
 pub use no_std_lock::*;
 #[cfg(feature = "std")]

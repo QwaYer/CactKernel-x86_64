@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use base64::prelude::{BASE64_STANDARD, Engine};
 use pki_types::DnsName;
 use rustls::internal::msgs::codec::{Codec, Reader};

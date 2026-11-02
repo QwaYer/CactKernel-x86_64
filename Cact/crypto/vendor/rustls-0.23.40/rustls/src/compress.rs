@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Certificate compression and decompression support
 //!
 //! This crate supports compression and decompression everywhere

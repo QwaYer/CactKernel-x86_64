@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 // Copyright 2023 Daniel McCarney.
 //
 // Permission to use, copy, modify, and/or distribute this software for any

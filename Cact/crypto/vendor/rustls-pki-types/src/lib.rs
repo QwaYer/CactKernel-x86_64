@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT OR Apache-2.0
+
 //! This crate provides types for representing X.509 certificates, keys and other types as
 //! commonly used in the rustls ecosystem. It is intended to be used by crates that need to work
 //! with such X.509 types, such as [rustls](https://crates.io/crates/rustls),

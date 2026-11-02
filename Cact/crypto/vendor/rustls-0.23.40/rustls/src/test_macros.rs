@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Macros used for unit testing.
 
 /// Instantiate the given test functions once for each built-in provider.

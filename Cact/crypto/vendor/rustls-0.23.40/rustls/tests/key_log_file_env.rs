@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! Tests of [`rustls::KeyLogFile`] that require us to set environment variables.
 //!
 //!                                 vvvv

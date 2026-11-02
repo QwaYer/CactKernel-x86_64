@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: ISC
+
 #[cfg(feature = "alloc")]
 use alloc::collections::BTreeMap;
 #[cfg(feature = "alloc")]

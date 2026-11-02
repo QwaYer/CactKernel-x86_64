@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 //! The single place where we generate random material for our own use.
 
 use alloc::vec;

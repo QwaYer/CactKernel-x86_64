@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 #![allow(clippy::disallowed_types, clippy::duplicate_mod)]
 
 use std::num::NonZeroUsize;

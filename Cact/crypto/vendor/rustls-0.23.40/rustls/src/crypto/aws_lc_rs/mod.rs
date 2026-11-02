@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0 OR ISC OR MIT
+
 use alloc::vec::Vec;
 
 // aws-lc-rs has a -- roughly -- ring-compatible API, so we just reuse all that
