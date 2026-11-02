@@ -7,6 +7,7 @@
 #include "process/proc.h"
 #include "acpi.h"
 #include "cact_acpi.h"
+#include "efi_config.h"
 #include "ktime.h"
 #include "idt.h"
 
@@ -156,8 +157,72 @@ ACPI_STATUS AcpiOsTerminate(void)
     return AE_OK;
 }
 
+/* Validate an RSDP at a physical address: "RSD PTR " signature, the 20-byte
+ * checksum and — for revision 2 and later — the 36-byte extended checksum.
+ * Returns the address, or 0 when nothing valid is there. */
+static ACPI_PHYSICAL_ADDRESS acpi_rsdp_at(UINT64 phys)
+{
+    UINT8 *p = acpi_temp_map(phys, sizeof(struct rsdp_descriptor_v2));
+    if (!p)
+        return 0;
+
+    ACPI_PHYSICAL_ADDRESS found = 0;
+    UINT8 sum = 0;
+
+    for (UINT32 i = 0; i < 20u; i++)
+        sum += p[i];
+
+    if (sum == 0 && memcmp(p, RSDP_SIG, RSDP_SIG_LEN) == 0) {
+        int ok = 1;
+        if (p[0x0F] >= 2u) {                      /* revision */
+            UINT8 esum = 0;
+            for (UINT32 i = 0; i < sizeof(struct rsdp_descriptor_v2); i++)
+                esum += p[i];
+            if (esum != 0)
+                ok = 0;
+        }
+        if (ok)
+            found = (ACPI_PHYSICAL_ADDRESS)phys;
+    }
+
+    acpi_temp_unmap(p, sizeof(struct rsdp_descriptor_v2));
+    return found;
+}
+
+/* UEFI does not put the RSDP in the F-segment for a legacy OS to find: it
+ * publishes it through the EFI configuration table, ACPI_20_TABLE_GUID
+ * preferred (it carries the XSDT) with ACPI_TABLE_GUID as the fallback. */
+static ACPI_PHYSICAL_ADDRESS acpi_rsdp_from_efi(void)
+{
+    if (!acpi_temp_map_ready())
+        return 0;
+
+    for (int i = 0; i < 2; i++) {
+        const uint8_t *guid = i == 0 ? EFI_GUID_ACPI20 : EFI_GUID_ACPI;
+        UINT64 phys = 0;
+
+        if (!efi_config_lookup(guid, &phys))
+            continue;
+
+        ACPI_PHYSICAL_ADDRESS rsdp = acpi_rsdp_at(phys);
+        if (rsdp) {
+            pr_info("acpi-osl: RSDP at 0x%llx from the EFI configuration table\n",
+                    (unsigned long long)phys);
+            return rsdp;
+        }
+        pr_warn("acpi-osl: EFI %s points at 0x%llx, but no RSDP is there\n",
+                i == 0 ? "ACPI_20" : "ACPI", (unsigned long long)phys);
+    }
+
+    return 0;
+}
+
 ACPI_PHYSICAL_ADDRESS AcpiOsGetRootPointer(void)
 {
+    ACPI_PHYSICAL_ADDRESS efi = acpi_rsdp_from_efi();
+    if (efi)
+        return efi;
+
     // The BIOS data-area word at 0x40E holds the EBDA segment.  The low
     // identity alias is gone, so read it through the direct map instead; the
     // frame is ordinary firmware RAM and always present there.
@@ -204,7 +269,7 @@ ACPI_PHYSICAL_ADDRESS AcpiOsGetRootPointer(void)
         }
         AcpiOsUnmapMemory(mem, 4096);
     }
-    pr_err("%s: RSDP not found (EBDA + 0x%x-0x%x scan)\n",
+    pr_err("%s: RSDP not found (EFI configuration table, EBDA + 0x%x-0x%x scan)\n",
            "acpi-osl", (unsigned)RSDP_SCAN_START, (unsigned)RSDP_SCAN_END);
     return 0;
 }
