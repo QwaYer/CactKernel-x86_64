@@ -25,7 +25,7 @@
  */
 struct acpi_mapping {
     void*    virt;    /* page-aligned base VA for this physical page */
-    UINT32   phys;    /* page-aligned physical address */
+    UINT64   phys;    /* page-aligned physical address */
     UINT32   pages;   /* number of 4K pages currently mapped */
     UINT32   refs;    /* outstanding references */
 };
@@ -34,11 +34,11 @@ static struct acpi_mapping acpi_mappings[ACPI_OSL_MAX_MAPPINGS];
 static spinlock_t          acpi_mappings_lock;
 static UINT32              acpi_mapping_next_va = 0;  /* set in AcpiOsInitialize() */
 
-void* acpi_temp_map(UINT32 phys, UINT32 size)
+void* acpi_temp_map(UINT64 phys, UINT32 size)
 {
-    UINT32 offset    = phys & 0xFFF;
-    UINT32 phys_page = phys & ~0xFFF;
-    UINT32 pages     = ((offset + size + 0xFFF) >> 12);
+    UINT64 offset    = phys & 0xFFF;
+    UINT64 phys_page = phys & ~0xFFFull;
+    UINT32 pages     = (UINT32)((offset + size + 0xFFF) >> 12);
 
     spin_lock(&acpi_mappings_lock);
 
@@ -53,7 +53,7 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
             for (UINT32 i = m->pages; i < pages; i++) {
                 vmm_map(get_current_pd(),
                         (uint64_t)(uintptr_t)m->virt + (uint64_t)i * 4096,
-                        phys_page + i * 4096, PAGE_PRESENT | PAGE_RW | PAGE_PWT);
+                        phys_page + (UINT64)i * 4096, PAGE_PRESENT | PAGE_RW | PAGE_PWT);
             }
             m->pages = pages;
         }
@@ -69,7 +69,7 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
 
     UINT32 virt = acpi_mapping_next_va;
     for (UINT32 i = 0; i < pages; i++) {
-        vmm_map(get_current_pd(), virt + i * 4096, phys_page + i * 4096,
+        vmm_map(get_current_pd(), virt + i * 4096, phys_page + (UINT64)i * 4096,
                 PAGE_PRESENT | PAGE_RW | PAGE_PWT);
     }
     acpi_mapping_next_va += pages * 4096;
@@ -77,8 +77,8 @@ void* acpi_temp_map(UINT32 phys, UINT32 size)
     if (!m) {
         /* Error path only: the mapping itself still works, but its VA can no
          * longer be tracked or freed.  Do not log per access. */
-        pr_err("%s: mapping table exhausted (phys 0x%x) — mapping untracked\n",
-               "acpi-osl", (unsigned)phys_page);
+        pr_err("%s: mapping table exhausted (phys 0x%llx) — mapping untracked\n",
+               "acpi-osl", (unsigned long long)phys_page);
     }
 
     if (m) {
@@ -233,9 +233,10 @@ ACPI_STATUS AcpiOsPhysicalTableOverride(
     return AE_OK;
 }
 
-void *AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where, ACPI_SIZE Length)
+void* AcpiOsMapMemory(ACPI_PHYSICAL_ADDRESS Where,
+                      ACPI_SIZE              Length)
 {
-    return acpi_temp_map((UINT32)Where, (UINT32)Length);
+    return acpi_temp_map((UINT64)Where, (UINT32)Length);
 }
 
 void AcpiOsUnmapMemory(void *LogicalAddress, ACPI_SIZE Size)

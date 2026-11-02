@@ -48,10 +48,10 @@ ACPI_STATUS AcpiOsReadMemory(
     UINT64                  *Value,
     UINT32                  Width)
 {
-    void *virt = acpi_temp_map((UINT32)Address, 4);
+    void *virt = acpi_temp_map((UINT64)Address, 4);
     if (!virt) {
-        pr_err("%s: read memory 0x%x: map failed\n",
-               "acpi-io", (unsigned)Address);
+        pr_err("%s: read memory 0x%llx: map failed\n",
+               "acpi-io", (unsigned long long)Address);
         return AE_BAD_ADDRESS;
     }
     switch (Width) {
@@ -60,8 +60,8 @@ ACPI_STATUS AcpiOsReadMemory(
     case 32: *Value = *(volatile UINT32*)virt; break;
     case 64: *Value = *(volatile UINT64*)virt; break;
     default:
-        pr_err("%s: read memory 0x%x: bad width %u\n",
-               "acpi-io", (unsigned)Address, (unsigned)Width);
+        pr_err("%s: read memory 0x%llx: bad width %u\n",
+               "acpi-io", (unsigned long long)Address, (unsigned)Width);
         acpi_temp_unmap(virt, 4);
         return AE_BAD_PARAMETER;
     }
@@ -74,10 +74,10 @@ ACPI_STATUS AcpiOsWriteMemory(
     UINT64                  Value,
     UINT32                  Width)
 {
-    void *virt = acpi_temp_map((UINT32)Address, 4);
+    void *virt = acpi_temp_map((UINT64)Address, 4);
     if (!virt) {
-        pr_err("%s: write memory 0x%x: map failed\n",
-               "acpi-io", (unsigned)Address);
+        pr_err("%s: write memory 0x%llx: map failed\n",
+               "acpi-io", (unsigned long long)Address);
         return AE_BAD_ADDRESS;
     }
     switch (Width) {
@@ -86,8 +86,8 @@ ACPI_STATUS AcpiOsWriteMemory(
     case 32: *(volatile UINT32*)virt = (UINT32)Value; break;
     case 64: *(volatile UINT64*)virt = Value;          break;
     default:
-        pr_err("%s: write memory 0x%x: bad width %u\n",
-               "acpi-io", (unsigned)Address, (unsigned)Width);
+        pr_err("%s: write memory 0x%llx: bad width %u\n",
+               "acpi-io", (unsigned long long)Address, (unsigned)Width);
         acpi_temp_unmap(virt, 4);
         return AE_BAD_PARAMETER;
     }

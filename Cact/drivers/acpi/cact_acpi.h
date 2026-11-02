@@ -63,8 +63,10 @@ int  acpi_sleep_states(uint32_t *mask);  /* bit Sx set when \_Sx is present */
 
 
 /* Shared OSL helpers (osl.c): a temporary physical->virtual mapping window and
- * a microsecond delay backed by ktime (TSC / ACPI PM timer). */
-void *acpi_temp_map(uint32_t phys, uint32_t size);
+ * a microsecond delay backed by ktime (TSC / ACPI PM timer).  The physical
+ * address is 64-bit: firmware tables (a 64-bit SMBIOS entry point, EFI config
+ * table entries) are not guaranteed to live below 4 GiB. */
+void *acpi_temp_map(uint64_t phys, uint32_t size);
 void  acpi_temp_unmap(void *virt, uint32_t size);
 void  osl_udelay(uint32_t us);
 
