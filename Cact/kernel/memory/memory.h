@@ -80,7 +80,6 @@ void      init_heap(void);
 void*     kmalloc(size_t size);
 void*     kmalloc_aligned(size_t size, size_t align);
 void      kfree(void* ptr);
-void      kfree(void* ptr);
 uint32_t  get_free_heap_memory(void);
 uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
