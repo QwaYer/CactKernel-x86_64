@@ -173,8 +173,12 @@ MANIFEST: dict[str, dict] = {
     },
     "acpica-platform": {
         "dest": "Cact/drivers/acpi/include/platform",
+        # Pinned to the ACPICA commit whose licence (BSD-2-Clause-Patent OR
+        # GPL-2.0-only) is the one these files declare.  Upstream has since
+        # moved to BSD-3-Clause OR GPL-2.0-only (see the UPSTREAM.md) - bumping
+        # this SHA means updating the SPDX line in both files.
         "origin": {"kind": "git", "url": "https://github.com/acpica/acpica",
-                   "ref": "HEAD"},
+                   "ref": "bc7b8aad0613f03a968d93a92ea025a517936350"},
         "map": [["source/include/platform/acenv.h", "acenv.h"],
                 ["source/include/platform/acintel.h", "acintel.h"]],
         "drop": [],
@@ -213,6 +217,18 @@ def fetch(name: str, tree: dict) -> str:
         with tarfile.open(tarball, "r:gz") as t:
             t.extractall(root)  # unpacks <name>-<version>/ into root
         return crate_dir
+    # A full commit SHA cannot be passed to `git clone --branch`; fetch it
+    # explicitly instead.  Only used for refs we pin to a commit, which are all
+    # non-sparse trees.
+    if re.fullmatch(r"[0-9a-f]{40}", o.get("ref") or ""):
+        if o.get("sparse"):
+            sys.exit(f"{name}: a pinned SHA cannot be combined with a sparse checkout — "
+                     "pin a tag instead, or drop the sparse list")
+        run(["git", "init", "--quiet", root])
+        run(["git", "-C", root, "remote", "add", "origin", o["url"]])
+        run(["git", "-C", root, "fetch", "--quiet", "--depth", "1", "origin", o["ref"]])
+        run(["git", "-C", root, "checkout", "--quiet", "FETCH_HEAD"])
+        return root
     cmd = ["git", "clone", "--quiet", "--depth", "1"]
     if o.get("sparse"):
         cmd += ["--filter=blob:none", "--sparse"]
@@ -221,7 +237,9 @@ def fetch(name: str, tree: dict) -> str:
     cmd += [o["url"], root]
     run(cmd)
     if o.get("sparse"):
-        run(["git", "-C", root, "sparse-checkout", "set", *o["sparse"]])
+        # --no-cone: the sparse list mixes directories and single files
+        # (lib/xxhash.c, include/linux/zstd.h); cone mode cannot express that.
+        run(["git", "-C", root, "sparse-checkout", "set", "--no-cone", *o["sparse"]])
     return root
 
 
