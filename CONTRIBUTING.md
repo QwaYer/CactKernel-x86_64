@@ -71,8 +71,11 @@ By contributing you agree that your work is licensed under the repository's
 
 Every source file carries an SPDX header. CactOS's own code is
 `SPDX-License-Identifier: GPL-3.0-or-later`, `Copyright (C) 2026 CactOS Project`;
-vendored third-party code keeps its upstream identifier. The vendored trees and
-the procedure to refresh them are documented next to the code:
+vendored third-party code keeps its upstream identifier. The vendored trees are
+upstream *pruned and patched*, never edited in place, and refreshed from their
+remotes with [`tools/vendor_sync.py`](tools/vendor_sync.py)
+(`check` is read-only; `update` refuses a dirty tree). Each tree documents its
+upstream ref, its local edits and its overrides next to the code:
 
 * [`Cact/crypto/vendor/UPSTREAM.md`](Cact/crypto/vendor/UPSTREAM.md) — rustls / rustls-pki-types / rustls-webpki
 * [`Cact/drivers/zstd/UPSTREAM.md`](Cact/drivers/zstd/UPSTREAM.md) — zstd (from the Linux kernel)
