@@ -199,29 +199,30 @@ def run(cmd: list[str], cwd: str | None = None) -> None:
 
 def fetch(name: str, tree: dict) -> str:
     o = tree["origin"]
-    out = os.path.join(TMP, name, "src")
-    if os.path.isdir(out) and not FRESH:
-        return out
-    shutil.rmtree(out, ignore_errors=True)
-    os.makedirs(os.path.dirname(out), exist_ok=True)
+    root = os.path.join(TMP, name, "src")
+    crate_dir = os.path.join(root, f"{o['name']}-{o['version']}") if o["kind"] == "crate" else root
+    if os.path.isdir(crate_dir) and not FRESH:
+        return crate_dir
+    shutil.rmtree(root, ignore_errors=True)
+    os.makedirs(root, exist_ok=True)
     if o["kind"] == "crate":
         url = f"{MIRROR}/{o['name']}/{o['version']}/download"
         tarball = os.path.join(TMP, f"{o['name']}-{o['version']}.crate")
         with urllib.request.urlopen(url, timeout=300) as r, open(tarball, "wb") as f:
             shutil.copyfileobj(r, f)
         with tarfile.open(tarball, "r:gz") as t:
-            t.extractall(out)
-        return out
+            t.extractall(root)  # unpacks <name>-<version>/ into root
+        return crate_dir
     cmd = ["git", "clone", "--quiet", "--depth", "1"]
     if o.get("sparse"):
         cmd += ["--filter=blob:none", "--sparse"]
     if o.get("ref") and o["ref"] != "HEAD":
         cmd += ["--branch", o["ref"]]
-    cmd += [o["url"], out]
+    cmd += [o["url"], root]
     run(cmd)
     if o.get("sparse"):
-        run(["git", "-C", out, "sparse-checkout", "set", *o["sparse"]])
-    return out
+        run(["git", "-C", root, "sparse-checkout", "set", *o["sparse"]])
+    return root
 
 
 def resolved_ref(name: str) -> str:
@@ -283,9 +284,8 @@ def stage(name: str, tree: dict) -> tuple[str, list[str], list[str]]:
                     os.remove(os.path.join(dirpath, fn))
     else:
         take = tree.get("take")
-        for dirpath, _, filenames in os.walk(src):
-            if os.path.relpath(dirpath, src).startswith(".git"):
-                continue
+        for dirpath, dirnames, filenames in os.walk(src):
+            dirnames[:] = [d for d in dirnames if d != ".git"]
             for fn in filenames:
                 rel = os.path.relpath(os.path.join(dirpath, fn), src)
                 if take and not any(rel == t or rel.startswith(t + os.sep) for t in take):
