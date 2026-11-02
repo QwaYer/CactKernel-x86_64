@@ -23,6 +23,8 @@
 #define MB2_TAG_FRAMEBUFFER   8
 #define MB2_TAG_ELF_SECTIONS  9
 #define MB2_TAG_APM           10
+#define MB2_TAG_EFI32         11
+#define MB2_TAG_EFI64         12
 #define MB2_TAG_ACPI_OLD      14
 #define MB2_TAG_ACPI_NEW      15
 #define MB2_TAG_NETWORK       16
@@ -65,6 +67,30 @@ struct mb2_tag_mmap {
     uint32_t entry_size;     // Size of each entry
     uint32_t entry_version;  // Version (must be 0)
     struct mb2_mmap_entry entries[];
+} __attribute__((packed));
+
+// EFI system table pointer tag (type 12 = EFI64, type 11 = EFI32).  Present
+// only when the bootloader itself ran under UEFI; the target machine's
+// firmware tables (SMBIOS, and the ACPI RSDP on boards that keep it out of the
+// F-segment) are reachable through the EFI configuration table this points at.
+struct mb2_tag_efi64 {
+    uint32_t type;
+    uint32_t size;
+    uint64_t pointer;    // physical address of the EFI system table
+} __attribute__((packed));
+
+struct mb2_tag_efi32 {
+    uint32_t type;
+    uint32_t size;
+    uint32_t pointer;    // physical address of the EFI system table
+} __attribute__((packed));
+
+// ACPI RSDP tag (type 14 = RSDP v1, type 15 = RSDP v2).  The payload is a copy
+// of the firmware RSDP as the bootloader found it.
+struct mb2_tag_acpi {
+    uint32_t type;
+    uint32_t size;
+    uint8_t  rsdp[];     // copy of the RSDP (>= 20 bytes)
 } __attribute__((packed));
 
 // Framebuffer tag (type 8)
@@ -157,5 +183,10 @@ extern mb2_module_info_t mb2_localrepo_module;
 // RAM below it holds the modules loaded by GRUB — available RAM per the memory
 // map, but in use — so init() reserves it in the PMM before the heap exists.
 extern uint32_t mb2_modules_end;
+
+// EFI system table physical address from the Multiboot2 EFI64/EFI32 tag; 0 when
+// the bootloader was not running under UEFI (a legacy/CSM boot passes no such
+// tag, and the firmware tables then have to come from the F-segment scan).
+extern uint64_t mb2_efi_systab;
 
 #endif  

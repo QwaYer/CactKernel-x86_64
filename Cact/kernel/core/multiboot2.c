@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "klib.h"
 #include "multiboot2.h"
 
 // Flags for which fields are valid in multiboot_info_t
@@ -19,6 +20,9 @@ mb2_module_info_t mb2_localrepo_module;
 // so the PMM has to reserve it explicitly — init() passes this to
 // pmm_reserve_boot_images() before the memory managers come up.
 uint32_t mb2_modules_end;
+
+// EFI system table physical address (MB2_TAG_EFI64/EFI32); 0 on a legacy boot.
+uint64_t mb2_efi_systab;
 
 static int starts_with(const char* s, const char* prefix) {
     while (*prefix) {
@@ -75,6 +79,7 @@ void multiboot2_parse(uint32_t mb2_info_addr,
     mb2_localrepo_module.mod_size  = 0;
     mb2_localrepo_module.name[0]   = '\0';
     mb2_modules_end = 0;
+    mb2_efi_systab  = 0;
 
     // Zero output structures
     out->flags             = 0;
@@ -221,6 +226,48 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                 copy_module_name(mb2_localrepo_module.name, t->string,
                                  MB2_MODULE_NAME_MAX);
             }
+            break;
+        }
+
+        case MB2_TAG_EFI64: {
+            if (tag->size < sizeof(struct mb2_tag_efi64)) break;
+            struct mb2_tag_efi64* t = (struct mb2_tag_efi64*)(uintptr_t)cursor;
+            if (t->pointer == 0) break;
+            mb2_efi_systab = t->pointer;
+            pr_info("%s: EFI system table at phys 0x%llx (EFI64)\n",
+                    "multiboot2", (unsigned long long)mb2_efi_systab);
+            break;
+        }
+
+        case MB2_TAG_EFI32: {
+            if (tag->size < sizeof(struct mb2_tag_efi32)) break;
+            struct mb2_tag_efi32* t = (struct mb2_tag_efi32*)(uintptr_t)cursor;
+            if (t->pointer == 0) break;
+            mb2_efi_systab = t->pointer;
+            pr_info("%s: EFI system table at phys 0x%llx (EFI32)\n",
+                    "multiboot2", (unsigned long long)mb2_efi_systab);
+            break;
+        }
+
+        case MB2_TAG_ACPI_OLD:
+        case MB2_TAG_ACPI_NEW: {
+            // The bootloader hands over its own copy of the firmware RSDP.
+            // Logged only: ACPI keeps reading the RSDP the firmware exposes
+            // (osl.c), so nothing here depends on the lifetime of this buffer.
+            // It is still the fastest way to see *on a real board* whether the
+            // firmware has an RSDP the bootloader could reach at all.
+            if (tag->size < sizeof(struct mb2_tag_acpi) + 20u) break;
+            struct mb2_tag_acpi* t = (struct mb2_tag_acpi*)(uintptr_t)cursor;
+            const uint8_t* r = t->rsdp;
+            uint8_t csum = 0;
+            uint64_t xsdt = 0;
+            for (unsigned i = 0; i < 20u; i++) csum += r[i];
+            if (t->size >= sizeof(struct mb2_tag_acpi) + 36u && r[15] >= 2u)
+                memcpy(&xsdt, r + 24, sizeof(xsdt));
+            pr_info("%s: ACPI RSDP copy (tag %u, rev %u, xSDT 0x%llx, "
+                    "checksum %s)\n", "multiboot2", (unsigned)tag->type,
+                    (unsigned)r[15], (unsigned long long)xsdt,
+                    csum == 0 ? "ok" : "BAD");
             break;
         }
 

@@ -55,6 +55,10 @@ ireq_start:
     dd 4                                         ; BASIC_MEMINFO
     dd 6                                         ; MMAP
     dd 8                                         ; FRAMEBUFFER
+    dd 11                                        ; EFI32 (EFI system table)
+    dd 12                                        ; EFI64 (EFI system table)
+    dd 14                                        ; ACPI_OLD (RSDP v1 copy)
+    dd 15                                        ; ACPI_NEW (RSDP v2 copy)
 ireq_end:
 
     ; Framebuffer tag: no preferred mode.  width/height/bpp = 0 tells the
