@@ -11,6 +11,7 @@
 #include "memory.h"
 #include "gdt.h"
 #include "idt.h"
+#include "hypervisor.h"
 #include "vfs.h"
 #include "fs_mod.h"
 #include "devfs.h"
@@ -204,6 +205,12 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     // CPU feature detection — before IDT / APIC / PAT so the rest of
     // the kernel can query cpu_vendor(), cpu_has_sep(), etc.
     cpudev_init();
+
+    // Hypervisor host support (VT-x / AMD-V): detect which virtualization
+    // extensions this CPU exposes and log it.  Runs right after cpudev_init so
+    // the CPUID feature registers it reads are populated; it stays in host mode
+    // (Phase H1 is detection only).
+    hypervisor_init();
 
     // Enable the x87 FPU + SSE up front. The compiler emits XMM sequences
     // for 64-bit operations (e.g. ACPI's AcpiOsGetRootPointer returns a

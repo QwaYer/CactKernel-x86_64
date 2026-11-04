@@ -104,6 +104,9 @@ cact_includes = include_directories(
   'Cact/kernel/core/syscall',
   'Cact/kernel/gdt',
   'Cact/kernel/cpudev',
+  'Cact/kernel/hypervisor',
+  'Cact/kernel/hypervisor/vmx',
+  'Cact/kernel/hypervisor/svm',
   'Cact/kernel/energy',
   'Cact/kernel/smp',
   'Cact/kernel/elf',
@@ -223,6 +226,7 @@ subdir('Cact/kernel/gdt')
 subdir('Cact/kernel/idt')
 subdir('Cact/kernel/idt/fpu')
 subdir('Cact/kernel/cpudev')
+subdir('Cact/kernel/hypervisor')
 subdir('Cact/kernel/elf')
 subdir('Cact/kernel/memory')
 subdir('Cact/kernel/proc')
