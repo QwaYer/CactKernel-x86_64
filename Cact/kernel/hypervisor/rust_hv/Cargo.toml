@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
+[package]
+name = "cact_hv"
+version = "0.1.0"
+edition = "2021"
+
+# An rlib, like every kernel Rust crate: `Cact/kernel/kernel_rust` is the one
+# staticlib and pulls this crate (and its `#[no_mangle]` entry points) into
+# kernel.bin.
+[lib]
+crate-type = ["lib"]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

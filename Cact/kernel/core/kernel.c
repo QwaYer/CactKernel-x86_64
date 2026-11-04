@@ -252,6 +252,10 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     // kernel keeps running outside host mode afterwards.
     hypervisor_host_init();
 
+    // The Rust half of the hypervisor (crate cact_hv): the vCPU model.  Called
+    // from C so the C <-> Rust boundary has one explicit entry point.
+    hv_selftest();
+
     // Program fast-syscall MSRs now that GDT and IDT are ready.
     // IA32_SYSENTER_ESP is updated per-task by the scheduler on every switch.
     cpu_syscall_commit();

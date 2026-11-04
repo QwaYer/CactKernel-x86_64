@@ -11,6 +11,7 @@
 _rust_scan_dirs = [
   meson.current_source_dir(),
   meson.project_source_root() / 'Cact/kernel/memory/rust_mm',
+  meson.project_source_root() / 'Cact/kernel/hypervisor/rust_hv',
   meson.project_source_root() / 'Cact/kernel/proc/sched',
   meson.project_source_root() / 'Cact/kernel/sync',
   meson.project_source_root() / 'Cact/drivers/gpu/drm/rust_drm',

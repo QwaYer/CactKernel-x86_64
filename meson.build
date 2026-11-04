@@ -293,6 +293,7 @@ subdir('Cact/drivers/zstd')
 
 subdir('Cact/kernel/proc/sched')
 subdir('Cact/kernel/memory/rust_mm')
+subdir('Cact/kernel/hypervisor/rust_hv')
 subdir('Cact/net/rust_net')
 subdir('Cact/drivers/gpu/drm/rust_drm')
 subdir('Cact/fs/rust_vfs')

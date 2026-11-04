@@ -48,4 +48,9 @@ uint32_t hv_capabilities(void);
  * where a backend is only usable from the "nested" half of the stack. */
 int hv_running_as_guest(void);
 
+/* The Rust vCPU model's boot probe (crate `cact_hv`, linked via kernel_rust).
+ * Phase H3.2 turns this into the guest launch; it is declared here so the C
+ * boot path can reach it. */
+int hv_selftest(void);
+
 #endif
