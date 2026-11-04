@@ -92,6 +92,17 @@ VMCS/VMCB: host-state, guest-state (минимальный 64-битный ко�
 **Milestone:** гость исполняется и его `HLT` трапится хостом:
 `hv: guest ran, exit reason …`.
 
+**Сделано (Intel, 2026-11-04):** 64-битный гость (`mov eax,0xdeadbeef; hlt`),
+identity-карта кодовой страницы 4-уровневыми таблицами, `VMLAUNCH` без EPT;
+`HLT` даёт VM-exit 12. По пути выяснилось, что
+(1) **гостевой CR4 обязан нести все биты `CR4_FIXED0`** — а туда входит
+`CR4.VMXE` (иначе `VM entry failure due to invalid guest state`, reason 33);
+(2) **`HLT` не выходит в хост без контрола `HLT exiting`** (proc-based бит 7) —
+иначе гость просто останавливает логический процессор.
+Два бага в C/asm пойманы тем же прогоном: `vmread`/`vmwrite` — порядок
+операндов AT&T (`vmwrite value, field`) и ширина приёмника `setcc` (байт, не
+`int`).
+
 ### Фаза H4 — EPT / NPT
 
 EPT-структуры (PML4/PDPT/PD/PT со своими флагами) и NPT (NCR3 + NPT-таблицы),

@@ -57,9 +57,9 @@ static inline int vmptrst(uint64_t *phys) {
     return f;
 }
 
-/* VMREAD/VMWRITE name the VMCS field encoding as the first AT&T operand.
- * Numbering is outputs-first, so vmread's field is %2 (the two outputs are the
- * destination value and the flag byte). */
+/* VMREAD/VMWRITE name the VMCS field encoding as a register operand.  The Intel
+ * forms are asymmetric — VMREAD(dest, field) but VMWRITE(field, value) — so the
+ * reversed AT&T order is `vmread field, dest` yet `vmwrite value, field`. */
 static inline int vmread(uint64_t field, uint64_t *value) {
     uint8_t f;
     __asm__ __volatile__("vmread %2, %0; setna %1"
@@ -71,7 +71,7 @@ static inline int vmread(uint64_t field, uint64_t *value) {
 
 static inline int vmwrite(uint64_t field, uint64_t value) {
     uint8_t f;
-    __asm__ __volatile__("vmwrite %1, %2; setna %0"
+    __asm__ __volatile__("vmwrite %2, %1; setna %0"
         : "=qm"(f)
         : "r"(field), "r"(value)
         : "cc");
