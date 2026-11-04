@@ -2,7 +2,7 @@
 # Copyright (C) 2026 CactOS Project
 
 kernel_libs += static_library('cact_cpudev',
-  files('cpudev.c'),
+  files('cpudev.c', 'cpu_ops.c'),
   include_directories: cact_includes,
   implicit_include_directories: false,
   c_args: kernel_c_args)

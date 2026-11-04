@@ -57,10 +57,12 @@ static inline int vmptrst(uint64_t *phys) {
     return f;
 }
 
-/* VMREAD/VMWRITE name the VMCS field encoding as the first AT&T operand. */
+/* VMREAD/VMWRITE name the VMCS field encoding as the first AT&T operand.
+ * Numbering is outputs-first, so vmread's field is %2 (the two outputs are the
+ * destination value and the flag byte). */
 static inline int vmread(uint64_t field, uint64_t *value) {
     uint8_t f;
-    __asm__ __volatile__("vmread %1, %0; setna %2"
+    __asm__ __volatile__("vmread %2, %0; setna %1"
         : "=r"(*value), "=qm"(f)
         : "r"(field)
         : "cc");
@@ -73,6 +75,23 @@ static inline int vmwrite(uint64_t field, uint64_t value) {
         : "=qm"(f)
         : "r"(field), "r"(value)
         : "cc");
+    return f;
+}
+
+/* VMLAUNCH/VMRESUME run the guest from the current VMCS; control returns to the
+ * host only through a VM exit (never as a normal return), so a 0 return means
+ * the launch failed (VMfail) and the guest never started. */
+static inline int vmlaunch(void) {
+    uint8_t f;
+    __asm__ __volatile__("vmlaunch; setna %[f]"
+        : [f] "=qm"(f) :: "cc", "memory");
+    return f;
+}
+
+static inline int vmresume(void) {
+    uint8_t f;
+    __asm__ __volatile__("vmresume; setna %[f]"
+        : [f] "=qm"(f) :: "cc", "memory");
     return f;
 }
 
