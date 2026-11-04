@@ -19,4 +19,20 @@ typedef struct {
 /* Fill `caps` from CPUID/MSRs.  Reads only; leaves the CPU in host mode. */
 void vmx_detect(vmx_caps_t *caps);
 
+/*
+ * Enter VMX root operation on the calling CPU (Phase H2): allow VMXON in
+ * IA32_FEATURE_CONTROL, set CR4.VMXE, hand the CPU a 4 KiB VMXON region whose
+ * first dword carries the VMCS revision identifier, and issue VMXON.
+ * Returns 0 on success, -1 when the firmware locked VMX off or VMXON failed.
+ * Idempotent per CPU.
+ */
+int  vmx_host_enable(void);
+
+/* Leave VMX root operation on the calling CPU and release the VMXON region. */
+void vmx_host_disable(void);
+
+/* Enable, prove we entered VMX root, and leave again — a boot-time probe that
+ * leaves the CPU exactly as it found it.  Returns 0 on success. */
+int  vmx_host_self_test(void);
+
 #endif

@@ -14,8 +14,10 @@
  * Nothing above this layer — the rest of the kernel, and the userspace uAPI —
  * is allowed to see backend specifics.
  *
- * Phase H1 only detects what the CPU offers and publishes the capability bits;
- * it never enters host mode.
+ * Language split: this C layer holds the low-level primitives (MSR/CR access,
+ * the VMX/SVM instructions and regions).  The VM/vCPU model and the exit
+ * dispatch move to a Rust crate once the primitives exist — the same split the
+ * rest of the kernel uses (`sched`, `rust_mm`, `rust_drm`, `rust_vfs`).
  */
 
 /* Hardware virtualization extensions this machine offers. */
@@ -30,6 +32,14 @@
  * extension is not an error — it simply cannot host guests).
  */
 int hypervisor_init(void);
+
+/*
+ * Bring-up probe for host mode (Phase H2): enter and immediately leave VMX root
+ * (Intel) and/or SVM host mode (AMD) on the boot CPU.  Runs once the kernel
+ * heap exists, since the VMXON and VM_HSAVE_PA regions come from `kalloc()`.
+ * Always returns 0; a backend that cannot be entered is logged and skipped.
+ */
+int hypervisor_host_init(void);
 
 /* OR of HV_CAP_* as detected at boot. */
 uint32_t hv_capabilities(void);

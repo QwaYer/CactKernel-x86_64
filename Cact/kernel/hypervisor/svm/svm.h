@@ -21,4 +21,17 @@ typedef struct {
 /* Fill `caps` from CPUID/MSRs.  Reads only; leaves the CPU in host mode. */
 void svm_detect(svm_caps_t *caps);
 
+/*
+ * Enter SVM host mode on the calling CPU (Phase H2): clear VM_CR.SVMDIS when it
+ * is writable, point VM_HSAVE_PA at a scratch page, and set EFER.SVME.  Returns
+ * 0 on success, -1 when firmware disabled SVM under lock.  Idempotent per CPU.
+ */
+int  svm_host_enable(void);
+
+/* Leave SVM host mode on the calling CPU and release the host-save page. */
+void svm_host_disable(void);
+
+/* Enable, confirm EFER.SVME took, and leave again — a boot-time probe. */
+int  svm_host_self_test(void);
+
 #endif
