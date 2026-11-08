@@ -257,7 +257,7 @@ pub unsafe fn clear_child_tid_on_exit(t: *mut TaskStruct) {
 }
 
 /// Set the calling task's TLS base (CACT_PROCCTL_SET_TLS) and load it on this
-/// core right away, so the task sees the new `%gs` as soon as it returns to user
+/// core right away, so the task sees the new `%fs` as soon as it returns to user
 /// space.  `base == 0` clears it (see `smp::set_tls_base`).
 #[no_mangle]
 pub unsafe extern "C" fn sched_set_tls(base: u64) -> i32 {

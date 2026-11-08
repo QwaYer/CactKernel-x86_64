@@ -241,14 +241,16 @@ int proc_thread_create(const void* arg) {
                                a.set_child_tid, a.clear_child_tid);
 }
 
-/* CACT_PROCCTL_SET_TLS: install the calling task's %gs base.  The base becomes
- * the ring-3 thread pointer, so it must be a user address and 4-byte aligned
- * (the compiler TLS model uses at least that); 0 clears it. */
+/* CACT_PROCCTL_SET_TLS: install the calling task's %fs base.  The base becomes
+ * the ring-3 thread pointer, so it must be a user address, and 16-byte aligned:
+ * that is the x86_64 ABI's requirement for the thread pointer (a `long double`
+ * or vector `__thread` access is allowed to assume it), and the libc's static
+ * TLS layout rounds its block to 16 to satisfy it.  0 clears the base. */
 int proc_set_tls(uint64_t base) {
     if (!current_task) return -EINVAL;
     if (base != 0) {
         if (base < USER_SPACE_START || base >= KERNEL_BASE) return -EINVAL;
-        if (base & 3u) return -EINVAL;
+        if (base & 15u) return -EINVAL;
     }
     return sched_set_tls(base);
 }
