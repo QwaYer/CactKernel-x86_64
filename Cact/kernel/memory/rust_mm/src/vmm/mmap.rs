@@ -377,9 +377,12 @@ pub unsafe extern "C" fn do_mmap(
             for i in 0..pages {
                 let phys = kalloc();
                 if phys.is_null() {
-                    // SAFETY: `pd`/`tbl` are this function's own validated
-                    // arguments; this rolls back the partial mapping installed so far.
-                    unsafe { do_munmap(pd, tbl, va, i * PAGE_SIZE); }
+                    // The region is registered only once every page is mapped, so
+                    // do_munmap() would find nothing here yet; drop the partial
+                    // mapping's PTEs directly, as the snapshot path above does.
+                    for m in 0..i {
+                        clear_user_pte(pd, va + m * PAGE_SIZE);
+                    }
                     return MAP_FAILED as *mut u8;
                 }
                 zero_page(phys);
