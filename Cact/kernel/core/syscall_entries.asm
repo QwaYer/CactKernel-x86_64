@@ -21,26 +21,28 @@ section .text
 ;   r11 = user RFLAGS  (CPU-saved)
 ;   rsp = user RSP     (`syscall` does NOT switch stacks)
 ;
-; FMASK clears IF (and DF) on entry, so the user stack is safe until we switch
-; to this CPU's kernel entry stack.  The entry then builds a `struct
-; context_frame` (byte-identical to `struct syscall_frame`) on that stack,
-; dispatches, and returns through the same epilogue as an exception stub:
-; restore the registers, drop int_no/err_code, `iretq`.  IRET is used rather
-; than SYSRET because SYSRET's selector arithmetic (SS = CS - 8) does not match
-; this GDT's user-code-then-user-data ordering; the round trip is otherwise
-; identical and IRET keeps one return path for syscalls, faults and IRQs.
+; FMASK clears IF (and DF) on entry, so the entry runs to completion with
+; interrupts off.  The entry then builds a `struct context_frame` (byte-identical
+; to `struct syscall_frame`) on this CPU's kernel stack, dispatches, and returns
+; through the same epilogue as an exception stub: restore the registers, drop
+; int_no/err_code, `iretq`.  IRET is used rather than SYSRET because SYSRET's
+; selector arithmetic (SS = CS - 8) does not match this GDT's
+; user-code-then-user-data ordering; the round trip is otherwise identical and
+; IRET keeps one return path for syscalls, faults and IRQs.
+;
+; The user stack is never written: `syscall` does not switch stacks, but
+; reaching this CPU's kernel entry stack is a single %gs-relative load and r10
+; is spare in our 3-argument ABI, so there is nothing to spill anywhere — and in
+; particular nothing lands at [user_rsp - 8], which would sit inside the SysV
+; red zone of the calling frame (every userspace leaf function is free to keep a
+; local there, and x86_64 code compiled without -mno-red-zone does).
 ; ---------------------------------------------------------------------------
 syscall_entry:
     ; `syscall` is only ever entered from ring 3, so the per-CPU %gs swap is
     ; unconditional here (the exception/IRQ stubs key theirs on CS.RPL instead).
     swapgs
-    ; Borrow one word of user stack to hold the syscall number while we find
-    ; this CPU's kernel stack; nothing reads it back except us, and the user
-    ; stack pointer is restored on return.  r10 is spare in our 3-argument ABI.
-    mov r10, rsp                    ; r10 = user RSP
-    push rax                        ; [user_rsp - 8] = number
+    mov r10, rsp                    ; r10 = user RSP (restored by the frame below)
     mov rsp, [gs:8]                 ; this CPU's kernel entry stack (%gs:esp0)
-    mov rax, [r10 - 8]              ; reload the number
 
     ; Build the frame, lowest address last: the pushes run in reverse field
     ; order so the last one lands as `r15`, the frame's first field.
