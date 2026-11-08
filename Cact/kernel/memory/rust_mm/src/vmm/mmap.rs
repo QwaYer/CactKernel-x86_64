@@ -234,6 +234,25 @@ pub unsafe extern "C" fn do_mmap(
         {
             return MAP_FAILED as *mut u8;
         }
+        // A fixed mapping must not silently land on top of a live region: the
+        // demand-zero PTE it installs would replace a PRESENT entry, discarding
+        // the mapping's contents and leaking the frame it named.  Linux unmaps
+        // the overlap instead, but this region table cannot split a region in
+        // the middle, so the safe answer is to fail loudly rather than corrupt.
+        // SAFETY: tbl is a valid MmapTable (checked at entry).
+        for i in 0..MMAP_MAX_REGIONS {
+            // SAFETY: `tbl` is valid and `i < MMAP_MAX_REGIONS`.
+            let r = unsafe { &(*tbl).regions[i] };
+            if r.is_used == 0 {
+                continue;
+            }
+            if hint < r.base.saturating_add(r.length) && r.base < hint.saturating_add(length) {
+                kprint_str(
+                    c"[MMAP] do_mmap: MAP_FIXED overlaps an existing region\n".as_ptr() as *const u8,
+                );
+                return MAP_FAILED as *mut u8;
+            }
+        }
         va = hint;
     } else {
         va = find_free_va(tbl, length);
