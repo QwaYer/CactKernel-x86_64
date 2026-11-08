@@ -43,7 +43,7 @@ pub unsafe extern "C" fn vmm_map_demand(
             return -1;
         }
         // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = (PAGE_DEMAND | (flags & PAGE_USER)) as u64 };
+        unsafe { *entry = (PAGE_DEMAND | (flags & (PAGE_USER | PAGE_RW))) as u64 };
         va += PAGE_SIZE as u64;
     }
     0
@@ -86,7 +86,7 @@ pub unsafe extern "C" fn vmm_map_zero(
             return -1;
         }
         // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = (PAGE_DEMAND | PAGE_ZERO | (flags & PAGE_USER)) as u64 };
+        unsafe { *entry = (PAGE_DEMAND | PAGE_ZERO | (flags & (PAGE_USER | PAGE_RW))) as u64 };
         va += PAGE_SIZE as u64;
     }
     0

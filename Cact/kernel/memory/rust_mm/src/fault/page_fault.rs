@@ -309,8 +309,12 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
 
             // SAFETY: pte is valid.
             let pte_val = unsafe { *pte };
+            // The page inherits the permission bits the demand entry carried —
+            // PAGE_USER, and PAGE_RW only when the mapping was writable.
+            // Forcing PAGE_RW here would make a read-only mmap(PROT_READ)
+            // writable on its first fault.
             let flags = (pte_val & 0xFFF) & !((PAGE_DEMAND | PAGE_ZERO) as u64);
-            let flags = flags | PAGE_PRESENT as u64 | PAGE_RW as u64;
+            let flags = flags | PAGE_PRESENT as u64;
             // SAFETY: `pte` is the live PTE for this demand page; the new frame `phys` was
             // just allocated and zeroed, so publishing its physical address here is
             // well-defined.
