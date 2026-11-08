@@ -462,6 +462,29 @@ pub unsafe extern "C" fn do_munmap(
         return -1;
     }
 
+    // Classify the request against the region the address falls in.  A request
+    // that cuts a slice out of the *middle* has to leave two regions behind, so
+    // it needs a second slot — reserve it now, before a single page is unmapped,
+    // so the call can still fail cleanly when the table is full.
+    // SAFETY: `region` is the live slot located by the scan above; the table is
+    // not mutated concurrently.
+    let (r_base, r_len) = unsafe { ((*region).base, (*region).length) };
+    let front = addr == r_base;                 // unmap starts at the region's base
+    let back = addr + length >= r_base + r_len; // ... and reaches its end
+    let whole = front && back;
+
+    let mut tail: *mut MmapRegion = core::ptr::null_mut();
+    if !front && !back {
+        // SAFETY: `tbl` is a valid `MmapTable` (checked at entry).
+        tail = alloc_region_slot(tbl);
+        if tail.is_null() {
+            kprint_str(
+                c"[MMAP] do_munmap: region table full, cannot split\n".as_ptr() as *const u8,
+            );
+            return -1;
+        }
+    }
+
     let pages = length / PAGE_SIZE;
     for i in 0..pages {
         let va = addr + i * PAGE_SIZE;
@@ -487,26 +510,21 @@ pub unsafe extern "C" fn do_munmap(
     }
 
     // SAFETY: `region` is the live region slot located by the scan above and it is
-    // not used again after this update, so this borrow is exclusive;
-    // `memfd_map_dec` does not touch the region.
+    // not used again after this update, so this borrow is exclusive; the
+    // `memfd_map_*` calls do not touch the region.
     let region = unsafe { &mut *region };
-    // Write a file-backed mapping's dirty page-cache range back to disk before
-    // the mapping goes away (mmap writes bypass write()).
+
+    // Write the file-backed dirty page-cache range this call unmaps — exactly
+    // [addr, addr + length), whichever slice of the region that is — back to
+    // disk before the mapping goes away (mmap writes bypass write()).
     if region.fd >= 0 && region.shobj > 0 {
-        let (foff, flen) = if addr == region.base && length >= region.length {
-            (region.file_off, region.length)
-        } else if addr == region.base {
-            (region.file_off, length)
-        } else {
-            let skip = addr - region.base;
-            (region.file_off + skip, region.length - skip)
-        };
         // SAFETY: the fd is the one that backs this mapping; the VFS resolves
         // it to its inode's address space and flushes (a no-op when there is
         // none).
-        unsafe { vfs_as_flush_fd(region.fd, foff, flen) };
+        unsafe { vfs_as_flush_fd(region.fd, region.file_off + (addr - r_base), length) };
     }
-    if addr == region.base && length >= region.length {
+
+    if whole {
         let obj = region.shobj;
         region.is_used = 0;
         region.fd = -1;
@@ -514,12 +532,34 @@ pub unsafe extern "C" fn do_munmap(
         if obj > 0 {
             memfd_map_dec(obj);
         }
-    } else if addr == region.base {
-        region.base += length;
-        region.length -= length;
+    } else if front {
+        // Drop the front: the region becomes its own tail.
+        region.base = r_base + length;
+        region.length = r_len - length;
         region.file_off += length;
+    } else if back {
+        // Drop the back: the region becomes its own head.
+        region.length = addr - r_base;
     } else {
-        region.length = addr - region.base;
+        // Drop the middle: keep the head here and move the tail into the slot
+        // reserved above.  Both halves still name the shared backing object, so
+        // the new tail takes its own MAP_SHARED reference.
+        // SAFETY: `tail` is the unused slot reserved above, distinct from the
+        // live `region`, so the two writes do not alias.
+        unsafe {
+            (*tail).base = addr + length;
+            (*tail).length = (r_base + r_len) - (addr + length);
+            (*tail).flags = region.flags;
+            (*tail).prot = region.prot;
+            (*tail).fd = region.fd;
+            (*tail).file_off = region.file_off + (addr + length - r_base);
+            (*tail).shobj = region.shobj;
+            (*tail).is_used = 1;
+        }
+        if region.shobj > 0 {
+            memfd_map_inc(region.shobj);
+        }
+        region.length = addr - r_base;
     }
 
     0
