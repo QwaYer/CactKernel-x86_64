@@ -4,6 +4,7 @@
 //! `mmap` / `munmap` implementation: private PDEs, file-backed mappings, and COW with the VMM.
 
 use crate::ffi::*;
+use crate::munmap_plan::{clip_region, MunmapClip};
 use crate::pmm::{kalloc, free_page, page_ref_inc};
 use crate::vmm::paging::{vmm_map, p2v, v2p, walk};
 use crate::fault::page_fault::vmm_map_zero;
@@ -440,126 +441,155 @@ pub unsafe extern "C" fn do_munmap(
 
     length = (length + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
 
-    let mut region: *mut MmapRegion = core::ptr::null_mut();
-    // SAFETY: tbl is valid.
+    // `end` is exclusive; a range that wraps the 32-bit space is malformed.
+    let end = match addr.checked_add(length) {
+        Some(e) => e,
+        None => return -1,
+    };
+
+    // Pass 1: how many regions the request touches, and how many of them need a
+    // second slot to keep their tail (a slice cut out of the middle).  Every
+    // slot is reserved here, before a single page is unmapped, so the call fails
+    // whole when the table cannot hold the split.
+    let mut used = 0usize;
+    let mut splits = 0usize;
+    let mut touched = 0usize;
     for i in 0..MMAP_MAX_REGIONS {
         // SAFETY: `tbl` is valid (checked at entry) and `i < MMAP_MAX_REGIONS`.
-        let r = unsafe { &mut (*tbl).regions[i] };
+        let r = unsafe { &(*tbl).regions[i] };
         if r.is_used == 0 {
             continue;
         }
-        if r.base == addr && r.length == length {
-            region = r;
-            break;
-        }
-        if r.base <= addr && addr + length <= r.base + r.length {
-            region = r;
-            break;
+        used += 1;
+        if let Some(s) = clip_region(r.base, r.length, addr, end) {
+            touched += 1;
+            if s.kind.needs_slot() {
+                splits += 1;
+            }
         }
     }
-
-    if region.is_null() {
+    if touched == 0 {
+        return -1;
+    }
+    if MMAP_MAX_REGIONS - used < splits {
+        kprint_str(
+            c"[MMAP] do_munmap: region table full, cannot split\n".as_ptr() as *const u8,
+        );
         return -1;
     }
 
-    // Classify the request against the region the address falls in.  A request
-    // that cuts a slice out of the *middle* has to leave two regions behind, so
-    // it needs a second slot — reserve it now, before a single page is unmapped,
-    // so the call can still fail cleanly when the table is full.
-    // SAFETY: `region` is the live slot located by the scan above; the table is
-    // not mutated concurrently.
-    let (r_base, r_len) = unsafe { ((*region).base, (*region).length) };
-    let front = addr == r_base;                 // unmap starts at the region's base
-    let back = addr + length >= r_base + r_len; // ... and reaches its end
-    let whole = front && back;
-
-    let mut tail: *mut MmapRegion = core::ptr::null_mut();
-    if !front && !back {
-        // SAFETY: `tbl` is a valid `MmapTable` (checked at entry).
-        tail = alloc_region_slot(tbl);
-        if tail.is_null() {
-            kprint_str(
-                c"[MMAP] do_munmap: region table full, cannot split\n".as_ptr() as *const u8,
-            );
-            return -1;
-        }
-    }
-
-    let pages = length / PAGE_SIZE;
-    for i in 0..pages {
-        let va = addr + i * PAGE_SIZE;
-
-        // SAFETY: `pd` is the caller's live page map and the walk only reads it.
-        let w = unsafe { walk(pd, va as u64, false, false) };
-        if w.pte_entry.is_null() {
+    // Pass 2: unmap the overlapping slice of each region and reshape it in place.
+    // Regions are disjoint, so a tail written into a free slot never lies inside
+    // the request range and is skipped if the loop reaches its index.
+    for i in 0..MMAP_MAX_REGIONS {
+        // SAFETY: `tbl` is valid and `i < MMAP_MAX_REGIONS`, so this names a slot
+        // of the caller's table.  A raw pointer (not a reference) is held so that
+        // `alloc_region_slot` may hand out another slot below.
+        let region: *mut MmapRegion = unsafe { &mut (*tbl).regions[i] };
+        // SAFETY: `region` names a live slot of the caller's table, not mutated
+        // concurrently for the duration of the call.
+        let (r_base, r_len, r_flags, r_prot, r_fd, r_off, r_shobj, r_used) = unsafe {
+            (
+                (*region).base,
+                (*region).length,
+                (*region).flags,
+                (*region).prot,
+                (*region).fd,
+                (*region).file_off,
+                (*region).shobj,
+                (*region).is_used,
+            )
+        };
+        if r_used == 0 {
             continue;
         }
-        // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
-        let pte = unsafe { *w.pte_entry };
+        let slice = match clip_region(r_base, r_len, addr, end) {
+            Some(s) => s,
+            None => continue,
+        };
+        let (lo, hi) = (slice.lo, slice.hi);
 
-        // Only release frames that were allocated for user mappings. Supervisor
-        // identity PTEs (present, no PAGE_USER) must not be passed to free_page.
-        if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
-            // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-            // The entry names a physical address, which `free_page` wants as a VA.
-            unsafe { free_page(p2v(pte & !0xFFF) as *mut u8) };
+        // Drop the frames the slice covers.  Supervisor identity PTEs (present,
+        // no PAGE_USER) are left alone; only user frames go back to the PMM.
+        let mut va = lo;
+        while va < hi {
+            // SAFETY: `pd` is the caller's live page map and the walk only reads it.
+            let w = unsafe { walk(pd, va as u64, false, false) };
+            if !w.pte_entry.is_null() {
+                // SAFETY: `w.pte_entry` is an in-bounds page-table entry.
+                let pte = unsafe { *w.pte_entry };
+                if pte & PAGE_PRESENT as u64 != 0 && pte & PAGE_USER as u64 != 0 {
+                    // SAFETY: the frame is live and PMM-managed; this releases
+                    // exactly one reference to it.
+                    unsafe { free_page(p2v(pte & !0xFFF) as *mut u8) };
+                }
+                // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
+                unsafe { *w.pte_entry = 0 };
+                flush_tlb(va as u64);
+            }
+            va += PAGE_SIZE;
         }
-        // SAFETY: `w.pte_entry` points at one PTE, which this unmap clears.
-        unsafe { *w.pte_entry = 0 };
-        flush_tlb(va as u64);
-    }
 
-    // SAFETY: `region` is the live region slot located by the scan above and it is
-    // not used again after this update, so this borrow is exclusive; the
-    // `memfd_map_*` calls do not touch the region.
-    let region = unsafe { &mut *region };
+        // Write the file-backed dirty range this slice covers back to disk before
+        // the mapping goes away (mmap writes bypass write()).
+        if r_fd >= 0 && r_shobj > 0 {
+            // SAFETY: the fd is the one that backs this mapping; the VFS resolves
+            // it to its inode's address space and flushes (a no-op when there is
+            // none).
+            unsafe { vfs_as_flush_fd(r_fd, r_off + (lo - r_base), hi - lo) };
+        }
 
-    // Write the file-backed dirty page-cache range this call unmaps — exactly
-    // [addr, addr + length), whichever slice of the region that is — back to
-    // disk before the mapping goes away (mmap writes bypass write()).
-    if region.fd >= 0 && region.shobj > 0 {
-        // SAFETY: the fd is the one that backs this mapping; the VFS resolves
-        // it to its inode's address space and flushes (a no-op when there is
-        // none).
-        unsafe { vfs_as_flush_fd(region.fd, region.file_off + (addr - r_base), length) };
-    }
-
-    if whole {
-        let obj = region.shobj;
-        region.is_used = 0;
-        region.fd = -1;
-        region.shobj = 0;
-        if obj > 0 {
-            memfd_map_dec(obj);
+        match slice.kind {
+            MunmapClip::Whole => {
+                // SAFETY: `region` is this iteration's live slot; the mapping is
+                // being torn down.
+                unsafe {
+                    (*region).is_used = 0;
+                    (*region).fd = -1;
+                    (*region).shobj = 0;
+                }
+                if r_shobj > 0 {
+                    memfd_map_dec(r_shobj);
+                }
+            }
+            MunmapClip::Front => {
+                // Drop the front: the region becomes its own tail.
+                // SAFETY: as above; the region stays live with trimmed bounds.
+                unsafe {
+                    (*region).base = hi;
+                    (*region).length = r_base + r_len - hi;
+                    (*region).file_off = r_off + (hi - r_base);
+                }
+            }
+            MunmapClip::Back => {
+                // Drop the back: the region becomes its own head.
+                // SAFETY: as above; only its length shrinks.
+                unsafe { (*region).length = lo - r_base };
+            }
+            MunmapClip::Middle => {
+                // Drop the middle: keep the head here and move the tail into a
+                // free slot (pass 1 guaranteed one).  Both halves still name the
+                // shared backing object, so the tail takes its own reference.
+                // SAFETY: `tbl` is valid; `alloc_region_slot` only reads it.
+                let tail = alloc_region_slot(tbl);
+                // SAFETY: `tail` is a distinct free slot and `region` a live one,
+                // so the writes do not alias; the slot was reserved in pass 1.
+                unsafe {
+                    (*tail).base = hi;
+                    (*tail).length = r_base + r_len - hi;
+                    (*tail).flags = r_flags;
+                    (*tail).prot = r_prot;
+                    (*tail).fd = r_fd;
+                    (*tail).file_off = r_off + (hi - r_base);
+                    (*tail).shobj = r_shobj;
+                    (*tail).is_used = 1;
+                    (*region).length = lo - r_base;
+                }
+                if r_shobj > 0 {
+                    memfd_map_inc(r_shobj);
+                }
+            }
         }
-    } else if front {
-        // Drop the front: the region becomes its own tail.
-        region.base = r_base + length;
-        region.length = r_len - length;
-        region.file_off += length;
-    } else if back {
-        // Drop the back: the region becomes its own head.
-        region.length = addr - r_base;
-    } else {
-        // Drop the middle: keep the head here and move the tail into the slot
-        // reserved above.  Both halves still name the shared backing object, so
-        // the new tail takes its own MAP_SHARED reference.
-        // SAFETY: `tail` is the unused slot reserved above, distinct from the
-        // live `region`, so the two writes do not alias.
-        unsafe {
-            (*tail).base = addr + length;
-            (*tail).length = (r_base + r_len) - (addr + length);
-            (*tail).flags = region.flags;
-            (*tail).prot = region.prot;
-            (*tail).fd = region.fd;
-            (*tail).file_off = region.file_off + (addr + length - r_base);
-            (*tail).shobj = region.shobj;
-            (*tail).is_used = 1;
-        }
-        if region.shobj > 0 {
-            memfd_map_inc(region.shobj);
-        }
-        region.length = addr - r_base;
     }
 
     0
