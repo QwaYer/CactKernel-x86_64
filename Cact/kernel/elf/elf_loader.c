@@ -149,7 +149,23 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
         /* Program headers live outside every PT_LOAD (p_offset of the first
          * LOAD is 0x1000 in our fixed-address images). Map one page holding a
          * copy of the phdr table just below the lowest segment so user-space
-         * ld.so can read it through AT_PHDR. */
+         * ld.so can read it through AT_PHDR.
+         *
+         * That page must be free: when main and interp share a base, the page
+         * below one image's lowest segment can already carry a user mapping
+         * (the other image's data, or its own phdr copy), and mapping over it
+         * would silently discard it.  The low tables are shared with the
+         * kernel's identity map, so only a *user* present entry counts as
+         * occupied; a plain kernel entry is fair game (vmm_map() COWs the
+         * shared low table into a private one). */
+        if (min_vaddr < PAGE_SIZE) return -1;
+        uint32_t page_va = (uint32_t)min_vaddr - 0x1000u;
+        if ((vmm_pte_flags(pd, page_va) & PAGE_USER) != 0) {
+            pr_err("elf: phdr page 0x%x already holds a user mapping\n",
+                   (unsigned)page_va);
+            return -1;
+        }
+
         uint32_t page_off = (uint32_t)hdr.e_phoff & 0xFFFu;
         uint32_t copy_sz  = phdr_bytes;
         if (copy_sz > (uint32_t)(PAGE_SIZE - page_off))
@@ -163,8 +179,6 @@ static int _map_image(struct vfs_node* file, uint64_t* pd,
         if (copy_sz > 0)
             read_vfs(file, hdr.e_phoff, copy_sz, (char*)phys + page_off);
 
-        if (min_vaddr < PAGE_SIZE) return -1;
-        uint32_t page_va = (uint32_t)min_vaddr - 0x1000u;
         // `kalloc` returns a direct-map VA; the PTE takes the physical address.
         vmm_map(pd, page_va, vmm_v2p(phys), PAGE_USER | PAGE_RW | PAGE_PRESENT);
         phdr_vaddr = page_va + page_off;
