@@ -483,6 +483,14 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
                     let child_shared = unsafe { (*t_proc).shared };
                     // SAFETY: `t` is live and the lock is held.
                     unsafe { task_list_remove(t) };
+                    // A dying task must leave no link behind in a blocking
+                    // structure: the timer wheel would otherwise keep a pointer
+                    // into a freed — and then reused — `TaskStruct`, whose
+                    // `proc`/`wait_next` the next `timer_wheel_tick` would walk.
+                    // SAFETY: `t` is live and `SCHEDULER_LOCK` is held.
+                    unsafe { crate::timer_wheel::timer_wheel_remove(t) };
+                    // SAFETY: `t` is live and the lock is held; unlinks the blocked queue too.
+                    let _ = crate::mlfq::mlfq_remove_from_sleep(t);
                     // SAFETY: `child_shared` is null or the live group state of `t`; the lock is
                     // held, serializing this against other reaps.
                     let last = unsafe { proc_shared_unref_locked(child_shared) };
@@ -761,6 +769,14 @@ pub unsafe extern "C" fn task_reap() {
             if reapable {
                 // SAFETY: `cur` is live and the lock is held.
                 unsafe { task_list_remove(cur) };
+                // A dying task must leave no link behind in a blocking
+                // structure: the timer wheel would otherwise keep a pointer into
+                // a freed — and then reused — `TaskStruct`, whose
+                // `proc`/`wait_next` the next `timer_wheel_tick` would walk.
+                // SAFETY: `cur` is live and `SCHEDULER_LOCK` is held.
+                unsafe { crate::timer_wheel::timer_wheel_remove(cur) };
+                // SAFETY: `cur` is live and the lock is held; unlinks the blocked queue too.
+                let _ = crate::mlfq::mlfq_remove_from_sleep(cur);
                 // SAFETY: `cur_proc` is live, so its `shared` is null or the live group state;
                 // unreffing under the held `SCHEDULER_LOCK` decides who frees it.
                 let cur_shared = unsafe { (*cur_proc).shared };

@@ -150,17 +150,14 @@ pub unsafe extern "C" fn task_signal_locked(pid: u32, signal: u32) {
         || ((in_sigsuspend != 0 || intr_wait != 0) && (signal & !signal_mask) != 0))
         && matches!(t_state, TaskState::Sleeping)
     {
-        // Only queue the task if it has already parked; a still-running one is
-        // left Ready and its own `sched_park_prev` queues it.
-        let parked = mlfq::mlfq_remove_from_sleep(t);
-        // SAFETY: `t` is live.
-        unsafe { (*t).state = TaskState::Ready };
-        if parked {
-            // SAFETY: `t` is live.
-            let pri = unsafe { (*t).priority };
-            // SAFETY: `t` is live; the caller holds `SCHEDULER_LOCK`.
-            unsafe { mlfq::mlfq_enqueue_locked(t, pri) };
-        }
+        // A Sleeping task is parked either in the blocked queue or — when it
+        // sleeps with a deadline — in the timer wheel, and only
+        // `mlfq_wake_task_locked` unlinks it from whichever holds it.  Removing
+        // from the blocked queue alone would leave a wheel-parked task Ready
+        // while still chained in the wheel: its next `sched_park_prev` would
+        // re-insert it and overwrite `wait_next`, cross-linking two slots.
+        // SAFETY: `t` is live; the caller holds `SCHEDULER_LOCK`.
+        unsafe { mlfq::mlfq_wake_task_locked(t) };
     }
 }
 
@@ -613,16 +610,9 @@ fn wake_if_sigsuspend(t: *mut TaskStruct, signal: u32) {
         && matches!(t_state, TaskState::Sleeping)
         && (signal & !signal_mask) != 0
     {
-        // Only queue the task if it has already parked; a still-running one is
-        // left Ready and its own `sched_park_prev` queues it.
-        let parked = mlfq::mlfq_remove_from_sleep(t);
-        // SAFETY: `t` is live.
-        unsafe { (*t).state = TaskState::Ready };
-        if parked {
-            // SAFETY: `t` is live.
-            let pri = unsafe { (*t).priority };
-            // SAFETY: `t` is live and `SCHEDULER_LOCK` is held by the caller.
-            unsafe { mlfq::mlfq_enqueue_locked(t, pri) };
-        }
+        // As in `task_signal_locked`: unpark from whichever blocking structure
+        // holds the task — the blocked queue or the timer wheel.
+        // SAFETY: `t` is live and the caller holds `SCHEDULER_LOCK`.
+        unsafe { mlfq::mlfq_wake_task_locked(t) };
     }
 }
