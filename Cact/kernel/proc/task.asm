@@ -89,6 +89,10 @@ user_task_trampoline:
     mov ax, 0x23
     mov ds, ax
     mov es, ax
+    cli                             ; nothing may interrupt between the swapgs
+                                    ; and the iretq: an interrupt taken there
+                                    ; would see an interrupted CS.RPL=0, not
+                                    ; swap, and leave the kernel on the user %gs
     swapgs                          ; kernel -> user: %gs back to the user base
     iretq
 
@@ -112,5 +116,7 @@ fork_task_trampoline:
     pop rsi
     pop rdi
     add rsp, 16
+    cli                             ; nothing may interrupt between the swapgs
+                                    ; and the iretq (see user_task_trampoline)
     swapgs                          ; kernel -> user: %gs back to the user base
     iretq

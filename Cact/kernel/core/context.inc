@@ -83,6 +83,13 @@
 %macro SWAPGS_OUT 0
     test byte [rsp+8], 3
     jz %%keep
+    ; The swap and the iretq must not be interruptible: an interrupt taken
+    ; between them enters through a stub that sees an interrupted CS.RPL of 0
+    ; (this is kernel code), so it does not swap, and the kernel would then run
+    ; on the *user* %gs base — the first %gs access faults, and the #PF handler
+    ; faults on its own %gs read and recurses until the kernel stack overruns.
+    ; IRETQ restores the frame's RFLAGS, so masking here is transparent.
+    cli
     swapgs
 %%keep:
 %endmacro

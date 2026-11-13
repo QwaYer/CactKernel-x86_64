@@ -76,5 +76,12 @@ syscall_entry:
 
     ISR_RESTORE
     add rsp, 16                     ; drop int_no / err_code
+    cli                             ; nothing may interrupt between the swapgs
+                                    ; and the iretq: the stub of an interrupt
+                                    ; taken there sees the interrupted CS.RPL=0,
+                                    ; so it does not swap, and the kernel would
+                                    ; then run with the *user* %gs base — the
+                                    ; first %gs access would fault and recurse
+                                    ; in the #PF handler.
     swapgs                          ; back to the user %gs base before returning
     iretq
