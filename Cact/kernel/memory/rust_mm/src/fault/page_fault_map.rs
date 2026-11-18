@@ -87,6 +87,10 @@ pub unsafe extern "C" fn vmm_map_zero(
         }
         // SAFETY: `entry` is an in-bounds page-table entry.
         unsafe { *entry = (PAGE_DEMAND | PAGE_ZERO | (flags & (PAGE_USER | PAGE_RW))) as u64 };
+        // The entry replaces whatever the VA was mapped to before (an identity
+        // entry, a previous mapping): the old translation lives on in the TLB
+        // and would keep serving stores until an unrelated CR3 load drops it.
+        crate::safe::flush_tlb(va);
         va += PAGE_SIZE as u64;
     }
     0

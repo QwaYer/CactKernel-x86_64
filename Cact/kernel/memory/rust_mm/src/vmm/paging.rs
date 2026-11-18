@@ -303,6 +303,12 @@ pub unsafe fn walk(pml4: *mut u64, vaddr: u64, create: bool, private: bool) -> W
         if pt.is_null() {
             return out;
         }
+        // The 2 MiB entry this replaced is still in the TLB, and it covers all
+        // 512 pages of the region — including the one the caller is about to
+        // remap.  Without this flush a store to the newly mapped page keeps
+        // going to the old translation (the identity frame the 2 MiB entry
+        // named) until some unrelated CR3 load happens to drop it.
+        crate::safe::flush_tlb(vaddr);
     } else if pd_val & PAGE_PRESENT as u64 == 0 {
         if !create {
             return out;
@@ -647,6 +653,10 @@ pub unsafe extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr:
     }
     // SAFETY: `w.pte_entry` receives the mapping.
     unsafe { *w.pte_entry = (physical_addr & !0xFFF) | flags as u64 | PAGE_PRESENT as u64 };
+    // Whatever this VA translated to before (an inherited identity entry, a
+    // mapping being replaced, a 2 MiB page this walk just split) is still in the
+    // TLB and would keep serving accesses to the old frame.
+    crate::safe::flush_tlb(virtual_addr);
 
     // A new kernel/MMIO mapping must also appear in the address space loaded
     // right now, or a driver would fault inside IRQ context before the next
@@ -806,6 +816,18 @@ pub extern "C" fn vmm_create_address_space() -> *mut u64 {
         // SAFETY: `src` is the kernel's live low PDPT and `pdpt` is the fresh
         // one; both span 512 entries and do not overlap.
         unsafe { core::ptr::copy_nonoverlapping(src, pdpt, TABLE_ENTRIES) };
+        // The copied entries *name the kernel's tables*, not this address
+        // space's.  `walk` treats an entry that lacks `PDE_PRIVATE` as shared
+        // and copies the table before touching it; an entry that kept the
+        // kernel's private mark makes a user mapping carve straight into the
+        // kernel's page directory — replacing the kernel's own view of the RAM
+        // it reaches through that identity map.  The kernel then faults on its
+        // own memory, or silently writes into user data.
+        for i in 0..TABLE_ENTRIES {
+            // SAFETY: `pdpt` is the fresh 512-entry table just filled, so `i`
+            // is in bounds.
+            unsafe { *pdpt.add(i) &= !(PDE_PRIVATE as u64) };
+        }
     }
     // SAFETY: `pml4` is the fresh map; entry 0 takes the private PDPT, by its
     // physical address.  It carries PAGE_USER because the low half is where user
