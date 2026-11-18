@@ -139,7 +139,12 @@ pub const MAP_SHARED: i32 = 0x01;
 pub const MAP_PRIVATE: i32 = 0x02;
 pub const MAP_FIXED: i32 = 0x10;
 pub const MAP_ANON: i32 = 0x20;
-pub const MAP_FAILED: u32 = 0xFFFFFFFF;
+/// `do_mmap`'s failure return.  It has to be all ones in *pointer* width: the
+/// old 32-bit 0xFFFFFFFF zero-extends to 0x0000_0000_FFFF_FFFF, which neither
+/// the C `MAP_FAILED` (`(void*)-1`) nor ld.so's `(u8*)-1` check recognises, so a
+/// failed mapping silently looked like a success and the caller used the bogus
+/// pointer (or blitted into unmapped memory).
+pub const MAP_FAILED: usize = usize::MAX;
 pub const MMAP_BASE: u32 = 0x80000000;
 pub const MMAP_LIMIT: u32 = 0xBF000000;
 pub const MMAP_MAX_REGIONS: usize = 256;
