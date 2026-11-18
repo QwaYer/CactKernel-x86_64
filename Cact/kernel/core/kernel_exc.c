@@ -9,6 +9,7 @@
 #include "idt.h"
 #include "klib.h"
 #include "task.h"
+#include "page_fault.h"
 #include "validate.h"
 #include "ioctl_abi.h"
 #include "proc.h"
@@ -39,19 +40,35 @@ static int in_kernel_space(uintptr_t addr) {
     return addr < USER_SPACE_START || addr >= KERNEL_BASE;
 }
 
-// Read a u32 from a user address through the task's page tables.  The mapping
-// is checked first, so a wild user EBP cannot re-fault the handler.
-static int peek_user_u32(uint64_t* pd, uint32_t addr, uint32_t* out) {
+// Read a u64 from a user address through the task's page tables.  The mapping
+// is checked first, so a wild user RBP cannot re-fault the handler.  The page
+// offset is applied to the physical address vmm_get_phys answers with, so the
+// read lands on the requested word rather than the page base.
+static int peek_user_u64(uint64_t* pd, uintptr_t addr, uint64_t* out) {
     if (!pd) return -1;
-    // Resolve through the memory layer's four-level walk.  The mapping is
-    // checked first, so a wild user EBP cannot re-fault the handler.
+    if (addr < USER_SPACE_START || addr + 8u > KERNEL_BASE) return -1;
     if (!(vmm_pte_flags(pd, addr) & PAGE_PRESENT)) return -1;
     uint64_t phys = vmm_get_phys(pd, addr);
     if (!phys) return -1;
     // vmm_get_phys answers with a physical address; the frame is dereferenced
     // through the direct map.
-    *out = *(volatile uint32_t*)vmm_p2v(phys);
+    *out = *(volatile uint64_t*)((uint8_t*)vmm_p2v(phys & ~0xFFFULL) + (addr & 0xFFFu));
     return 0;
+}
+
+// " (symbol+0xN)" for an address the task's symbol table knows, nothing when it
+// does not.  The lookups reject a kernel address by their own window check.
+static void print_sym_hint(uintptr_t addr) {
+    uint64_t sym_off;
+    const char* sym = sym_resolve_addr(addr, &sym_off);
+    if (!sym) return;
+    printk_color_level(KLOG_LEVEL_CRIT, " (", COLOR_DARK_GREY);
+    printk((char*)sym);
+    printk_color_level(KLOG_LEVEL_CRIT, "+", COLOR_DARK_GREY);
+    char buf[24];
+    snprintf(buf, sizeof(buf), "0x%x", (unsigned)sym_off);
+    printk_color_level(KLOG_LEVEL_CRIT, buf, COLOR_DARK_GREY);
+    printk_color_level(KLOG_LEVEL_CRIT, ")", COLOR_DARK_GREY);
 }
 
 static void print_trace_frame(int idx, uintptr_t ret_ip) {
@@ -61,21 +78,7 @@ static void print_trace_frame(int idx, uintptr_t ret_ip) {
     printk_color_level(KLOG_LEVEL_CRIT, buf, COLOR_LIGHT_BROWN);
     printk_color_level(KLOG_LEVEL_CRIT, "] ", COLOR_LIGHT_BROWN);
     put_hex(ret_ip, COLOR_LIGHT_BROWN);
-
-    /* The symbol table still holds 32-bit symbol values (the ELF loaders are
-     * ported in Phase 5/6 of PORTING-x86_64.md), but the lookup is handed the
-     * full 64-bit RIP: a kernel address is rejected by its window check instead
-     * of being truncated into the user window. */
-    uint64_t sym_off;
-    const char* sym = sym_resolve_addr(ret_ip, &sym_off);
-    if (sym) {
-        printk_color_level(KLOG_LEVEL_CRIT, " (", COLOR_DARK_GREY);
-        printk((char*)sym);
-        printk_color_level(KLOG_LEVEL_CRIT, "+", COLOR_DARK_GREY);
-        snprintf(buf, sizeof(buf), "0x%x", (unsigned)sym_off);
-        printk_color_level(KLOG_LEVEL_CRIT, buf, COLOR_DARK_GREY);
-        printk_color_level(KLOG_LEVEL_CRIT, ")", COLOR_DARK_GREY);
-    }
+    print_sym_hint(ret_ip);
     printk_color_level(KLOG_LEVEL_CRIT, "\n", COLOR_LIGHT_BROWN);
 }
 
@@ -125,13 +128,46 @@ static void print_register_block(struct context_frame *regs, uintptr_t esp, int 
     printk("\n");
 }
 
+// The first words at the interrupted user rsp.  A `call` pushes its return
+// address there, and a jump through a bad pointer faults *at* the bad address
+// with the caller's rsp untouched — so the call that made the jump is named by
+// the first word that resolves to a symbol.
+static void print_user_stack(struct context_frame *regs) {
+    uint64_t* pd = current_task ? current_task->page_directory : 0;
+    uint64_t words[8];
+
+    printk_color_level(KLOG_LEVEL_CRIT, "User stack: ", COLOR_DARK_GREY);
+    for (int i = 0; i < 8; i++) {
+        if (peek_user_u64(pd, (uintptr_t)regs->rsp + (uintptr_t)i * 8u, &words[i]) != 0) {
+            words[i] = 0;
+            printk(" ??");
+        } else {
+            printk(" "); put_hex(words[i], COLOR_DARK_GREY);
+        }
+    }
+    printk("\n");
+
+    for (int i = 0; i < 8; i++) {
+        if (words[i] < USER_SPACE_START || words[i] >= KERNEL_BASE) continue;
+        uint64_t sym_off;
+        if (!sym_resolve_addr(words[i], &sym_off)) continue;
+        char buf[16];
+        printk_color_level(KLOG_LEVEL_CRIT, "  [+", COLOR_DARK_GREY);
+        snprintf(buf, sizeof(buf), "%d", i * 8);
+        printk_color_level(KLOG_LEVEL_CRIT, buf, COLOR_DARK_GREY);
+        printk_color_level(KLOG_LEVEL_CRIT, "] ", COLOR_DARK_GREY);
+        put_hex(words[i], COLOR_DARK_GREY);
+        print_sym_hint(words[i]);
+        printk("\n");
+    }
+}
+
 static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv_change) {
     // Stack trace — walk the frame-pointer chain.  A ring-0 fault runs on a
     // kernel stack (kalloc page, low memory), a ring-3 fault on the user stack;
     // the two need different address tests and the user one must go through the
-    // page tables.  The user walk still reads 4-byte slots: that frame is the
-    // 32-bit user ABI's until the user side is rebuilt (Phase 6 of
-    // PORTING-x86_64.md), while the kernel walk is already 64-bit.
+    // page tables.  Every image is built for x86_64 now, so the user chain is
+    // SysV's too: [rbp] = saved rbp, [rbp+8] = the return address.
     printk_color_level(KLOG_LEVEL_CRIT, "Call trace:\n", COLOR_LIGHT_BROWN);
     int frames = 0;
     uintptr_t rbp = regs->rbp;
@@ -148,38 +184,41 @@ static void print_call_trace(struct context_frame *regs, uintptr_t esp, int priv
         }
     } else {
         uint64_t* pd = current_task ? current_task->page_directory : 0;
-        uint32_t ebp = (uint32_t)rbp;
-        while (frames < TRACE_FRAMES_MAX && (ebp & 3u) == 0) {
-            uint32_t ret_eip, next_ebp;
-            if (peek_user_u32(pd, ebp,     &next_ebp) != 0) break;
-            if (peek_user_u32(pd, ebp + 4, &ret_eip)  != 0) break;
-            print_trace_frame(frames, ret_eip);
+        uintptr_t ebp = rbp;
+        while (frames < TRACE_FRAMES_MAX && (ebp & 7u) == 0) {
+            uint64_t next_rbp, ret_ip;
+            if (peek_user_u64(pd, ebp,      &next_rbp) != 0) break;
+            if (peek_user_u64(pd, ebp + 8u, &ret_ip)   != 0) break;
+            // A slot that is not a user address is not a return address: a
+            // zero frame is worse than none, because it hides the raw stack
+            // printed below.
+            if (ret_ip < USER_SPACE_START || ret_ip >= KERNEL_BASE) break;
+            // Nor is a stack address one — the user stack is not executable,
+            // and a `_start` sets rbp to the initial rsp, so a walk there reads
+            // the argument words (argv[0] came back as a "frame").
+            if (ret_ip >= USER_STACK_LIMIT && ret_ip < USER_STACK_TOP) break;
+            print_trace_frame(frames, (uintptr_t)ret_ip);
             frames++;
-            if (next_ebp <= ebp) break;
-            ebp = next_ebp;
+            if (next_rbp <= ebp) break;
+            ebp = (uintptr_t)next_rbp;
         }
+        // Printed whether or not the chain walked: the user rsp is where the
+        // return address of the call that jumped lives, and a chain is often
+        // unwalkable (a `_start` sets rbp to the initial rsp, not a frame).
+        print_user_stack(regs);
     }
 
     if (frames == 0) {
         printk_color_level(KLOG_LEVEL_CRIT, "  (no trace)\n", COLOR_DARK_GREY);
-        // RBP was unusable — show the raw words at the stack pointer, which is
-        // where a corrupted return address / pointer ends up.
-        printk_color_level(KLOG_LEVEL_CRIT, "Stack: ", COLOR_DARK_GREY);
-        if (priv_change) {
-            uint64_t* pd = current_task ? current_task->page_directory : 0;
-            for (int i = 0; i < 12; i++) {
-                uint32_t v;
-                if (peek_user_u32(pd, (uint32_t)(regs->rsp + (uint64_t)i * 4u), &v) != 0) {
-                    printk(" ??");
-                } else {
-                    printk(" "); put_hex(v, COLOR_DARK_GREY);
-                }
-            }
-        } else {
+        // RBP was unusable.  For a ring-0 fault show the raw words at the stack
+        // pointer, which is where a corrupted return address / pointer ends up;
+        // the user stack is printed by print_user_stack() above.
+        if (!priv_change) {
+            printk_color_level(KLOG_LEVEL_CRIT, "Stack: ", COLOR_DARK_GREY);
             uintptr_t* sp = (uintptr_t*)esp;
             for (int i = 0; i < 12; i++) { printk(" "); put_hex(sp[i], COLOR_DARK_GREY); }
+            printk_color_level(KLOG_LEVEL_CRIT, "\n", COLOR_DARK_GREY);
         }
-        printk_color_level(KLOG_LEVEL_CRIT, "\n", COLOR_DARK_GREY);
     }
 }
 
