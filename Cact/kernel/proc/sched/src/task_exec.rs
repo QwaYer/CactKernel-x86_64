@@ -502,22 +502,40 @@ pub unsafe extern "C" fn task_exec(
     // point; `cr3`/segment reload and `iretq` leave kernel mode permanently (`noreturn`).
     // IRETQ pops RIP, CS, RFLAGS, RSP, SS — the reverse of the pushes below, each pushed as
     // a full 64-bit slot because long mode has no 32-bit push.
+    //
+    // Every value the block needs is an `in(reg)` operand: the earlier form hardcoded
+    // `mov eax, 0x23` / `xor ebx, ebx` to load the selectors through %ax, which are writes
+    // to registers the compiler was not told about.  Nothing stopped it from allocating an
+    // operand — the entry point — to %rax, and `mov eax, 0x23` then destroyed it, so the
+    // iretq pushed 0x23 as RIP and the new image faulted on its first instruction fetch.
+    //
+    // `%gs` is handed over with `swapgs`, not `mov gs, ax` (the trampolines in task.asm do
+    // the same).  Loading the user selector writes the *live* `IA32_GS_BASE` to the user's
+    // (zero) base while leaving `IA32_KERNEL_GS_BASE` at zero too, so the very next ring-3
+    // entry's `swapgs` brings the kernel up on a zero %gs base: the first per-CPU access
+    // (`this_cpu` reads `%gs:0`) faults at address 0, the ring-0 #PF handler faults on its
+    // own %gs read, and the recursion overruns the kernel stack.  `swapgs` is the correct
+    // handoff: it leaves %gs at the user's base and puts this CPU's per-CPU block into
+    // `IA32_KERNEL_GS_BASE` for the next entry.  `cli` keeps an interrupt out of the window
+    // between the swap and the `iretq` (see SWAPGS_OUT in context.inc).
     unsafe {
         core::arch::asm!(
             "mov cr3, {pd}",
-            "xor ebx, ebx",
-            "mov eax, 0x23",
-            "mov ds, ax",
-            "mov es, ax",
-            "mov fs, ax",
-            "mov gs, ax",
-            "push 0x23",
+            "mov ds, {sel:x}",
+            "mov es, {sel:x}",
+            "mov fs, {sel:x}",
+            "cli",
+            "swapgs",
+            "push {ss}",
             "push {sp}",
             "push 0x202",
-            "push 0x1B",
+            "push {cs}",
             "push {entry}",
             "iretq",
             pd    = in(reg) pd_val as u64,
+            sel   = in(reg) 0x23u16,
+            ss    = in(reg) 0x23u64,
+            cs    = in(reg) 0x1Bu64,
             sp    = in(reg) sp_u,
             entry = in(reg) entry_u,
             options(noreturn),
