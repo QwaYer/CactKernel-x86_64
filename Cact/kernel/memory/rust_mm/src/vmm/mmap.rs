@@ -14,7 +14,7 @@ unsafe extern "C" {
     /// Flush a file-backed mapping's page-cache range back to its filesystem.
     fn vfs_as_flush_fd(fd: i32, off: u32, size: u32);
 }
-use crate::safe::{zero_page, flush_tlb, kprint_str};
+use crate::safe::{zero_page, flush_tlb, kprint_str, klog_msg};
 
 fn fd_to_node(fd: i32) -> *mut VfsNode {
     // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may return null,
@@ -248,8 +248,9 @@ pub unsafe extern "C" fn do_mmap(
                 continue;
             }
             if hint < r.base.saturating_add(r.length) && r.base < hint.saturating_add(length) {
-                kprint_str(
-                    c"[MMAP] do_mmap: MAP_FIXED overlaps an existing region\n".as_ptr() as *const u8,
+                klog_msg(
+                    LOG_ERROR,
+                    c"[MMAP] do_mmap: MAP_FIXED overlaps an existing region".as_ptr() as *const u8,
                 );
                 return MAP_FAILED as *mut u8;
             }
@@ -258,14 +259,14 @@ pub unsafe extern "C" fn do_mmap(
     } else {
         va = find_free_va(tbl, length);
         if va == 0 {
-            kprint_str(c"[MMAP] do_mmap: no free virtual address space\n".as_ptr() as *const u8);
+            klog_msg(LOG_ERROR, c"[MMAP] do_mmap: no free virtual address space".as_ptr() as *const u8);
             return MAP_FAILED as *mut u8;
         }
     }
 
     let region = alloc_region_slot(tbl);
     if region.is_null() {
-        kprint_str(c"[MMAP] do_mmap: region table full\n".as_ptr() as *const u8);
+        klog_msg(LOG_ERROR, c"[MMAP] do_mmap: region table full".as_ptr() as *const u8);
         return MAP_FAILED as *mut u8;
     }
 
@@ -283,7 +284,7 @@ pub unsafe extern "C" fn do_mmap(
         // SAFETY: `pd` is valid (checked at entry), `va` was chosen inside the mmap
         // window and `length` is a whole number of pages.
         if unsafe { vmm_map_zero(pd, va as u64, length, page_flags) } != 0 {
-            kprint_str(c"[MMAP] do_mmap: vmm_map_zero failed\n".as_ptr() as *const u8);
+            klog_msg(LOG_ERROR, c"[MMAP] do_mmap: vmm_map_zero failed".as_ptr() as *const u8);
             return MAP_FAILED as *mut u8;
         }
     } else {
@@ -342,7 +343,7 @@ pub unsafe extern "C" fn do_mmap(
                     clear_user_pte(pd, va + m * PAGE_SIZE);
                 }
                 memfd_map_dec(shobj);
-                kprint_str(c"[MMAP] do_mmap: memfd shared map failed\n".as_ptr() as *const u8);
+                klog_msg(LOG_ERROR, c"[MMAP] do_mmap: memfd shared map failed".as_ptr() as *const u8);
                 return MAP_FAILED as *mut u8;
             }
         } else if shobj > 0 {
@@ -475,8 +476,9 @@ pub unsafe extern "C" fn do_munmap(
         return -1;
     }
     if MMAP_MAX_REGIONS - used < splits {
-        kprint_str(
-            c"[MMAP] do_munmap: region table full, cannot split\n".as_ptr() as *const u8,
+        klog_msg(
+            LOG_ERROR,
+            c"[MMAP] do_munmap: region table full, cannot split".as_ptr() as *const u8,
         );
         return -1;
     }
