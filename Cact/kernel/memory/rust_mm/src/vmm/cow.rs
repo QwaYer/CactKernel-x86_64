@@ -98,6 +98,16 @@ pub unsafe extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u
 
         for j in 0..TABLE_ENTRIES {
             if i == mmap_window && j >= mmap_pd_start && j < mmap_pd_end {
+                // The mmap window's page-table entries are (re)built by
+                // `mmap_table_clone`, and the non-region pages that live in the
+                // same address range (the per-process sigreturn trampoline) by
+                // their own mappers, once this call returns.  The entry the
+                // verbatim copy above left here names the *parent's* page table:
+                // the child would write through it and, when its address space is
+                // torn down (at exec), free that table and its frames — pulling
+                // the mapping out from under the parent.  Drop it so those
+                // mappers build private tables instead.
+                dst_pdt[j] = 0;
                 continue;
             }
 
