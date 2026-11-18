@@ -4,6 +4,7 @@
 kernel_objects += custom_target('asm-fpu-entry',
   input: 'fpu_entry.asm',
   output: 'fpu_entry.o',
+  depend_files: meson.project_source_root() / 'Cact/kernel/core/context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.project_source_root() / 'Cact/kernel/core',
             '@INPUT@', '-o', '@OUTPUT@'])
 

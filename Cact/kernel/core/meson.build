@@ -4,30 +4,35 @@
 kernel_objects += custom_target('asm-kernel-entry',
   input: 'kernel.asm',
   output: 'kernel_entry.o',
+  depend_files: 'context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.current_source_dir(),
             '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-exception-stubs',
   input: 'exception_stubs.asm',
   output: 'exception_stubs.o',
+  depend_files: 'context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.current_source_dir(),
             '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-device-isrs',
   input: 'device_isrs.asm',
   output: 'device_isrs.o',
+  depend_files: 'context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.current_source_dir(),
             '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-msidev-stubs',
   input: 'msidev_stubs.asm',
   output: 'msidev_stubs.o',
+  depend_files: 'context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.current_source_dir(),
             '@INPUT@', '-o', '@OUTPUT@'])
 
 kernel_objects += custom_target('asm-syscall-entries',
   input: 'syscall_entries.asm',
   output: 'syscall_entries.o',
+  depend_files: 'context.inc',
   command: [nasm, '-f', 'elf64', '-I', meson.current_source_dir(),
             '@INPUT@', '-o', '@OUTPUT@'])
 
