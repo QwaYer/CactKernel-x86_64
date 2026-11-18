@@ -317,6 +317,12 @@ void exception_handler(struct context_frame* regs) {
         }
 
         task_signal_code(current_task->pid, signal, CACT_SI_KERNEL, 0);
+        // Act on the signal on this very frame, exactly as the #PF path does: a
+        // default disposition terminates the task before it can be resumed
+        // (otherwise `iretq` below re-executes the faulting instruction and
+        // faults again).  A handler is delivered by `deliver_pending_signal` on
+        // the syscall-return path, not from inside the fault handler.
+        task_handle_signals(current_task);
         schedule();
         return;
     }

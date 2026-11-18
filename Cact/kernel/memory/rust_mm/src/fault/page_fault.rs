@@ -31,8 +31,21 @@ impl Cr3Guard {
         Self { saved, restore: true }
     }
 
-    /// Do not restore previous `CR3` on drop (caller will schedule or halt).
-    fn dismiss(&mut self) {
+    /// Put the interrupted address space back, leaving the kernel map behind.
+    /// The kernel map is installed to keep the PTE walks of the fault itself
+    /// safe, but everything after the fault is resolved runs on behalf of the
+    /// *task* and writes its memory — the signal frame on the user stack,
+    /// `clear_child_tid` — and those must go through the task's own page tables.
+    /// Left as the kernel map, such a store lands in the kernel's identity view
+    /// of that address instead of the task's frame (or faults inside the fault
+    /// handler, which recurses).
+    fn restore_address_space(&mut self) {
+        if !self.restore {
+            return;
+        }
+        // SAFETY: `saved` was read from CR3 in `install_kernel_pd` and the map
+        // it names is still live (the task has not been switched away).
+        unsafe { core::arch::asm!("mov cr3, {}", in(reg) self.saved, options(nomem, nostack)) };
         self.restore = false;
     }
 }
@@ -102,7 +115,9 @@ pub(crate) fn pte_get(pd: *mut u64, vaddr: u64) -> *mut u64 {
 }
 
 fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
-    cr3.dismiss();
+    // The fault is resolved (or not) already; from here everything runs on the
+    // task's behalf and may write its memory, so put its address space back.
+    cr3.restore_address_space();
 
     // SAFETY: regs is provided by the interrupt frame.
     unsafe {
@@ -125,6 +140,16 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
         // from the live current task; we are in the #PF handler.  The fault
         // address goes with it, so an SA_SIGINFO handler sees si_addr.
         unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr) };
+        // Act on the signal on this very frame instead of waiting for a syscall
+        // return that a faulting instruction never reaches: a default
+        // disposition marks the task a Zombie *before* `schedule` parks it — a
+        // Zombie is left unqueued, so the faulting instruction is never
+        // re-executed.  Delivering a *handler* is left to `deliver_pending_signal`
+        // on the syscall-return path, where the frame it builds on the user
+        // stack belongs; doing it here means writing user memory from inside the
+        // fault handler.
+        // SAFETY: `t` is the live current task and this is a kernel entry point.
+        unsafe { task_handle_signals(t) };
         // SAFETY: `schedule` is a kernel FFI entry point; the faulting task has
         // just been signalled, so yielding here is valid.
         unsafe { schedule() };

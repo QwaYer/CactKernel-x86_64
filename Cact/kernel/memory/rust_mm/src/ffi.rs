@@ -507,6 +507,9 @@ unsafe extern "C" {
     pub fn task_signal(pid: u32, signal: u32);
     /// Queue a signal *and* record its source (si_code) and fault address.
     pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64);
+    /// Apply a task's pending signals' dispositions: a default action
+    /// terminates the task, a user handler is left pending for delivery.
+    pub fn task_handle_signals(t: *mut TaskStruct);
     pub fn schedule();
     pub fn task_reap();
 
