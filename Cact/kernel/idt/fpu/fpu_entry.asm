@@ -10,14 +10,18 @@ extern handle_lazy_fpu
 
 ; #NM: the lazy-FPU handler needs no frame of its own — it works from
 ; current_task — so this stub only has to preserve the interrupted registers.
+;
+; It uses the *no-FPU* save/restore pair on purpose: handle_lazy_fpu's whole job
+; is to replace the vector file with the current task's saved one, so the
+; generic pair (which would put the interrupted values back) would undo it.
 isr7_nm_stub:
     SWAPGS_IN 8
-    ISR_SAVE
+    ISR_SAVE_NOFPU
     mov rbp, rsp
     and rsp, -16
     call handle_lazy_fpu
     mov rsp, rbp
-    ISR_RESTORE
+    ISR_RESTORE_NOFPU
     SWAPGS_OUT
     iretq
 

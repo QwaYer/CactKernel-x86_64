@@ -44,6 +44,11 @@ syscall_entry:
     mov r10, rsp                    ; r10 = user RSP (restored by the frame below)
     mov rsp, [gs:8]                 ; this CPU's kernel entry stack (%gs:esp0)
 
+    ; The handler runs on the kernel stack too, and its SSE would otherwise
+    ; trash the user's live vector registers (the epilogue's ISR_RESTORE undoes
+    ; this).  Below the frame, so the frame's shape and offsets are unchanged.
+    FPU_SAVE
+
     ; Build the frame, lowest address last: the pushes run in reverse field
     ; order so the last one lands as `r15`, the frame's first field.
     push qword 0x23                 ; ss   (user data | RPL3)

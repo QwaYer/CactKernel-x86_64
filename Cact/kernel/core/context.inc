@@ -18,7 +18,77 @@
 ; frame pointer between them.
 ; ---------------------------------------------------------------------------
 
-%macro ISR_SAVE 0
+; ---------------------------------------------------------------------------
+; FP/SIMD state across a handler.
+;
+; The kernel is compiled with SSE2 — memcpy/memset and the ABI's movd/movq
+; through XMM — so any handler *will* clobber xmm0-15.  That is not merely
+; untidy: an exception the handler returns to re-executes the faulting
+; instruction, so a `movdqu` store that faulted is retried with xmm0 already
+; overwritten by the handler and writes garbage.  (Seen concretely as 16 zero
+; bytes at the start of every page a user memcpy first touches — the handler's
+; zero_page leaves xmm0 zero.)  It is also why a syscall or IRQ may not quietly
+; trash the *user's* vector registers: the kernel's own SSE use sits between the
+; user's instructions.
+;
+; The save area lives in the per-CPU block (`%gs`, see CpuSched.fpu_scratch),
+; NOT on the stack: a stub's frame IS `struct context_frame`, so anything pushed
+; between the GPR block and the vector/error slots would shift int_no/err_code/
+; rip/cs and the handler would read garbage.  `movdqu` also needs no alignment,
+; so a plain `%gs` displacement serves.
+;
+; x87/MMX are not saved: no C or Rust in this kernel emits them, so nothing here
+; can have clobbered them.  CR0.TS is never set (the lazy-FPU handler in idt/fpu
+; only clears it), so the vector file is always live and can never trap.
+;
+; Known limit: this is one slot per CPU, so it assumes entries do not nest.  The
+; exception and IRQ gates clear IF and no handler here re-enables it, so they do
+; not.  An entry taken inside a *syscall* handler — which runs with IF set —
+; would overwrite the slot; making that case exact needs a per-task save, not a
+; per-CPU one.
+; ---------------------------------------------------------------------------
+
+%define PERCPU_FPU_SCRATCH 16
+
+%macro FPU_SAVE 0
+    movdqu [gs:PERCPU_FPU_SCRATCH+0],   xmm0
+    movdqu [gs:PERCPU_FPU_SCRATCH+16],  xmm1
+    movdqu [gs:PERCPU_FPU_SCRATCH+32],  xmm2
+    movdqu [gs:PERCPU_FPU_SCRATCH+48],  xmm3
+    movdqu [gs:PERCPU_FPU_SCRATCH+64],  xmm4
+    movdqu [gs:PERCPU_FPU_SCRATCH+80],  xmm5
+    movdqu [gs:PERCPU_FPU_SCRATCH+96],  xmm6
+    movdqu [gs:PERCPU_FPU_SCRATCH+112], xmm7
+    movdqu [gs:PERCPU_FPU_SCRATCH+128], xmm8
+    movdqu [gs:PERCPU_FPU_SCRATCH+144], xmm9
+    movdqu [gs:PERCPU_FPU_SCRATCH+160], xmm10
+    movdqu [gs:PERCPU_FPU_SCRATCH+176], xmm11
+    movdqu [gs:PERCPU_FPU_SCRATCH+192], xmm12
+    movdqu [gs:PERCPU_FPU_SCRATCH+208], xmm13
+    movdqu [gs:PERCPU_FPU_SCRATCH+224], xmm14
+    movdqu [gs:PERCPU_FPU_SCRATCH+240], xmm15
+%endmacro
+
+%macro FPU_RESTORE 0
+    movdqu xmm0,  [gs:PERCPU_FPU_SCRATCH+0]
+    movdqu xmm1,  [gs:PERCPU_FPU_SCRATCH+16]
+    movdqu xmm2,  [gs:PERCPU_FPU_SCRATCH+32]
+    movdqu xmm3,  [gs:PERCPU_FPU_SCRATCH+48]
+    movdqu xmm4,  [gs:PERCPU_FPU_SCRATCH+64]
+    movdqu xmm5,  [gs:PERCPU_FPU_SCRATCH+80]
+    movdqu xmm6,  [gs:PERCPU_FPU_SCRATCH+96]
+    movdqu xmm7,  [gs:PERCPU_FPU_SCRATCH+112]
+    movdqu xmm8,  [gs:PERCPU_FPU_SCRATCH+128]
+    movdqu xmm9,  [gs:PERCPU_FPU_SCRATCH+144]
+    movdqu xmm10, [gs:PERCPU_FPU_SCRATCH+160]
+    movdqu xmm11, [gs:PERCPU_FPU_SCRATCH+176]
+    movdqu xmm12, [gs:PERCPU_FPU_SCRATCH+192]
+    movdqu xmm13, [gs:PERCPU_FPU_SCRATCH+208]
+    movdqu xmm14, [gs:PERCPU_FPU_SCRATCH+224]
+    movdqu xmm15, [gs:PERCPU_FPU_SCRATCH+240]
+%endmacro
+
+%macro ISR_SAVE_NOFPU 0
     push rdi
     push rsi
     push rdx
@@ -36,7 +106,7 @@
     push r15
 %endmacro
 
-%macro ISR_RESTORE 0
+%macro ISR_RESTORE_NOFPU 0
     pop r15
     pop r14
     pop r13
@@ -52,6 +122,16 @@
     pop rdx
     pop rsi
     pop rdi
+%endmacro
+
+%macro ISR_SAVE 0
+    FPU_SAVE
+    ISR_SAVE_NOFPU
+%endmacro
+
+%macro ISR_RESTORE 0
+    ISR_RESTORE_NOFPU
+    FPU_RESTORE
 %endmacro
 
 ; ---------------------------------------------------------------------------

@@ -40,6 +40,14 @@ pub struct CpuSched {
     pub _pad: u32,
     /// Ring-0 stack the SYSCALL entry switches to, at `%gs:8`.
     pub esp0: u64,
+    /// Scratch for `xmm0-15` around a handler, at `%gs:16`.  The kernel's own
+    /// SSE (memcpy/memset, the ABI's movd/movq) would otherwise clobber the
+    /// vector registers of the code that was interrupted — and an exception the
+    /// handler returns to re-executes the faulting instruction, so a `movdqu`
+    /// store would be retried with a clobbered xmm0 (see context.inc).
+    /// One slot per CPU: entries here do not nest (the exception and IRQ gates
+    /// clear IF and no handler re-enables it).
+    pub fpu_scratch: [u8; 256],
     /// Task currently running on this CPU (null only before the scheduler starts).
     pub current: *mut TaskStruct,
     /// This CPU's idle task (the fallback context for the CPU).
@@ -58,6 +66,8 @@ pub struct CpuSched {
 // `syscall_entries.asm` hardcodes these two offsets; keep them in sync.
 const _: () = assert!(core::mem::offset_of!(CpuSched, self_index) == 0);
 const _: () = assert!(core::mem::offset_of!(CpuSched, esp0) == 8);
+// `context.inc` hardcodes this one (PERCPU_FPU_SCRATCH); keep it in sync.
+const _: () = assert!(core::mem::offset_of!(CpuSched, fpu_scratch) == 16);
 
 /// Park-protocol states (see `smp_cpu_offline` / `energy_cstate_idle`).
 pub const PARK_NONE: u32 = 0;
@@ -73,6 +83,7 @@ impl CpuSched {
             current: ptr::null_mut(),
             idle: ptr::null_mut(),
             fpu_owner: ptr::null_mut(),
+            fpu_scratch: [0u8; 256],
             schedule_in_progress: AtomicU32::new(0),
             park_request: AtomicU32::new(PARK_NONE),
             parked: AtomicU32::new(0),
