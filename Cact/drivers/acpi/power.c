@@ -214,6 +214,10 @@ static void wake_stage(void)
  * through AcpiEnterSleepState() means the machine never slept. */
 int acpi_enter_sleep(void)
 {
+    /* The last line the console can show before the machine stops: if a
+     * suspend "hangs", this is the point it stopped at (S1/S3 keep the console
+     * dark until wake). */
+    pr_notice("%s: entering S3 (SLP_EN)\n", "power");
     __asm__ __volatile__("cli");
     ACPI_STATUS status = AcpiEnterSleepState(ACPI_STATE_S3);
     s3_entered = 1;
@@ -247,6 +251,7 @@ void acpi_resume_finish(void)
     (void)AcpiLeaveSleepStatePrep(ACPI_STATE_S3);
     (void)AcpiLeaveSleepState(ACPI_STATE_S3);
 
+    pr_notice("%s: machine state restored; interrupts back on\n", "power");
     __asm__ __volatile__("sti");
 }
 
@@ -265,6 +270,8 @@ static int wake_prepare(void)
         pr_err("%s: _PTS/S3 preparation failed\n", "power");
         return -1;
     }
+    pr_notice("%s: wake vector -> 0x%x, _PTS done\n",
+              "power", (unsigned)WAKE_TRAMP_PHYS);
     return 0;
 }
 
@@ -285,10 +292,12 @@ int acpi_suspend(void)
      * lock) while the machine sleeps is never coming back cleanly.  A busy
      * worker is evacuated (its work drained to the master) first; if one
      * cannot be parked, the suspend aborts here with nothing left changed. */
+    pr_notice("%s: parking worker cores\n", "power");
     if (smp_suspend_workers() != 0) {
         pr_warn("%s: a worker core is busy — refusing to suspend\n", "power");
         return -1;
     }
+    pr_notice("%s: all worker cores parked\n", "power");
 
     if (wake_prepare() != 0) {
         smp_resume_workers();
@@ -305,7 +314,7 @@ int acpi_suspend(void)
     smp_resume_workers();
 
     if (s3_resumed) {
-        pr_info("%s: S3 resume complete\n", "power");
+        pr_notice("%s: S3 resume complete\n", "power");
         return 0;
     }
     if (s3_entered)
