@@ -38,7 +38,8 @@
 #define VMCS_IO_BITMAP_B               0x2002u
 #define VMCS_MSR_BITMAP                0x2004u
 #define VMCS_TSC_OFFSET                0x2010u
-#define VMCS_EPT_POINTER               0x2018u
+#define VMCS_VM_FUNCTION_CONTROL       0x2018u
+#define VMCS_EPT_POINTER               0x201Au
 
 #define VMCS_GUEST_PHYSICAL_ADDRESS    0x2400u
 

@@ -11,10 +11,15 @@
 //! from C: `hv_run_guest()` runs the model's guest on demand, from the
 //! `/dev/chv` device (`Cact/kernel/hypervisor/chv.c`).
 //!
-//! Phase H3 builds one hard-coded guest and runs it: 64-bit mode, 4-level
-//! identity paging for the code page, no EPT.  The guest program is
-//! `mov eax, 0xdeadbeef; hlt`; VMLAUNCH runs it and the `hlt` traps back to the
-//! host as VM-exit reason 12.
+//! Phase H3 built one hard-coded guest and ran it with its own 4-level paging
+//! and no second-level translation: 64-bit mode, identity paging for the code
+//! page, `mov eax, 0xdeadbeef; hlt`.  Phase H4 puts the guest under EPT.  The
+//! guest's CR3 now names guest-physical addresses, and the EPT tables built by
+//! `vmx/ept.c` translate them to host frames the guest never names: the guest
+//! stores a magic value through a mapped GPA (the host reads it back out of the
+//! host frame — the translation proof) and then stores through a GPA that EPT
+//! deliberately leaves unmapped, which comes back as an EPT violation
+//! (VM-exit reason 48) carrying that GPA.
 
 #![no_std]
 
@@ -37,12 +42,27 @@ extern "C" {
     fn kalloc() -> *mut u8;
     fn free_page(ptr: *mut u8);
     fn vmm_v2p(ptr: *const u8) -> u64;
+
+    fn vmx_ept_supported() -> i32;
+    fn vmx_ept_build(maps: *const VmxEptMap, count: u32) -> u64;
+    fn vmx_ept_free();
+    fn vmx_ept_invept_single(eptp: u64) -> i32;
+}
+
+/// One EPT leaf mapping, as `vmx/ept.h` declares it: guest-physical page ->
+/// host-physical page with the given permissions.
+#[repr(C)]
+struct VmxEptMap {
+    gpa: u64,
+    hpa: u64,
+    flags: u32,
 }
 
 /* ---- model-specific registers ------------------------------------------ */
 const IA32_VMX_BASIC: u32 = 0x480;
 const IA32_VMX_PINBASED_CTLS: u32 = 0x481;
 const IA32_VMX_PROCBASED_CTLS: u32 = 0x482;
+const IA32_VMX_PROCBASED_CTLS2: u32 = 0x48B;
 const IA32_VMX_EXIT_CTLS: u32 = 0x483;
 const IA32_VMX_ENTRY_CTLS: u32 = 0x484;
 const IA32_EFER: u32 = 0xC0000080;
@@ -66,6 +86,8 @@ const VMCS_HOST_TR_SELECTOR: u64 = 0x0C0C;
 const VMCS_VMCS_LINK_POINTER: u64 = 0x2800;
 const VMCS_GUEST_IA32_EFER: u64 = 0x2806;
 const VMCS_HOST_IA32_EFER: u64 = 0x2C02;
+const VMCS_EPT_POINTER: u64 = 0x201A;
+const VMCS_GUEST_PHYSICAL_ADDRESS: u64 = 0x2400;
 const VMCS_PIN_BASED_VM_EXEC_CTRL: u64 = 0x4000;
 const VMCS_PRIMARY_PROC_BASED_CTRL: u64 = 0x4002;
 const VMCS_EXCEPTION_BITMAP: u64 = 0x4004;
@@ -80,8 +102,11 @@ const VMCS_VM_ENTRY_MSR_LOAD_COUNT: u64 = 0x4014;
 const VMCS_VM_ENTRY_INTR_INFO: u64 = 0x4016;
 const VMCS_VM_ENTRY_EXCEPTION_ERR: u64 = 0x4018;
 const VMCS_VM_ENTRY_INSTRUCTION_LEN: u64 = 0x401A;
+const VMCS_SECONDARY_PROC_BASED_CTRL: u64 = 0x401E;
 const VMCS_VM_INSTRUCTION_ERROR: u64 = 0x4400;
 const VMCS_VM_EXIT_REASON: u64 = 0x4402;
+const VMCS_EXIT_QUALIFICATION: u64 = 0x6400;
+const VMCS_GUEST_LINEAR_ADDRESS: u64 = 0x640A;
 const VMCS_GUEST_ES_LIMIT: u64 = 0x4800;
 const VMCS_GUEST_CS_LIMIT: u64 = 0x4802;
 const VMCS_GUEST_SS_LIMIT: u64 = 0x4804;
@@ -143,6 +168,11 @@ const VMCS_HOST_RIP: u64 = 0x6C16;
  * just halts the logical processor and the host never regains control. */
 const CPU_BASED_HLT_EXITING: u64 = 1 << 7;
 
+/* Primary control bit 31: the secondary controls below take effect at all.
+ * EPT lives in the secondary controls (bit 1). */
+const CPU_BASED_ACTIVATE_SECONDARY_CONTROLS: u64 = 1 << 31;
+const SECONDARY_EXEC_ENABLE_EPT: u64 = 1 << 1;
+
 /* VM-exit controls: the host is in 64-bit mode, and its EFER is reloaded on the
  * way out (the guest ran with its own EFER). */
 const VM_EXIT_HOST_ADDR_SIZE: u64 = 1 << 9;
@@ -157,8 +187,36 @@ const VM_ENTRY_LOAD_IA32_EFER: u64 = 1 << 15;
 const AR_CODE64: u64 = 0xA09B;
 const AR_DATA: u64 = 0xC093;
 
-/* The guest program: `mov eax, 0xdeadbeef; hlt`. */
-const GUEST_CODE: [u8; 6] = [0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xF4];
+/* EPT leaf permissions (mirror vmx/ept.h). */
+const EPT_R: u32 = 0x1;
+const EPT_W: u32 = 0x2;
+const EPT_X: u32 = 0x4;
+
+/*
+ * Guest-physical layout (Phase H4).
+ *
+ * The guest's own 4-level page tables live at GPAs 0x1000-0x4000 and the pages
+ * they name at 0x5000/0x6000.  EPT maps every one of those GPAs to a distinct
+ * host frame, so a guest address of X does NOT reach host physical X — the two
+ * spaces are genuinely separate, which is the whole point of the stage.
+ *
+ * GPA_TRAP is the exception: the guest's page tables name it (so the guest's
+ * own paging walk succeeds) but EPT does not map it, so the access falls
+ * through to an EPT violation with the guest physical address in the VMCS.
+ */
+const GPA_PML4: u64 = 0x1000;
+const GPA_PDPT: u64 = 0x2000;
+const GPA_PD: u64 = 0x3000;
+const GPA_PT: u64 = 0x4000;
+const GPA_CODE: u64 = 0x5000;
+const GPA_DATA: u64 = 0x6000;
+const GPA_TRAP: u64 = 0x9000;
+
+/* Guest virtual addresses the program touches.  All sit in PML4/PDPT index 0
+ * and PDE index 2, so one PT page reaches all three. */
+const GVA_CODE: u64 = 0x40_0000;
+const GVA_DATA: u64 = 0x40_1000;
+const GVA_TRAP: u64 = 0x40_2000;
 
 /* Guest constants.  VMX requires the guest CR4 to carry every CR4_FIXED0 bit —
  * and on a CPU that supports VMX that includes CR4.VMXE — plus PAE for a
@@ -166,6 +224,9 @@ const GUEST_CODE: [u8; 6] = [0xB8, 0xEF, 0xBE, 0xAD, 0xDE, 0xF4];
 const GUEST_CR0: u64 = 0x8000_0031; // PE | ET | NE | PG
 const GUEST_CR4: u64 = 0x2020;      // PAE | VMXE
 const GUEST_EFER: u64 = 0x500;      // LME | LMA
+
+/* The magic the guest stores and the host checks for. */
+const GUEST_MAGIC: u32 = 0xdead_beef;
 
 /* The exit reason the last handled VM exit reported. */
 static mut EXIT_REASON: u64 = 0;
@@ -178,23 +239,58 @@ static mut VMW_FAIL_FIELD: u64 = 0;
 struct HostStack([u8; 16384]);
 static mut HOST_STACK: HostStack = HostStack([0; 16384]);
 
-/// Print `tag` followed by `value` as `0x%016x` and a newline — `printk` is
-/// printf-style, which a `no_std` crate cannot call variadically, so the model
-/// formats numbers itself.
-unsafe fn print_tag_hex(tag: *const c_char, value: u64) {
-    // SAFETY: `tag` is a static NUL-terminated literal.
-    unsafe { printk(tag) };
-    let mut buf = [0u8; 20];
-    buf[0] = b'0';
-    buf[1] = b'x';
-    for i in 0..16 {
-        let nib = ((value >> (60 - i * 4)) & 0xF) as u8;
-        buf[2 + i] = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+/// Append `bytes` to `buf` at `*n`, never overrunning the reserved tail.
+unsafe fn put(buf: &mut [u8; 256], n: &mut usize, bytes: &[u8]) {
+    for &b in bytes {
+        if *n < 254 {
+            buf[*n] = b;
+            *n += 1;
+        }
     }
-    buf[18] = b'\n';
-    buf[19] = 0;
-    // SAFETY: `buf` is a valid NUL-terminated buffer for the call.
-    unsafe { printk(buf.as_ptr() as *const c_char) };
+}
+
+/// Emit one console line at NOTICE level, ending in a newline.  `label` is
+/// printed first, then — when `value` is given — `0x%016x`, then `text`.
+///
+/// The level matters: the kernel raises the console log level to NOTICE once
+/// userspace init is launched, so an unlevelled `printk` (KERN_INFO) stops
+/// reaching the console/COM1 and lands in /dev/kmsg only.  These stage markers
+/// are exactly what a headless run greps for, so they ride at NOTICE.  `printk`
+/// is printf-style and this crate cannot call it variadically, so the line is
+/// assembled here.
+unsafe fn notice_line(label: &str, text: &str, value: Option<u64>) {
+    let mut buf = [0u8; 256];
+    let mut n = 0usize;
+    // SAFETY: `put` stays within `buf`; the final NUL is written past `n`.
+    unsafe {
+        put(&mut buf, &mut n, &[0x01, b'5']); // KERN_NOTICE: SOH + '5'
+        put(&mut buf, &mut n, label.as_bytes());
+        if let Some(v) = value {
+            put(&mut buf, &mut n, b"0x");
+            let mut hex = [0u8; 16];
+            for (i, slot) in hex.iter_mut().enumerate() {
+                let nib = ((v >> (60 - i * 4)) & 0xF) as u8;
+                *slot = if nib < 10 { b'0' + nib } else { b'a' + nib - 10 };
+            }
+            put(&mut buf, &mut n, &hex);
+        }
+        put(&mut buf, &mut n, text.as_bytes());
+        buf[n] = b'\n';
+        buf[n + 1] = 0;
+        printk(buf.as_ptr() as *const c_char);
+    }
+}
+
+/// A NOTICE-level console line (newline appended).
+unsafe fn notice(text: &str) {
+    // SAFETY: forwards to the guarded builder.
+    unsafe { notice_line("", text, None) };
+}
+
+/// `label` followed by `value` as `0x%016x`, at NOTICE level.
+unsafe fn notice_hex(label: &str, value: u64) {
+    // SAFETY: forwards to the guarded builder.
+    unsafe { notice_line(label, "", Some(value)) };
 }
 
 /// Zero a freshly `kalloc`'d page (`kalloc` does not guarantee zeroed frames).
@@ -282,7 +378,7 @@ pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
     // time; every pointer comes from kalloc.
     unsafe {
         if vmx_host_enable() != 0 {
-            printk(c"hv: no VT-x host mode — guest run skipped\n".as_ptr());
+            notice("hv: no VT-x host mode — guest run skipped");
             return -1;
         }
         let rc = run_guest();
@@ -295,43 +391,133 @@ pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
     }
 }
 
-/// Build the VMCS for one hard-coded guest and run it.  Returns 0 once the
-/// guest's `hlt` trapped back to us.
+/// VM-exit reasons this model handles (Intel SDM Vol. 3C, Appendix C).
+const EXIT_HLT: u64 = 12;
+const EXIT_EPT_VIOLATION: u64 = 48;
+
+/// Copy `bytes` into the code page at `at`, advancing it.
+unsafe fn emit(code: *mut u8, at: &mut usize, bytes: &[u8]) {
+    for &b in bytes {
+        // SAFETY: the caller keeps `at` within the code page.
+        unsafe { core::ptr::write_volatile(code.add(*at), b) };
+        *at += 1;
+    }
+}
+
+/// Write one guest page-table entry.
+unsafe fn pte(table: *mut u8, index: usize, value: u64) {
+    // SAFETY: `table` is a live page and `index` is within its 512 entries.
+    unsafe { core::ptr::write_volatile((table as *mut u64).add(index), value) };
+}
+
+/// The guest program (Phase H4):
+///   mov eax, 0xdeadbeef
+///   mov [GVA_DATA], eax     ; mapped: EPT translates it, guest continues
+///   mov [GVA_TRAP], eax     ; guest paging maps it, EPT does not -> exit 48
+///   hlt                     ; not reached while the trap stays in place
+///
+/// The absolute `mov` uses the SIB/no-base form (`89 04 25 disp32`), which is
+/// absolute in 64-bit mode and needs no address-size prefix for a sub-4 GiB
+/// address.  The stores are emitted from the GVA constants so code and layout
+/// cannot drift apart.
+unsafe fn emit_guest_program(code: *mut u8) {
+    let mut at = 0usize;
+    // SAFETY: `code` is a live page; every write stays inside it.
+    unsafe {
+        emit(code, &mut at, &[0xB8, 0xEF, 0xBE, 0xAD, 0xDE]); // mov eax, magic
+        emit(code, &mut at, &[0x89, 0x04, 0x25]);             // mov [disp32], eax
+        emit(code, &mut at, &(GVA_DATA as u32).to_le_bytes());
+        emit(code, &mut at, &[0x89, 0x04, 0x25]);
+        emit(code, &mut at, &(GVA_TRAP as u32).to_le_bytes());
+        emit(code, &mut at, &[0xF4]);                          // hlt
+    }
+}
+
+/// The guest's own 4-level page tables: one PT page reaches all three GVAs
+/// (they share PML4/PDPT index 0 and PDE index 2).  Entries name *GPAs*, which
+/// is what EPT then translates — including the trap GPA, which EPT leaves out.
+unsafe fn build_guest_tables(pml4: *mut u8, pdpt: *mut u8, pd: *mut u8, pt: *mut u8) {
+    let idx = |va: u64, shift: u32| ((va >> shift) & 0x1FF) as usize;
+    // SAFETY: all four arguments are live pages.
+    unsafe {
+        pte(pml4, idx(GVA_CODE, 39), GPA_PDPT | 0x3); // present | writable
+        pte(pdpt, idx(GVA_CODE, 30), GPA_PD | 0x3);
+        pte(pd, idx(GVA_CODE, 21), GPA_PT | 0x3);
+        pte(pt, idx(GVA_CODE, 12), GPA_CODE | 0x3);
+        pte(pt, idx(GVA_DATA, 12), GPA_DATA | 0x3);
+        pte(pt, idx(GVA_TRAP, 12), GPA_TRAP | 0x3);
+    }
+}
+
+/// Build the VMCS for the model's one guest and run it under EPT (Phase H4).
+/// Returns 0 once the guest has exited.
+///
+/// The guest stores a magic value through a mapped GPA; the host then reads it
+/// back out of the *host* frame that GPA names — which is the proof that EPT
+/// translated the access (the guest never named that physical address).  The
+/// second store goes through a GPA the guest's own paging maps but EPT does
+/// not, and must come back as an EPT violation carrying that GPA.
 unsafe fn run_guest() -> i32 {
     // SAFETY: every step below is guarded; pointers are live kalloc pages.
     unsafe {
         let vmcs = page();
         let code = page();
+        let data = page();
         let pml4 = page();
         let pdpt = page();
         let pd = page();
         let pt = page();
         let tss = page();
-        let guest_pages = [vmcs, code, pml4, pdpt, pd, pt, tss];
+        let guest_pages = [vmcs, code, data, pml4, pdpt, pd, pt, tss];
         if guest_pages.iter().any(|p| p.is_null()) {
-            printk(c"hv: guest launch: out of memory\n".as_ptr());
+            notice("hv: guest launch: out of memory");
             free_guest_pages(&guest_pages);
             return 1;
         }
 
         let vmcs_phys = vmm_v2p(vmcs);
         let code_phys = vmm_v2p(code);
+        let data_phys = vmm_v2p(data);
         let pml4_phys = vmm_v2p(pml4);
         let pdpt_phys = vmm_v2p(pdpt);
         let pd_phys = vmm_v2p(pd);
         let pt_phys = vmm_v2p(pt);
         let tss_phys = vmm_v2p(tss);
 
-        /* Guest code + a 64-bit identity page table for the code page. */
-        for (i, b) in GUEST_CODE.iter().enumerate() {
-            core::ptr::write_volatile(code.add(i), *b);
+        emit_guest_program(code);
+        build_guest_tables(pml4, pdpt, pd, pt);
+
+        /* EPT: one mapping per guest page, each GPA naming a distinct host
+         * frame.  GPA_TRAP is deliberately absent — that is the violation. */
+        if vmx_ept_supported() == 0 {
+            notice("hv: guest run needs EPT, unavailable on this CPU");
+            free_guest_pages(&guest_pages);
+            return 1;
         }
-        core::ptr::write_volatile(pml4 as *mut u64, pdpt_phys | 0x3);
-        core::ptr::write_volatile(pdpt as *mut u64, pd_phys | 0x3);
-        let pde_i = ((code_phys >> 21) & 0x1FF) as usize;
-        let pte_i = ((code_phys >> 12) & 0x1FF) as usize;
-        core::ptr::write_volatile((pd as *mut u64).add(pde_i), pt_phys | 0x3);
-        core::ptr::write_volatile((pt as *mut u64).add(pte_i), code_phys | 0x3);
+        let rwx = EPT_R | EPT_W | EPT_X;
+        let maps = [
+            VmxEptMap { gpa: GPA_PML4, hpa: pml4_phys, flags: rwx },
+            VmxEptMap { gpa: GPA_PDPT, hpa: pdpt_phys, flags: rwx },
+            VmxEptMap { gpa: GPA_PD,   hpa: pd_phys,   flags: rwx },
+            VmxEptMap { gpa: GPA_PT,   hpa: pt_phys,   flags: rwx },
+            VmxEptMap { gpa: GPA_CODE, hpa: code_phys, flags: rwx },
+            VmxEptMap { gpa: GPA_DATA, hpa: data_phys, flags: rwx },
+        ];
+        let eptp = vmx_ept_build(maps.as_ptr(), maps.len() as u32);
+        if eptp == 0 {
+            notice("hv: guest launch: EPT build failed");
+            free_guest_pages(&guest_pages);
+            return 1;
+        }
+        /* A fresh EPTP is not enough on its own: EPT translations are tagged by
+         * EPTP, and kalloc can hand the same physical PML4 page (hence the same
+         * EPTP) back to the next run.  Flush before the launch. */
+        if vmx_ept_invept_single(eptp) != 0 {
+            notice("hv: guest launch: INVEPT failed");
+            vmx_ept_free();
+            free_guest_pages(&guest_pages);
+            return 1;
+        }
 
         /* VMCS region: revision identifier first, then make it current. */
         core::ptr::write_volatile(
@@ -339,19 +525,35 @@ unsafe fn run_guest() -> i32 {
             (cact_rdmsr(IA32_VMX_BASIC) & 0x7FFF_FFFF) as u32,
         );
         if cact_vmclear(vmcs_phys) != 0 {
-            printk(c"hv: guest launch: VMCLEAR failed\n".as_ptr());
+            notice("hv: guest launch: VMCLEAR failed");
+            vmx_ept_free();
             free_guest_pages(&guest_pages);
             return 1;
         }
         if cact_vmptrld(vmcs_phys) != 0 {
-            printk(c"hv: guest launch: VMPTRLD failed\n".as_ptr());
+            notice("hv: guest launch: VMPTRLD failed");
+            vmx_ept_free();
             free_guest_pages(&guest_pages);
             return 1;
         }
 
-        /* Controls. */
+        /* Controls.  EPT rides in the secondary controls, which only take
+         * effect once the primary "activate secondary controls" bit is set. */
         vmw(VMCS_PIN_BASED_VM_EXEC_CTRL, ctl(IA32_VMX_PINBASED_CTLS, 0));
-        vmw(VMCS_PRIMARY_PROC_BASED_CTRL, ctl(IA32_VMX_PROCBASED_CTLS, CPU_BASED_HLT_EXITING));
+        vmw(VMCS_PRIMARY_PROC_BASED_CTRL, ctl(
+            IA32_VMX_PROCBASED_CTLS,
+            CPU_BASED_HLT_EXITING | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
+        ));
+        let secondary = ctl(IA32_VMX_PROCBASED_CTLS2, SECONDARY_EXEC_ENABLE_EPT);
+        if secondary & SECONDARY_EXEC_ENABLE_EPT == 0 {
+            notice("hv: guest launch: CPU refused the enable-EPT control");
+            let _ = cact_vmclear(vmcs_phys);
+            vmx_ept_free();
+            free_guest_pages(&guest_pages);
+            return 1;
+        }
+        vmw(VMCS_SECONDARY_PROC_BASED_CTRL, secondary);
+        vmw(VMCS_EPT_POINTER, eptp);
         vmw(VMCS_VM_EXIT_CTRLS, ctl(IA32_VMX_EXIT_CTLS, VM_EXIT_HOST_ADDR_SIZE | VM_EXIT_LOAD_IA32_EFER));
         vmw(VMCS_VM_ENTRY_CTRLS, ctl(IA32_VMX_ENTRY_CTLS, VM_ENTRY_IA32E_MODE | VM_ENTRY_LOAD_IA32_EFER));
         vmw(VMCS_EXCEPTION_BITMAP, 0);
@@ -397,11 +599,11 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_HOST_RIP, cact_vmx_exit_stub_addr());
         vmw(VMCS_HOST_IA32_EFER, cact_rdmsr(IA32_EFER));
 
-        /* Guest state: 64-bit mode, identity mapped. */
+        /* Guest state: 64-bit mode, its CR3 naming a GPA, not a host frame. */
         vmw(VMCS_VMCS_LINK_POINTER, 0xFFFF_FFFF_FFFF_FFFF);
         vmw(VMCS_GUEST_IA32_EFER, GUEST_EFER);
         vmw(VMCS_GUEST_CR0, GUEST_CR0);
-        vmw(VMCS_GUEST_CR3, pml4_phys);
+        vmw(VMCS_GUEST_CR3, GPA_PML4);
         vmw(VMCS_GUEST_CR4, GUEST_CR4);
 
         vmw(VMCS_GUEST_ES_SELECTOR, 0x10);
@@ -452,7 +654,7 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_GUEST_PENDING_DBG_EXC, 0);
         vmw(VMCS_GUEST_DR7, 0x400);
         vmw(VMCS_GUEST_RSP, 0);
-        vmw(VMCS_GUEST_RIP, code_phys);
+        vmw(VMCS_GUEST_RIP, GVA_CODE);
         vmw(VMCS_GUEST_RFLAGS, 0x2);
 
         /* The guest owns CR0/CR4, so no CR access causes an exit. */
@@ -462,29 +664,54 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_CR4_READ_SHADOW, GUEST_CR4);
 
         if VMW_FAIL_FIELD != 0 {
-            printk(c"hv: guest launch: VMCS write rejected, field ".as_ptr());
-            print_tag_hex(c"".as_ptr(), VMW_FAIL_FIELD);
+            notice_hex("hv: guest launch: VMCS write rejected, field ", VMW_FAIL_FIELD);
         }
 
         /* Launch.  On success this only returns after the guest has exited. */
         if cact_vmx_launch() != 0 {
             let mut err = 0u64;
             let _ = cact_vmread(VMCS_VM_INSTRUCTION_ERROR, &mut err);
-            printk(c"hv: guest launch: VMLAUNCH failed, instruction error ".as_ptr());
-            print_tag_hex(c"".as_ptr(), err);
+            notice_hex("hv: guest launch: VMLAUNCH failed, instruction error ", err);
+            let _ = cact_vmclear(vmcs_phys);
+            vmx_ept_free();
             free_guest_pages(&guest_pages);
             return 1;
         }
 
-        printk(c"hv: guest ran, VM-exit reason ".as_ptr());
-        print_tag_hex(c"".as_ptr(), EXIT_REASON);
-        if EXIT_REASON == 12 {
-            printk(c"hv: guest hlt -> exit reason 12 (HLT), launch OK\n".as_ptr());
+        let mut qual = 0u64;
+        let mut gpa = 0u64;
+        let mut gla = 0u64;
+        let _ = cact_vmread(VMCS_EXIT_QUALIFICATION, &mut qual);
+        let _ = cact_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &mut gpa);
+        let _ = cact_vmread(VMCS_GUEST_LINEAR_ADDRESS, &mut gla);
+
+        notice_hex("hv: guest ran, VM-exit reason ", EXIT_REASON);
+
+        /* The store through the mapped GPA must have landed in the *host* frame
+         * that GPA names — the guest never wrote that physical address, so
+         * reading the magic back is the translation proof. */
+        let stored = core::ptr::read_volatile(data as *const u32);
+        if stored == GUEST_MAGIC {
+            notice("hv: EPT translation OK — mapped-GPA store reached the host frame");
+        } else {
+            notice_hex("hv: EPT translation FAILED — host frame holds ", stored as u64);
         }
 
-        // Drop the VMCS and hand every guest page back: a run must not leak its
-        // pages, and the next run builds a fresh VMCS.
+        if EXIT_REASON == EXIT_EPT_VIOLATION {
+            notice_hex("hv: EPT violation: guest-physical ", gpa);
+            notice_hex("hv:   qualification ", qual);
+            notice_hex("hv:   guest-linear  ", gla);
+            if gpa == GPA_TRAP && (qual & 0x2) != 0 {
+                notice("hv: EPT violation names the unmapped trap GPA on a write, as intended");
+            }
+        } else if EXIT_REASON == EXIT_HLT {
+            notice("hv: guest hlt -> exit reason 12 (HLT)");
+        }
+
+        // Drop the VMCS and hand every page back: a run must not leak its own
+        // pages, the EPT tables, or the VMCS.
         let _ = cact_vmclear(vmcs_phys);
+        vmx_ept_free();
         free_guest_pages(&guest_pages);
         0
     }

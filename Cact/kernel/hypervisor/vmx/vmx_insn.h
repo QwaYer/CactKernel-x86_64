@@ -95,4 +95,21 @@ static inline int vmresume(void) {
     return f;
 }
 
+/* INVEPT takes the invalidation type in a register and a 16-byte-aligned
+ * 128-bit descriptor in memory; like most instructions ATT reverses the
+ * Intel operand order, so the descriptor comes first:
+ * `invept <mem>, <reg>` for Intel's `INVEPT <reg>, <mem>`.  The descriptor's
+ * first qword is the EPTP for a single-context invalidation (ignored, and zero,
+ * for the all-context type). */
+struct vmx_invept_desc { uint64_t eptp; uint64_t reserved; } __attribute__((aligned(16)));
+
+static inline int invept(uint64_t type, const struct vmx_invept_desc *desc) {
+    uint8_t f;
+    __asm__ __volatile__("invept %[desc], %[type]; setna %[f]"
+        : [f] "=qm"(f)
+        : [type] "r"(type), [desc] "m"(*desc)
+        : "cc", "memory");
+    return f;
+}
+
 #endif
