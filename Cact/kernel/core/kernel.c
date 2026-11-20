@@ -246,16 +246,6 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     slab_init();                    // Slab allocator for kernel objects
     pr_info("%s: kernel object caches ready\n", "slab");
 
-    // Hypervisor host mode bring-up (Phase H2): enter and immediately leave VMX
-    // root (Intel) and/or SVM host mode (AMD).  Runs once the heap exists — the
-    // VMXON and VM_HSAVE_PA regions come from kalloc().  A probe only: the
-    // kernel keeps running outside host mode afterwards.
-    hypervisor_host_init();
-
-    // The Rust half of the hypervisor (crate cact_hv): the vCPU model.  Called
-    // from C so the C <-> Rust boundary has one explicit entry point.
-    hv_selftest();
-
     // Program fast-syscall MSRs now that GDT and IDT are ready.
     // IA32_SYSENTER_ESP is updated per-task by the scheduler on every switch.
     cpu_syscall_commit();

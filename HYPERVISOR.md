@@ -79,8 +79,9 @@ VMXON/VMXOFF-регионы, `VMREAD`/`VMWRITE`/`VMCLEAR`/`VMPTRLD`; для SVM 
 VMCB (`VMSAVE`/`VMLOAD`, `CLGI`/`STGI`), host-mode enable (`EFER.SVME`,
 `VM_HSAVE_PA`). Включение/выключение на каждом ядре.
 
-**Milestone:** self-test «вошли в режим и вышли» на BSP и AP; после выхода
-система продолжает работать (SMP, syscalls, сеть — без регрессий).
+**Milestone:** вход/выход в режим хоста на BSP и AP; после выхода система
+продолжает работать (SMP, syscalls, сеть — без регрессий). Boot самопроверку не
+запускает: host mode входит по требованию (см. H3, `/dev/chv`).
 
 ### Фаза H3 — минимальный гость и VM-exit
 
@@ -102,6 +103,19 @@ identity-карта кодовой страницы 4-уровневыми та�
 Два бага в C/asm пойманы тем же прогоном: `vmread`/`vmwrite` — порядок
 операндов AT&T (`vmwrite value, field`) и ширина приёмника `setcc` (байт, не
 `int`).
+
+**2026-11-20 — boot-self-test убран, запуск гостя — по требованию.** Ядро
+больше не входит в VMX на загрузке: старый `hv_selftest()` делал VMXON +
+`VMLAUNCH`, но **не вызывал `VMXOFF`**, поэтому ядро оставалось в VMX-root
+(`CR4.VMXE`, живой VMCS, `CR0.NE`) на всю жизнь и на первом ring-3-таске тихо
+сбрасывалось — VMX abort по архитектуре не доставляет исключения, отсюда
+«triple fault без вывода». Теперь `hv_run_guest()` входит в host mode, запускает
+гостя и **всегда выходит обратно**; дёргает его нода **`/dev/chv`**
+(`CACT_CHVCTL_CAPS` / `CACT_CHVCTL_RUN`). На этом пути вылез второй баг:
+VM-entry отвергал host-state (`vm-instruction error 8`) — ядро оставляет `DS/ES`
+с RPL=3 после возврата в ring-3, а VMX валидирует host-селекторы (в IA-32e они
+игнорируются, но проверяются). Host-селекторы DS/ES/FS/GS публикуются kernel
+data-селектором; базы по-прежнему из снимка.
 
 ### Фаза H4 — EPT / NPT
 
@@ -135,7 +149,9 @@ identity-карта гостевого физического пространс
 `ioctl`-ABI (`Cact/kernel/hypervisor/uapi/`): create/destroy VM, create vCPU,
 set/get regs, memory regions (mmap в гостя), run (с возвратом exit-reason),
 inject interrupt. Файловые узлы `/dev/vmm`/`/dev/vmm<N>`; загрузка гостевого
-образа юзерспейсом.
+образа юзерспейсом. Начало положено: нода **`/dev/chv`**
+(`CACT_CHVCTL_CAPS`/`RUN`, `Cact/kernel/hypervisor/chv.c`) уже в дереве;
+per-VM-узлы `/dev/vmm<N>` — следующий шаг.
 
 **Milestone:** userspace-программа создаёт ВМ, загружает гостя, делает `run` и
 обрабатывает exit-ы (полный цикл без участия ядра-инициатора).

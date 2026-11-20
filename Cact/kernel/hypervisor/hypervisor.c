@@ -51,25 +51,6 @@ int hypervisor_init(void) {
     return 0;
 }
 
-int hypervisor_host_init(void) {
-    if (g_caps & HV_CAP_VMX) {
-        if (vmx_host_self_test() == 0)
-            pr_info("%s: vmx host mode: entered VMX root and left cleanly\n", "hv");
-        else
-            pr_warn("%s: vmx host mode unavailable (VMXON failed — nested virt off?)\n",
-                    "hv");
-    }
-
-    if (g_caps & HV_CAP_SVM) {
-        if (svm_host_self_test() == 0)
-            pr_info("%s: svm host mode: entered SVM host and left cleanly\n", "hv");
-        else
-            pr_warn("%s: svm host mode unavailable (firmware disabled SVM)\n", "hv");
-    }
-
-    return 0;
-}
-
 uint32_t hv_capabilities(void) { return g_caps; }
 
 int hv_running_as_guest(void) { return g_guest; }

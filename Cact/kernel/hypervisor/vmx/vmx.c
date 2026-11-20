@@ -101,13 +101,3 @@ void vmx_host_disable(void) {
     cpu_write_cr4(g_cr4_saved);
     cpu_write_cr0(g_cr0_saved);
 }
-
-int vmx_host_self_test(void) {
-    if (vmx_host_enable() != 0)
-        return -1;
-    /* VMXON success *is* the proof we are in VMX root operation — the
-     * instruction has no architectural read-back.  Leave again so the rest of
-     * the kernel keeps running outside VMX operation. */
-    vmx_host_disable();
-    return 0;
-}

@@ -30,6 +30,7 @@
 //   CACT_EPOLLCTL_*   0x3C00 ioctl on /dev/epoll        -> epoll_create
 //   CACT_WLANCTL_*    0x3F00 ioctl on /dev/wlan0        -> raw 802.11 radio
 //   CACT_MQCTL_*      0x4000 ioctl on a message-queue fd -> POSIX message queues
+//   CACT_CHVCTL_*     0x4100 ioctl on /dev/chv        -> Cact hypervisor (caps, guest run)
 // Device-specific ioctls (FB/TIOC, ...) keep their legacy numbers and are
 // routed straight to the node's own ops; they must stay outside 0x3000-0x3FFF.
 //
@@ -964,5 +965,29 @@ typedef struct cact_mq_msg {
 typedef struct cact_mq_notify_arg {
     uint32_t signo;
 } cact_mq_notify_arg_t;
+
+// ===========================================================================
+// /dev/chv — the Cact hypervisor control node.  RANGE 0x4100.
+//
+// The device is the userspace door to the hypervisor model (`cact_hv`); the
+// kernel no longer probes VT-x/AMD-V at boot.  A run enters host mode, launches
+// the model's guest, and leaves host mode again before returning.
+//
+//   `caps` is the OR of the host's hardware virtualization extensions:
+//     bit 0 — VT-x (Intel), bit 1 — AMD-V.  Zero means neither is usable.
+// ===========================================================================
+#define CACT_CHVCTL_CAPS 0x4101  // arg=cact_chv_caps_t* (out)
+#define CACT_CHVCTL_RUN  0x4102  // arg=cact_chv_run_arg_t* (out: status + exit reason)
+
+typedef struct cact_chv_caps {
+    uint32_t caps;              // out: 1 = VT-x, 2 = AMD-V; 0 = none
+    uint32_t running_as_guest;  // out: non-zero when CactOS itself is a guest
+    uint32_t reserved;          // 0
+} cact_chv_caps_t;
+
+typedef struct cact_chv_run_arg {
+    uint64_t exit_reason;       // out: the VM-exit reason of the last run (12 = HLT)
+    uint32_t status;            // out: 0 = the guest ran, non-zero = it did not
+} cact_chv_run_arg_t;
 
 #endif

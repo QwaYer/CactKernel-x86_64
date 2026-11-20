@@ -31,8 +31,4 @@ int  vmx_host_enable(void);
 /* Leave VMX root operation on the calling CPU and release the VMXON region. */
 void vmx_host_disable(void);
 
-/* Enable, prove we entered VMX root, and leave again — a boot-time probe that
- * leaves the CPU exactly as it found it.  Returns 0 on success. */
-int  vmx_host_self_test(void);
-
 #endif

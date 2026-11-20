@@ -634,6 +634,7 @@ Syscall dispatch uses **`SYSCALL`/`SYSRET`** (long mode has no `SYSENTER`, and t
 | **`CACT_PTYCTL_*`** 0x3E00 | ioctl on `/dev/ptmx` — pts number, slave lock |
 | **`CACT_WLANCTL_*`** 0x3F00 | ioctl on `/dev/wlan0` — 802.11 scan/BSS list, connect/disconnect, TK/GTK install, EAPOL in/out, status |
 | **`CACT_MQCTL_*`** 0x4000 | ioctl on a message-queue fd — POSIX queue init/send/receive/getattr/setattr/notify |
+| **`CACT_CHVCTL_*`** 0x4100 | ioctl on `/dev/chv` — the Cact hypervisor: `caps` (VT-x/AMD-V), `run` (launch the model's guest on demand) |
 | **DRM uapi** | ioctl on `/dev/dri/cardN` / `renderDN` — the DRM ioctls (`'d'` = 0x64 magic; the `drm_mode_*` band `0xA0`–`0xCE`, vendor commands from `DRM_COMMAND_BASE` 0x40 up) — see **Graphics — DRM / KMS** |
 
 Identity/process info: `/proc/self/info`; cwd: `/proc/self/cwd`; time: `/proc/time` `/proc/wallclock`; `uname`: `/proc/uname` `/proc/<pid>`.

@@ -8,7 +8,8 @@
 //! where the VM/vCPU model, the VMCS construction and the VM-exit dispatch
 //! live.  The crate is an rlib pulled into `kernel.bin` by
 //! `Cact/kernel/kernel_rust`, and its `#[no_mangle]` entry points are called
-//! from C (`hypervisor_host_init()` -> `hv_selftest()`).
+//! from C: `hv_run_guest()` runs the model's guest on demand, from the
+//! `/dev/chv` device (`Cact/kernel/hypervisor/chv.c`).
 //!
 //! Phase H3 builds one hard-coded guest and runs it: 64-bit mode, 4-level
 //! identity paging for the code page, no EPT.  The guest program is
@@ -31,8 +32,10 @@ extern "C" {
     fn cact_vmx_exit_stub_addr() -> u64;
     fn cact_cpu_state_snapshot(out: *mut u64);
     fn vmx_host_enable() -> i32;
+    fn vmx_host_disable();
 
     fn kalloc() -> *mut u8;
+    fn free_page(ptr: *mut u8);
     fn vmm_v2p(ptr: *const u8) -> u64;
 }
 
@@ -236,6 +239,17 @@ unsafe fn page() -> *mut u8 {
     p
 }
 
+/// Free the guest's pages (the VMCS included).  A page that is still a live
+/// VMCS must not go back to the allocator, so callers VMCLEAR it first.
+unsafe fn free_guest_pages(pages: &[*mut u8]) {
+    for &p in pages {
+        if !p.is_null() {
+            // SAFETY: every non-null entry is a live kalloc page owned here.
+            unsafe { free_page(p) };
+        }
+    }
+}
+
 /// VM-exit entry, called by the C/asm stub with RDI = the saved-GPR frame.
 #[no_mangle]
 pub extern "C" fn hv_vmx_exit_entry(_regs: *mut u64) -> i32 {
@@ -248,16 +262,36 @@ pub extern "C" fn hv_vmx_exit_entry(_regs: *mut u64) -> i32 {
     0
 }
 
-/// Boot-time probe, called from the C hypervisor core.
+/// Run the model's guest on demand; called from the `/dev/chv` device.
+///
+/// Enters VMX root, builds the VMCS, launches the guest, records the VM-exit
+/// reason in `*out_exit_reason`, and — this is the part the old boot probe got
+/// wrong — leaves VMX root again before returning.  A kernel that stays in VMX
+/// root keeps CR4.VMXE/CR0.NE set and a live VMCS for the rest of its life, and
+/// the next thing that trips VMX (a VM-entry/exit abort) is a silent machine
+/// reset no handler can see.
+///
+/// Returns 0 once the guest has exited, -1 when VT-x host mode is unavailable.
 #[no_mangle]
-pub extern "C" fn hv_selftest() -> i32 {
-    // SAFETY: single-threaded early boot; every pointer comes from kalloc.
+pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
+    if !out_exit_reason.is_null() {
+        // SAFETY: the caller passes a valid `u64` for the exit reason.
+        unsafe { *out_exit_reason = 0 };
+    }
+    // SAFETY: the /dev/chv run mutex serialises runs, so one VMCS is live at a
+    // time; every pointer comes from kalloc.
     unsafe {
         if vmx_host_enable() != 0 {
-            printk(c"hv: vmx host mode unavailable, guest launch skipped\n".as_ptr());
-            return 1;
+            printk(c"hv: no VT-x host mode — guest run skipped\n".as_ptr());
+            return -1;
         }
-        run_guest()
+        let rc = run_guest();
+        // Always leave VMX root, whatever the launch did.
+        vmx_host_disable();
+        if !out_exit_reason.is_null() {
+            *out_exit_reason = EXIT_REASON;
+        }
+        rc
     }
 }
 
@@ -273,10 +307,10 @@ unsafe fn run_guest() -> i32 {
         let pd = page();
         let pt = page();
         let tss = page();
-        if vmcs.is_null() || code.is_null() || pml4.is_null() || pdpt.is_null()
-            || pd.is_null() || pt.is_null() || tss.is_null()
-        {
+        let guest_pages = [vmcs, code, pml4, pdpt, pd, pt, tss];
+        if guest_pages.iter().any(|p| p.is_null()) {
             printk(c"hv: guest launch: out of memory\n".as_ptr());
+            free_guest_pages(&guest_pages);
             return 1;
         }
 
@@ -306,10 +340,12 @@ unsafe fn run_guest() -> i32 {
         );
         if cact_vmclear(vmcs_phys) != 0 {
             printk(c"hv: guest launch: VMCLEAR failed\n".as_ptr());
+            free_guest_pages(&guest_pages);
             return 1;
         }
         if cact_vmptrld(vmcs_phys) != 0 {
             printk(c"hv: guest launch: VMPTRLD failed\n".as_ptr());
+            free_guest_pages(&guest_pages);
             return 1;
         }
 
@@ -337,12 +373,19 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_HOST_CR0, host[12]);
         vmw(VMCS_HOST_CR3, host[13]);
         vmw(VMCS_HOST_CR4, host[14]);
-        vmw(VMCS_HOST_ES_SELECTOR, host[3]);
+        /* Host DS/ES/FS/GS selectors are ignored in IA-32e (only their bases
+         * matter) but VMX still validates them, and the kernel leaves DS/ES
+         * holding whatever the last ring-3 return loaded — RPL=3, which VM
+         * entry rejects with "invalid host-state field(s)" (vm-instruction
+         * error 8).  Publish the kernel's data selector for all four; the
+         * bases below are still taken from the snapshot. */
+        let kernel_data = host[1];   /* SS — the kernel data selector (RPL 0) */
+        vmw(VMCS_HOST_ES_SELECTOR, kernel_data);
         vmw(VMCS_HOST_CS_SELECTOR, host[0]);
         vmw(VMCS_HOST_SS_SELECTOR, host[1]);
-        vmw(VMCS_HOST_DS_SELECTOR, host[2]);
-        vmw(VMCS_HOST_FS_SELECTOR, host[4]);
-        vmw(VMCS_HOST_GS_SELECTOR, host[5]);
+        vmw(VMCS_HOST_DS_SELECTOR, kernel_data);
+        vmw(VMCS_HOST_FS_SELECTOR, kernel_data);
+        vmw(VMCS_HOST_GS_SELECTOR, kernel_data);
         vmw(VMCS_HOST_TR_SELECTOR, host[6]);
         vmw(VMCS_HOST_FS_BASE, host[7]);
         vmw(VMCS_HOST_GS_BASE, host[8]);
@@ -429,6 +472,7 @@ unsafe fn run_guest() -> i32 {
             let _ = cact_vmread(VMCS_VM_INSTRUCTION_ERROR, &mut err);
             printk(c"hv: guest launch: VMLAUNCH failed, instruction error ".as_ptr());
             print_tag_hex(c"".as_ptr(), err);
+            free_guest_pages(&guest_pages);
             return 1;
         }
 
@@ -437,6 +481,11 @@ unsafe fn run_guest() -> i32 {
         if EXIT_REASON == 12 {
             printk(c"hv: guest hlt -> exit reason 12 (HLT), launch OK\n".as_ptr());
         }
+
+        // Drop the VMCS and hand every guest page back: a run must not leak its
+        // pages, and the next run builds a fresh VMCS.
+        let _ = cact_vmclear(vmcs_phys);
+        free_guest_pages(&guest_pages);
         0
     }
 }

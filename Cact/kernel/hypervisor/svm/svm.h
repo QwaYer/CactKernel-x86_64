@@ -31,7 +31,4 @@ int  svm_host_enable(void);
 /* Leave SVM host mode on the calling CPU and release the host-save page. */
 void svm_host_disable(void);
 
-/* Enable, confirm EFER.SVME took, and leave again — a boot-time probe. */
-int  svm_host_self_test(void);
-
 #endif

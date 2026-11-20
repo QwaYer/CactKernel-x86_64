@@ -9,6 +9,7 @@
 #include "kernel.h"
 #include "pci_driver.h"
 #include "tty.h"
+#include "hypervisor.h"
 
 // Global devfs state
 static vfs_node_t    devfs_root;
@@ -441,6 +442,7 @@ void devfs_init(void) {
     devfs_devices_init();
     devfs_services_init();
     devfs_crypto_init();
+    chv_devfs_init();
 
     // Per-process nodes (/dev/tty, /dev/stdin|stdout|stderr, /dev/fd, /dev/core)
     // and the pty namespace (/dev/ptmx, /dev/pts).

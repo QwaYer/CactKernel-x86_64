@@ -33,14 +33,6 @@
  */
 int hypervisor_init(void);
 
-/*
- * Bring-up probe for host mode (Phase H2): enter and immediately leave VMX root
- * (Intel) and/or SVM host mode (AMD) on the boot CPU.  Runs once the kernel
- * heap exists, since the VMXON and VM_HSAVE_PA regions come from `kalloc()`.
- * Always returns 0; a backend that cannot be entered is logged and skipped.
- */
-int hypervisor_host_init(void);
-
 /* OR of HV_CAP_* as detected at boot. */
 uint32_t hv_capabilities(void);
 
@@ -48,9 +40,16 @@ uint32_t hv_capabilities(void);
  * where a backend is only usable from the "nested" half of the stack. */
 int hv_running_as_guest(void);
 
-/* The Rust vCPU model's boot probe (crate `cact_hv`, linked via kernel_rust).
- * Phase H3.2 turns this into the guest launch; it is declared here so the C
- * boot path can reach it. */
-int hv_selftest(void);
+/* The Rust vCPU model's guest-run entry point (crate `cact_hv`, linked via
+ * kernel_rust).  Enter VMX root, launch the model's guest, leave VMX root
+ * again, and report the VM-exit reason through `out_exit_reason` (caller-owned,
+ * may be NULL).  Returns 0 once the guest exited, -1 when host mode is
+ * unavailable.  Called on demand from the `/dev/chv` device — never at boot. */
+int hv_run_guest(uint64_t *out_exit_reason);
+
+/* Register the /dev/chv ("Cact Hypervisor") character device.  Called from
+ * devfs_init() once the VFS is up; returns 0 on success, -1 if the node could
+ * not be registered. */
+int chv_devfs_init(void);
 
 #endif

@@ -80,14 +80,3 @@ void svm_host_disable(void) {
     free_page(g_hsave_area);
     g_hsave_area = NULL;
 }
-
-int svm_host_self_test(void) {
-    if (svm_host_enable() != 0)
-        return -1;
-    if (!(cpu_rdmsr(AMD_EFER) & AMD_EFER_SVME)) {
-        svm_host_disable();
-        return -1;
-    }
-    svm_host_disable();
-    return 0;
-}
