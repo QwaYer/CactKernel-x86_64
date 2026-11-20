@@ -186,7 +186,7 @@ static int _sys_umount_ioctl(char *target) {
     return rr;
 }
 
-static void _do_reboot(uint32_t cmd) {
+static int _do_reboot(uint32_t cmd) {
     int pid = current_task ? current_task->pid : 0;
 
     switch (cmd) {
@@ -200,12 +200,19 @@ static void _do_reboot(uint32_t cmd) {
         acpi_halt();
         break;
 
+    case CACT_REBOOT_SUSPEND:
+        /* Unlike the one-way paths, this one comes back: the call returns when
+         * the machine wakes (or reports why it did not suspend). */
+        pr_notice("%s: suspend requested by pid %d\n", "power", pid);
+        return acpi_suspend();
+
     case CACT_REBOOT_RESTART:
     default:
         pr_notice("%s: reboot requested by pid %d\n", "power", pid);
         acpi_reboot();
         break;
     }
+    return 0;   // unreachable: the paths above never return
 }
 
 static int _sys_ioctl(void *p, uint32_t cmd, void *arg) {
@@ -231,8 +238,7 @@ static int _sys_ioctl(void *p, uint32_t cmd, void *arg) {
         int r = _root_only();
         if (r) return r;
 
-        _do_reboot(c);
-        return 0;   // never reached
+        return _do_reboot(c);
     }
 
     case CACT_SYSCTL_MODULE_LOAD: {

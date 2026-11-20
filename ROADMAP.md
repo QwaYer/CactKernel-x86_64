@@ -138,8 +138,9 @@ physical core is parked / offlined as one unit (`core_mask`).  The host unit
 tests cover the topology decoder and the placement policy.  **Deep C-states are
 entered with `MONITOR`/`MWAIT` only when the platform's `_CST` exposes a
 fixed-hardware (`0x7F`) MWAIT hint** (`drivers/acpi/cstates.c`); without that a
-core idles at C1 (`HLT`).  **S3 suspend/resume is removed in 2.0.0 (poweroff and
-reboot remain).**
+core idles at C1 (`HLT`).  **S3 suspend/resume works again (`acpi_suspend()`,
+`CACT_REBOOT_SUSPEND`): the wake trampoline returns the machine through long
+mode and the CPU, LAPIC tick, timebase and ACPI GPEs are rebuilt.**
 
 **Closed in 2.0.0 (Step B).** The scheduler keeps a **ready queue per logical
 CPU**. A task is enqueued on the core that makes it runnable; an idle core pulls

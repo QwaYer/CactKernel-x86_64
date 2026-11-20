@@ -380,7 +380,13 @@ deeply each core may idle:
 - **SMP bring-up** (`Cact/kernel/smp`, `smp.rs`) wakes the worker cores, each of
   which loads its per-CPU GDT/TSS — the boot core keeps every global scheduler
   lock until `sched_boot_complete()`, after which workers dispatch tasks.
-- **S3 suspend/resume was removed in 2.0.0**; poweroff, reboot and halt remain.
+- **S3 suspend/resume** is back: worker cores are parked first, then
+  `acpi_suspend()` points FACS at the wake trampoline (`drivers/acpi/wake.asm`,
+  staged on the identity-mapped `0xA000` page) and enters S3; the wake path
+  re-enters it in real mode, rebuilds long mode and resumes in place, then
+  re-establishes the CPU, LAPIC tick, timebase and ACPI GPEs and re-onlines the
+  workers.  Requested through `CACT_SYSCTL_REBOOT` with `CACT_REBOOT_SUSPEND`
+  (root); poweroff, reboot and halt remain one-way.
 
 ---
 
@@ -400,7 +406,7 @@ deeply each core may idle:
 | **DMI / SMBIOS** | Board identity (`Cact/drivers/dmi`): entry point from the **EFI configuration table** under UEFI, else the **F-segment** scan; 64-bit (`_SM3_`) and 32-bit (`_SM_`) entry points | Feeds the board quirks and `/proc/dmi` |
 | **Quirks** | One blacklist table (`Cact/drivers/quirks`): board rows matched on SMBIOS vendor/product (HP 290 G1 `_OSC`) and PCI rows matched on vendor/device ID (Intel 300-series xHCI) → quirk bits | The only file that grows when a new machine needs a workaround |
 | **Network** | **virtio-net** (`.cctk`); in-kernel **802.11** engine (`cact80211`) for Wi-Fi radios | Default NIC under QEMU; other NICs packaged as **`.cctk`** (e.g. Marvell **Yukon**); **RT3070** USB Wi-Fi via the `RT2800USB` module, whose driver is now a *dumb radio* |
-| **ACPI** | ACPICA — RSDP, MADT, FADT, APIC table parsing, `_CST` C-states, power (S5/reset) | Since 2.0 |
+| **ACPI** | ACPICA — RSDP, MADT, FADT, APIC table parsing, `_CST` C-states, power (S5/reset) and **S3 suspend/resume** | Since 2.0 |
 
 All out-of-tree PCI drivers register their interrupt through the kernel's **`msidev_register()`** — **MSI-X** when the device offers it, otherwise a single **MSI** message — instead of PIC IRQ lines; per-machine exceptions live under `Cact/drivers/quirks/`. Extra PCI drivers live in **`*-for-Cact-x86_32`** repositories; **`ninja -C CactOS-x86_32/build-meson drivers`** (workspace integrator) installs them into **`LocalRepoCactOS-x86_32/lib/`** and packs **`cctkfs.img`**.
 
