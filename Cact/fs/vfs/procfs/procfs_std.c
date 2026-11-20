@@ -10,6 +10,8 @@
 #include "slab.h"
 #include "shm.h"
 #include "swap.h"
+#include "pagecache.h"
+#include "hypervisor.h"
 #include "klib.h"
 #include "task.h"
 #include "version.h"
@@ -300,16 +302,30 @@ int _apic_read(uint64_t off, uint32_t size, char *buf) {
     return (int)size;
 }
 
+// Bytes of kernel stacks held by live tasks, in kB.  Every task and thread
+// owns one KERNEL_STACK_SIZE stack, allocated from the kernel heap when the
+// task is created — so this is a heap figure, not a PMM one, and `free` does
+// not fold it into its `used` calculation.
+static uint32_t _kernel_stack_kb(void) {
+    uint32_t tasks = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    for (struct task_struct *t = task_list_head; t; t = t->next)
+        tasks++;
+    irq_spinlock_release(&scheduler_lock);
+    return (uint32_t)((uint64_t)tasks * KERNEL_STACK_SIZE / 1024u);
+}
+
 // /proc/meminfo generator
 //
 // Physical accounting comes from the PMM (frames), not from the fixed kernel
 // heap window: MemTotal is the usable RAM the boot map handed to the PMM minus
-// the hard-reserved low 32 MB (kernel image + static page tables), MemFree is
-// the PMM free list plus the unused part of the kernel heap window, and MemUsed
-// is the remainder.  The kernel heap / slab / shm figures are reported
-// separately so `free` can show them without disturbing the physical numbers.
+// the hard-reserved low region (RESERVED_END — kernel image, static page tables
+// and the low user VA region), MemFree is the PMM free list plus the unused part
+// of the kernel heap window, and MemUsed is the remainder.  The kernel heap /
+// slab / shm / page-cache figures are reported separately so `free` can show
+// them without disturbing the physical numbers.
 int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
-    char tmp[768]; int p = 0;
+    char tmp[1280]; int p = 0;
 
     const uint32_t frame_kb    = PAGE_SIZE / 1024u;      /* 4 KiB per frame      */
     const uint32_t reserved_kb = RESERVED_END / 1024u;   /* low-memory reserve */
@@ -336,10 +352,51 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
     uint32_t slab_kb  = slab_total_bytes() / 1024u;
     uint32_t shmem_kb = shm_total_bytes()  / 1024u;
 
+    /* CactOS has a single block/page cache, not Linux's split of a raw block
+     * buffer cache and a file page cache: pc_get_page() caches block-device
+     * blocks for every consumer, filesystems included.  It is therefore
+     * reported as Cached and Buffers stays 0 — the same "buff/cache" column in
+     * `free`, but named for the cache it actually is. */
+    pc_stats_t pc        = pc_get_stats();
+    uint32_t   cached_kb = pc.cached_bytes / 1024u;
+    uint32_t   dirty_kb  = pc.dirty_bytes  / 1024u;
+
     swap_stats_t sw = swap_get_stats();
     uint32_t swap_total_kb = sw.total_slots * frame_kb;
     uint32_t swap_used_kb  = sw.used_slots  * frame_kb;
     uint32_t swap_free_kb  = swap_total_kb > swap_used_kb ? swap_total_kb - swap_used_kb : 0;
+
+    uint32_t kernel_stack_kb = _kernel_stack_kb();
+
+    /* Resident user pages and page tables: walk each distinct address space
+     * once (threads share a page map), then add the kernel's own tables and the
+     * hypervisor's.  The walk is held under scheduler_lock so a task cannot be
+     * freed underneath it. */
+    uint32_t anon_pages = 0, mapped_pages = 0, ptable_pages = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    for (struct task_struct *t = task_list_head; t; t = t->next) {
+        if (!t->page_directory) continue;
+        int dup = 0;
+        for (struct task_struct *u = task_list_head; u && u != t; u = u->next)
+            if (u->page_directory == t->page_directory) { dup = 1; break; }
+        if (dup) continue;
+        vmm_user_stats_t us = vmm_user_stats(t->page_directory, t->proc);
+        anon_pages   += us.anon_pages;
+        mapped_pages += us.file_pages;
+        ptable_pages += us.ptable_pages;
+    }
+    irq_spinlock_release(&scheduler_lock);
+    uint32_t hv_tables = hv_ptable_pages();
+    ptable_pages += vmm_kernel_ptable_pages() + hv_tables;
+
+    /* CactOS-specific figures: the boot reservation the PMM hard-reserves, the
+     * RAM it manages, the fixed page-cache pool, and the hypervisor's live
+     * translation tables and guest RAM.  None of these map onto a Linux meminfo
+     * field. */
+    uint32_t mem_reserved_kb  = pmm_reserved_end() / 1024u;
+    uint32_t pmm_managed_kb   = pmm_total_kb;
+    uint32_t hv_table_kb      = hv_tables * frame_kb;
+    uint32_t guest_mem_kb     = hv_guest_memory_pages() * frame_kb;
 
     #define _A(s) { const char *_s=(s); while(*_s) tmp[p++]=*_s++; }
     #define _N(n) { char _b[16]; snprintf(_b, sizeof(_b), "%d", (int)(n)); _A(_b); }
@@ -349,15 +406,27 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
     _A("MemAvailable:    "); _N(mem_avail_kb); _A(" kB\n");
     _A("MemUsed:         "); _N(mem_used_kb);  _A(" kB\n");
     _A("Buffers:         0 kB\n");
-    _A("Cached:          0 kB\n");
+    _A("Cached:          "); _N(cached_kb);    _A(" kB\n");
+    _A("SwapCached:      0 kB\n");
+    _A("Dirty:           "); _N(dirty_kb);     _A(" kB\n");
+    _A("Writeback:       0 kB\n");
+    _A("AnonPages:       "); _N(anon_pages   * frame_kb); _A(" kB\n");
+    _A("Mapped:          "); _N(mapped_pages * frame_kb); _A(" kB\n");
     _A("Slab:            "); _N(slab_kb);      _A(" kB\n");
     _A("Shmem:           "); _N(shmem_kb);     _A(" kB\n");
+    _A("KernelStack:     "); _N(kernel_stack_kb); _A(" kB\n");
+    _A("PageTables:      "); _N(ptable_pages * frame_kb); _A(" kB\n");
     _A("SwapTotal:       "); _N(swap_total_kb); _A(" kB\n");
     _A("SwapFree:        "); _N(swap_free_kb);  _A(" kB\n");
     _A("SwapUsed:        "); _N(swap_used_kb);  _A(" kB\n");
     _A("HeapTotal:       "); _N(heap_total_kb); _A(" kB\n");
     _A("HeapFree:        "); _N(heap_free_kb);  _A(" kB\n");
     _A("HeapUsed:        "); _N(heap_used_kb);  _A(" kB\n");
+    _A("MemReserved:     "); _N(mem_reserved_kb); _A(" kB\n");
+    _A("PmmManaged:      "); _N(pmm_managed_kb);  _A(" kB\n");
+    _A("PageCachePool:   "); _N(pc.pool_pages);    _A(" pages\n");
+    _A("HypervisorTables:"); _A(" "); _N(hv_table_kb); _A(" kB\n");
+    _A("GuestMemory:     "); _N(guest_mem_kb);  _A(" kB\n");
 
     #undef _A
     #undef _N
