@@ -56,7 +56,7 @@ void pci_driver_match(pci_device_t *dev);
 // Debug: print all registered drivers.
 void pci_driver_dump(void);
 
-// /dev/modinfo text: pci_register_driver() structs + pci_enumerate() devices
-int pci_driver_modinfo_read(uint64_t off, uint32_t size, char *buf);
+// /proc/pci text: pci_register_driver() structs + pci_enumerate() devices
+int pci_proc_read(uint64_t off, uint32_t size, char *buf);
 
 #endif

@@ -64,7 +64,7 @@ extern uint32_t      pci_device_count;
 // Walk the PCI bus hierarchy and populate pci_device_list
 void          pci_enumerate(void);
 
-// N-th PCI function in pci_device_list (same 1-based index as [pci N] in /dev/modinfo)
+// N-th PCI function in pci_device_list (same 1-based index as [pci N] in /proc/pci)
 pci_device_t *pci_device_by_index(int index_1based);
 
 #endif

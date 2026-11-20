@@ -44,5 +44,6 @@ int _mounts_read(uint64_t off, uint32_t size, char *buf);
 int _modules_read(uint64_t off, uint32_t size, char *buf);
 int _usb_read(uint64_t off, uint32_t size, char *buf);
 int _dmi_read(uint64_t off, uint32_t size, char *buf);
+int _pci_read(uint64_t off, uint32_t size, char *buf);
 
 #endif

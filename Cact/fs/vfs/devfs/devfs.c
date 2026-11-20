@@ -7,7 +7,6 @@
 #include "memory.h"
 #include "klib.h"
 #include "kernel.h"
-#include "pci_driver.h"
 #include "tty.h"
 #include "hypervisor.h"
 
@@ -15,9 +14,6 @@
 static vfs_node_t    devfs_root;
 static devfs_entry_t *dev_list   = 0;    // singly-linked list of registered devices
 static int            devfs_ready = 0;
-
-// /dev/modinfo — virtual file, PCI driver list (see pci_driver_modinfo_read)
-static vfs_node_t modinfo_node;
 
 // Ready-made nodes published straight into the root (per-process nodes, /dev/fd
 // and /dev/pts directories, ...).  See devfs_add_node().
@@ -124,7 +120,6 @@ static vfs_ops_t group_ops = {
 // devfs root directory ops
 static vfs_node_t *_root_walk(vfs_node_t *dir, const char *name) {
     (void)dir;
-    if (streq(name, "modinfo")) return &modinfo_node;
     for (devfs_entry_t *e = dev_list; e; e = e->next)
         if (!e->parent && streq(e->name, name))
             return &e->node;
@@ -138,12 +133,7 @@ static vfs_dirent_t _root_de;
 
 static vfs_dirent_t *_root_readdir(vfs_node_t *dir, uint32_t index) {
     (void)dir;
-    if (index == 0) {
-        strlcpy(_root_de.name, "modinfo", 128);
-        _root_de.inode = 0;
-        return &_root_de;
-    }
-    uint32_t i = 1;
+    uint32_t i = 0;
     for (devfs_entry_t *e = dev_list; e; e = e->next) {
         if (e->parent) continue;
         if (i++ == index) {
@@ -164,7 +154,6 @@ static vfs_dirent_t *_root_readdir(vfs_node_t *dir, uint32_t index) {
 
 static void _root_listdir(vfs_node_t *dir) {
     (void)dir;
-    printk("  modinfo\n");
     for (devfs_entry_t *e = dev_list; e; e = e->next) {
         if (e->parent) continue;
         printk("  ");
@@ -185,13 +174,6 @@ static vfs_ops_t root_ops = {
     .readdir = _root_readdir,
     .listdir = _root_listdir,
 };
-
-static int _modinfo_read(vfs_node_t *node, uint64_t off, uint32_t size, char *buf) {
-    (void)node;
-    return pci_driver_modinfo_read(off, size, buf);
-}
-
-static vfs_ops_t modinfo_ops = { .read = _modinfo_read };
 
 // populate a devfs_entry_t with its single VFS node
 static void _fill_entry(devfs_entry_t *e) {
@@ -422,11 +404,6 @@ void devfs_init(void) {
     devfs_root.type = VFS_DIRECTORY;
     devfs_root.ops  = &root_ops;
 
-    memset(&modinfo_node, 0, sizeof(vfs_node_t));
-    strlcpy(modinfo_node.name, "modinfo", 128);
-    modinfo_node.type = VFS_FILE;
-    modinfo_node.ops  = &modinfo_ops;
-
     // Linux-convention group directories that hold no device of their own:
     // /dev/shm (shared memory) and /dev/mqueue (POSIX message queues).  They
     // exist so the usual paths resolve and a tmpfs/queue filesystem can be
@@ -452,7 +429,7 @@ void devfs_init(void) {
     for (devfs_entry_t *e = dev_list; e; e = e->next)
         if (!e->parent) ndev++;
 
-    pr_info("%s: root ready (%u node(s) in /dev + %d proc node(s) + /dev/modinfo)\n",
+    pr_info("%s: root ready (%u node(s) in /dev + %d proc node(s))\n",
             "devfs", ndev, extra_count);
 
     devfs_ready = 1;

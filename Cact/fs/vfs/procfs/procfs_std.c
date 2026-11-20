@@ -27,6 +27,7 @@
 #include "usb_mod.h"
 #include "usb.h"
 #include "dmi.h"
+#include "pci_driver.h"
 
 // Mutable host name reported by /proc/uname (default "cact").  Bounded to the
 // kernel's 65-byte utsname field.
@@ -650,4 +651,11 @@ int _usb_read(uint64_t off, uint32_t size, char *buf) {
     if (size > len - off) size = (uint32_t)(len - off);
     memcpy(buf, tmp + off, size);
     return (int)size;
+}
+
+// /proc/pci generator — PCI overview: the pci_register_driver() structs (A) and
+// every function found by pci_enumerate() (B).  lspci formats section B; the
+// modunload [pci N] index and lsmod's driver fallback use section A.
+int _pci_read(uint64_t off, uint32_t size, char *buf) {
+    return pci_proc_read(off, size, buf);
 }

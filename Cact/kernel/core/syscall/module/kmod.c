@@ -58,7 +58,7 @@ static int user_str_all_decimal(const char *name) {
     return 1;
 }
 
-static int parse_pci_modinfo_index(const char *name, int *out_idx) {
+static int parse_pci_index(const char *name, int *out_idx) {
     int v = 0;
     const char *p;
     for (p = name; *p; p++) {
@@ -74,7 +74,7 @@ static int parse_pci_modinfo_index(const char *name, int *out_idx) {
 // Resident PCI module slots.  A .cctk PCI module occupies one slot for as long
 // as it stays loaded; the slot owns the pci_driver_t handed to
 // pci_register_driver() plus the module path it has to keep alive (module_path
-// is read back on lazy load and printed by /dev/modinfo).  Several modules can
+// is read back on lazy load and printed by /proc/pci).  Several modules can
 // be resident at once — this replaces the single "usermod" slot, which made the
 // second modload fail with EBUSY.  KMOD_MAX_SLOTS is shared with the
 // /proc/modules listing in kmod.h.
@@ -296,7 +296,7 @@ int kmod_unload_kname(const char *name) {
 
     if (user_str_all_decimal(name)) {
         int idx;
-        if (parse_pci_modinfo_index(name, &idx) != 0) {
+        if (parse_pci_index(name, &idx) != 0) {
             pr_warn("kmod: invalid pci index '%s'", name);
             return -EINVAL;
         }
