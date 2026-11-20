@@ -18,7 +18,9 @@ int smp_cpu_online(uint32_t cpu);
  * back afterwards.  smp_suspend_workers() returns 0 when all workers are
  * parked, -1 when one is busy — in which case nothing is changed and the
  * caller must abort the suspend.  smp_resume_workers() is a no-op when nothing
- * was parked. */
+ * was parked.  A busy worker is drained first, so this works on a loaded
+ * system. */
+void smp_migrate_to_master(void);   /* run the caller on the BSP (S3 prerequisite) */
 int  smp_suspend_workers(void);
 void smp_resume_workers(void);
 

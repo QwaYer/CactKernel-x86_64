@@ -161,6 +161,13 @@ pub extern "C" fn energy_balance_migrate(src: u32, dst: u32, pid: u32) -> i32 {
         return -1;
     }
 
+    // A core being evacuated for an S3 suspend must not receive work: it is on
+    // its way to idle so it can be parked, and handing it a task here would
+    // undo the evacuation.
+    if crate::percpu::is_evacuating(dst as usize) {
+        return -1;
+    }
+
     // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs on
     // the master's tick/idle path, which does not hold it.
     unsafe { irq_spinlock_acquire(&raw mut crate::task::SCHEDULER_LOCK) };

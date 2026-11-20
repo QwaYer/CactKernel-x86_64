@@ -277,9 +277,14 @@ int acpi_suspend(void)
 
     pr_notice("%s: suspend to RAM (S3)\n", "power");
 
-    /* Park the worker cores first: a core that is executing (or holding a
-     * scheduler lock) while the machine sleeps is never coming back cleanly.
-     * A busy worker aborts the suspend here, with nothing left changed. */
+    /* The sleep must run on the master core: the BSP is the only core that
+     * wakes from S3, and only the BSP can park (INIT) the worker cores. */
+    smp_migrate_to_master();
+
+    /* Park the worker cores: a core that is executing (or holding a scheduler
+     * lock) while the machine sleeps is never coming back cleanly.  A busy
+     * worker is evacuated (its work drained to the master) first; if one
+     * cannot be parked, the suspend aborts here with nothing left changed. */
     if (smp_suspend_workers() != 0) {
         pr_warn("%s: a worker core is busy — refusing to suspend\n", "power");
         return -1;

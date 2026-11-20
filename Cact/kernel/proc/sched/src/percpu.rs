@@ -61,6 +61,15 @@ pub struct CpuSched {
     pub park_request: AtomicU32,
     /// Core -> master: "I am parked and hold no lock" (safe to INIT now).
     pub parked: AtomicU32,
+    /// Master -> core: "stop running tasks and hand your runnable work to the
+    /// master", set ahead of an S3 suspend so a *busy* core can still be
+    /// parked.  Honoured in `mlfq::schedule`.  0 = normal, 1 = evacuating.
+    pub evacuate: AtomicU32,
+    /// Core -> itself: the CPU this core's outgoing task should be enqueued on
+    /// instead of this one, so it continues elsewhere (used to re-home the S3
+    /// suspend caller on the master).  `MIGRATE_NONE` when none; consumed by
+    /// `mlfq::sched_park_prev`.
+    pub migrate_target: AtomicU32,
 }
 
 // `syscall_entries.asm` hardcodes these two offsets; keep them in sync.
@@ -73,6 +82,9 @@ const _: () = assert!(core::mem::offset_of!(CpuSched, fpu_scratch) == 16);
 pub const PARK_NONE: u32 = 0;
 pub const PARK_REQ: u32 = 1;
 pub const PARK_CLAIMED: u32 = 2;
+
+/// "No pending re-home" value for `CpuSched::migrate_target`.
+pub const MIGRATE_NONE: u32 = u32::MAX;
 
 impl CpuSched {
     const fn new() -> Self {
@@ -87,6 +99,8 @@ impl CpuSched {
             schedule_in_progress: AtomicU32::new(0),
             park_request: AtomicU32::new(PARK_NONE),
             parked: AtomicU32::new(0),
+            evacuate: AtomicU32::new(0),
+            migrate_target: AtomicU32::new(MIGRATE_NONE),
         }
     }
 }
@@ -206,6 +220,52 @@ pub fn clear_park_state(cpu: usize) {
     unsafe { (*slot(cpu)).park_request.store(PARK_NONE, Ordering::Relaxed) };
     // SAFETY: as above.
     unsafe { (*slot(cpu)).parked.store(0, Ordering::Relaxed) };
+}
+
+/// Ask `cpu` to stop running tasks and hand its runnable work to the master,
+/// so it can be parked even on a busy system (used ahead of an S3 suspend).
+/// The core honours the flag in `mlfq::schedule`.
+#[inline]
+pub fn set_evacuate(cpu: usize) {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).evacuate.store(1, Ordering::Release) };
+}
+
+/// Undo [`set_evacuate`] — the core goes back to normal scheduling.
+#[inline]
+pub fn clear_evacuate(cpu: usize) {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).evacuate.store(0, Ordering::Release) };
+}
+
+/// Whether `cpu` has been asked to evacuate (see [`set_evacuate`]).
+#[inline]
+pub fn is_evacuating(cpu: usize) -> bool {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).evacuate.load(Ordering::Acquire) != 0 }
+}
+
+/// Ask `cpu`'s scheduler to re-home the task it is about to switch away from
+/// onto `dst` (see `mlfq::sched_park_prev`).  Set by the task itself, right
+/// before it reschedules.
+#[inline]
+pub fn set_migrate_target(cpu: usize, dst: usize) {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).migrate_target.store(dst as u32, Ordering::Release) };
+}
+
+/// Read-and-clear `cpu`'s pending re-home target (`MIGRATE_NONE` when none).
+#[inline]
+pub fn take_migrate_target(cpu: usize) -> u32 {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).migrate_target.swap(MIGRATE_NONE, Ordering::AcqRel) }
+}
+
+/// Peek at `cpu`'s pending re-home target without clearing it.
+#[inline]
+pub fn migrate_target(cpu: usize) -> u32 {
+    // SAFETY: callers pass `cpu < MAX_CPUS`, so this touches only that CPU's slot.
+    unsafe { (*slot(cpu)).migrate_target.load(Ordering::Acquire) }
 }
 
 /// This CPU's idle task.

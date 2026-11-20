@@ -609,7 +609,10 @@ fn lapic_is_bsp_or_invalid(lapic: u32) -> bool {
 /// for it to report parked, and only then send INIT.  Only an idle core is
 /// asked, and it is asked while no runnable work exists anywhere (any ready
 /// task would be picked up and stolen, so parking with work queued would strand
-/// it); the check runs under `SCHEDULER_LOCK`.
+/// it); the check runs under `SCHEDULER_LOCK`.  The one exception is a core
+/// that is *evacuating* for a suspend: it takes no work by construction
+/// (`mlfq::schedule` drains to the master and idles), so it is safe to park
+/// even with runnable work elsewhere.
 pub fn smp_cpu_offline(cpu: u32) -> i32 {
     if cpu == 0 || (cpu as usize) >= MAX_CPUS {
         return -1;
@@ -626,7 +629,8 @@ pub fn smp_cpu_offline(cpu: u32) -> i32 {
     let idle_task = crate::percpu::cpu_idle(idx);
     let safe = !idle_task.is_null()
         && crate::percpu::cpu_current(idx) == idle_task
-        && crate::mlfq::mlfq_runnable_count() == 0;
+        && (crate::mlfq::mlfq_runnable_count() == 0
+            || crate::percpu::is_evacuating(idx));
     if safe {
         crate::percpu::set_park_request(idx);
     }
@@ -753,13 +757,33 @@ pub fn smp_cpu_online_sipi(cpu: u32) -> i32 {
 /// never be INIT/SIPI-ed — an INIT to the BSP resets the machine.
 static SUSPENDED_WORKERS: AtomicU64 = AtomicU64::new(0);
 
-/// C-facing: physically offline every online worker core ahead of an ACPI S3
-/// suspend, so no core is executing or holding a lock while the machine sleeps.
+/// C-facing: make sure the calling task runs on the master core (0), where an
+/// S3 suspend must execute — the BSP is the only core that wakes from S3, and
+/// only the BSP can park (INIT) the others.
 ///
-/// Returns 0 once every worker is parked, or -1 when one could not be (a busy
-/// core, or runnable work anywhere).  On failure the cores already parked are
-/// brought back, leaving the machine exactly as it was — the caller must abort
-/// the suspend, never continue with some cores down.
+/// A no-op when already there; otherwise the task is re-homed onto core 0 via
+/// the scheduler's migrate hint and reschedules until it lands there.
+#[no_mangle]
+pub extern "C" fn smp_migrate_to_master() {
+    while crate::percpu::this_cpu() != 0 {
+        crate::percpu::set_migrate_target(crate::percpu::this_cpu(), 0);
+        // SAFETY: `schedule` is the scheduler switch routine, called from task
+        // context with no lock held; the pending target re-homes this task on
+        // core 0, where this call returns.
+        unsafe { crate::mlfq::schedule() };
+    }
+}
+
+/// C-facing: park and physically offline every online worker core ahead of an
+/// ACPI S3 suspend, so no core is executing or holding a lock while the machine
+/// sleeps.
+///
+/// A busy core is first asked to *evacuate* — [`evacuate_and_offline`] has it
+/// hand its runnable work to the master and idle — so this works on a loaded
+/// system, not only a quiet one.  Returns 0 once every worker is offline, or -1
+/// when one could not be parked in time; on failure the cores already parked
+/// are brought back, leaving the machine exactly as it was, and the caller must
+/// abort the suspend.
 #[no_mangle]
 pub extern "C" fn smp_suspend_workers() -> i32 {
     let present = energy::energy_core_count_present();
@@ -770,7 +794,7 @@ pub extern "C" fn smp_suspend_workers() -> i32 {
             cpu += 1;
             continue;
         }
-        if smp_cpu_offline(cpu) != 0 {
+        if evacuate_and_offline(cpu) != 0 {
             // Roll back: re-online whatever this call already parked.
             let mut back = 1u32;
             while back < cpu {
@@ -786,6 +810,37 @@ pub extern "C" fn smp_suspend_workers() -> i32 {
     }
     SUSPENDED_WORKERS.store(mask, Ordering::SeqCst);
     0
+}
+
+/// Park and offline worker `cpu`, evacuating it first so a *busy* core can be
+/// taken down.
+///
+/// `percpu::set_evacuate` makes the core's `schedule` drain its runnable work to
+/// the master and step off the CPU; within one quantum it therefore reaches its
+/// idle context and the regular park-at-a-lock-free-point protocol can run.
+/// The loop retries `smp_cpu_offline` until the core is idle and parked (it
+/// refuses while the core still runs a task), and gives up after ~2 s.  Returns
+/// 0 on success, -1 on timeout.
+fn evacuate_and_offline(cpu: u32) -> i32 {
+    let idx = cpu as usize;
+    crate::percpu::set_evacuate(idx);
+
+    let mut waits = 0;
+    let rc = loop {
+        if smp_cpu_offline(cpu) == 0 {
+            break 0;
+        }
+        if waits >= 400 {           // ~2 s at 5 ms per step
+            break -1;
+        }
+        delay_ms(5);
+        waits += 1;
+    };
+
+    // The core is now INIT-ed and halted (or we gave up); either way it must
+    // schedule normally again before it can be brought back up.
+    crate::percpu::clear_evacuate(idx);
+    rc
 }
 
 /// C-facing: re-online the worker cores parked by [`smp_suspend_workers`] after

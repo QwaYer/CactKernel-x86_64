@@ -157,14 +157,25 @@ pub(crate) fn mlfq_highest_runnable_level(cpu: usize) -> Option<u32> {
 ///
 /// `task` must be null or a live `TaskStruct`; the caller must hold `SCHEDULER_LOCK`.
 pub unsafe fn mlfq_enqueue_locked(task: *mut TaskStruct, level: u32) {
-    if task.is_null() {
-        return;
-    }
     // The task joins the *calling* core's own runqueue.  That is the core that
     // made it runnable (or that it was already running on), so it is the
     // cheapest place to run it, and a peer that has nothing locally can still
     // pull it (see `pick_next_task`), so the choice never strands the task.
-    let cpu = crate::percpu::this_cpu();
+    // SAFETY: forwards this function's contract (live `task`, lock held).
+    unsafe { mlfq_enqueue_on_locked(task, level, crate::percpu::this_cpu()) };
+}
+
+/// Like [`mlfq_enqueue_locked`] but places the task on `cpu`'s runqueue rather
+/// than the calling core's — used to re-home a task (e.g. the suspend caller
+/// onto the master).
+///
+/// # Safety
+///
+/// `task` must be null or a live `TaskStruct`; the caller must hold `SCHEDULER_LOCK`.
+pub unsafe fn mlfq_enqueue_on_locked(task: *mut TaskStruct, level: u32, cpu: usize) {
+    if task.is_null() {
+        return;
+    }
     // SAFETY: `mlfq_state_mut` yields the static `MLFQ_STATE`; the caller holds `SCHEDULER_LOCK`
     // (see # Safety), so exclusive access is sound.
     let s = unsafe { &mut *mlfq_state_mut() };
@@ -285,6 +296,26 @@ pub unsafe fn mlfq_migrate_locked(src: u32, dst: u32, pid: u32) -> u32 {
     0
 }
 
+/// Move every ready task on `src`'s runqueues to `dst`'s, one call to
+/// [`mlfq_migrate_locked`] at a time.  Used to evacuate a core the master is
+/// about to park for a suspend.
+///
+/// # Safety
+///
+/// The caller must hold `SCHEDULER_LOCK`.
+unsafe fn mlfq_drain_locked(src: usize, dst: usize) {
+    if src == dst || src >= MAX_CPUS || dst >= MAX_CPUS {
+        return;
+    }
+    loop {
+        // SAFETY: both indices were bounds-checked above and the caller holds the lock.
+        let moved = unsafe { mlfq_migrate_locked(src as u32, dst as u32, 0) };
+        if moved == 0 {
+            break;
+        }
+    }
+}
+
 /// Next task to run on `cpu`: its own runqueue first, then — when it has
 /// nothing locally — the busiest peer's queue (work stealing), so an idle core
 /// never leaves runnable work behind on another core.  Levels are scanned from
@@ -361,6 +392,26 @@ fn do_priority_boost() {
     }
 }
 
+/// Enqueue a task the scheduler just switched away from: on its pending
+/// re-home target when one is set (a migration), otherwise on the calling
+/// core's own runqueue.
+///
+/// # Safety
+///
+/// `prev` must be a live `TaskStruct` and the caller must hold `SCHEDULER_LOCK`.
+unsafe fn park_enqueue(prev: *mut TaskStruct, migrate_to: u32) {
+    // SAFETY: `prev` is live and the caller holds the lock (see # Safety).
+    let prev_pri = unsafe { (*prev).priority };
+    if migrate_to != crate::percpu::MIGRATE_NONE {
+        // SAFETY: `prev` is live and the lock is held; `migrate_to` is a core
+        // index the migrating task set for itself.
+        unsafe { mlfq_enqueue_on_locked(prev, prev_pri, migrate_to as usize) };
+    } else {
+        // SAFETY: `prev` is live and the lock is held.
+        unsafe { mlfq_enqueue_locked(prev, prev_pri) };
+    }
+}
+
 /// Park the task `switch_to` just switched away from.
 ///
 /// This is the second half of `schedule()`: the outgoing task is made runnable
@@ -389,15 +440,16 @@ pub unsafe extern "C" fn sched_park_prev(prev: *mut TaskStruct) {
 
     // SAFETY: `prev` is the live task just switched away from (see # Safety); the lock is held.
     let state = unsafe { (*prev).state };
+    // A pending re-home (see `percpu::set_migrate_target`) makes the outgoing
+    // task land on another core's queue instead of this one.
+    let migrate_to = crate::percpu::take_migrate_target(crate::percpu::this_cpu());
     match state {
         TaskState::Running => {
             // Preempted while still runnable: put it back on a ready queue.
             // SAFETY: `prev` is live.
             unsafe { (*prev).state = TaskState::Ready };
-            // SAFETY: `prev` is live.
-            let prev_pri = unsafe { (*prev).priority };
             // SAFETY: `prev` is live and the lock is held.
-            unsafe { mlfq_enqueue_locked(prev, prev_pri) };
+            unsafe { park_enqueue(prev, migrate_to) };
         }
         TaskState::Sleeping => {
             // A task is in a blocking structure only after it has parked.  A
@@ -429,10 +481,8 @@ pub unsafe extern "C" fn sched_park_prev(prev: *mut TaskStruct) {
         TaskState::Ready => {
             // A waker made us runnable while we were still on the CPU and
             // deliberately did not queue us; we are parked now, so queue here.
-            // SAFETY: `prev` is live.
-            let prev_pri = unsafe { (*prev).priority };
             // SAFETY: `prev` is live and the lock is held.
-            unsafe { mlfq_enqueue_locked(prev, prev_pri) };
+            unsafe { park_enqueue(prev, migrate_to) };
         }
         TaskState::Zombie => {}
     }
@@ -518,7 +568,28 @@ pub unsafe extern "C" fn schedule() {
 
     wake_expired_sleepers();
 
-    let mut next = pick_next_task(crate::percpu::this_cpu());
+    // A core the master is evacuating (ahead of an S3 suspend) hands its
+    // runnable work to the master and steps off the CPU instead of picking a
+    // task: no local pick and — by skipping `pick_next_task` — no steal, so a
+    // leaving core never takes new work.  The task it was running is parked by
+    // `sched_park_prev` and drained on the next pass; this is what lets a
+    // *busy* core reach idle and be parked.
+    let me = crate::percpu::this_cpu();
+    let evacuating = crate::percpu::is_evacuating(me);
+    // A task that asked to be re-homed (the S3 suspend caller moving onto the
+    // master) also steps off this CPU: `sched_park_prev` enqueues it on its
+    // target, and the next task runs here.
+    let migrating = crate::percpu::migrate_target(me) != crate::percpu::MIGRATE_NONE;
+
+    let mut next = if evacuating {
+        // SAFETY: the caller holds `SCHEDULER_LOCK`.
+        unsafe { mlfq_drain_locked(me, 0) };
+        crate::percpu::idle()
+    } else if migrating {
+        crate::percpu::idle()
+    } else {
+        pick_next_task(me)
+    };
 
     if next.is_null() {
         // Nothing else is runnable.  A still-Running `prev` simply keeps the
