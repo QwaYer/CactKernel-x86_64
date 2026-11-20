@@ -168,6 +168,24 @@ void pc_init(void) {
     pr_info("%s: ready (%u-page cache)\n", "pagecache", (unsigned)PC_MAX_PAGES);
 }
 
+// Current pool accounting.  A slot counts as cached once it is USED (its block
+// buffer has been allocated or is about to be); its size is the block size the
+// slot was filled for.
+pc_stats_t pc_get_stats(void) {
+    pc_stats_t s = { 0, 0, 0, PC_MAX_PAGES };
+    irq_spinlock_acquire(&pc_lock);
+    for (int i = 0; i < PC_MAX_PAGES; i++) {
+        struct page *p = &pool[i];
+        if (!(p->flags & PC_FLAG_USED)) continue;
+        uint32_t bs = p->block_size ? p->block_size : PC_MAX_BLOCK_SIZE;
+        s.used_pages++;
+        s.cached_bytes += bs;
+        if (p->flags & PC_FLAG_DIRTY) s.dirty_bytes += bs;
+    }
+    irq_spinlock_release(&pc_lock);
+    return s;
+}
+
 // Get a page from cache; on miss, read from disk into a new or evicted slot
 uint8_t *pc_get_page(uint32_t dev, uint32_t block_no, uint32_t block_size) {
     irq_spinlock_acquire(&pc_lock);

@@ -18,8 +18,19 @@
 
 struct page;
 
+// Snapshot of the page cache pool, reported by /proc/meminfo as Cached/Dirty.
+typedef struct {
+    uint32_t cached_bytes;   // bytes held by occupied (USED) slots
+    uint32_t dirty_bytes;    // part of cached_bytes awaiting writeback
+    uint32_t used_pages;     // occupied slots
+    uint32_t pool_pages;     // fixed pool size (PC_MAX_PAGES)
+} pc_stats_t;
+
 // Initialise page cache pool, hash table, and LRU
 void pc_init(void);
+
+// Current pool accounting (house style: swap_get_stats()).
+pc_stats_t pc_get_stats(void);
 
 // Get a page from cache; on miss, read from disk
 uint8_t *pc_get_page(uint32_t dev, uint32_t block_no, uint32_t block_size);
