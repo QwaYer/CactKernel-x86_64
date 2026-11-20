@@ -14,7 +14,7 @@
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::energy;
 use crate::cstate;
@@ -741,6 +741,69 @@ pub fn smp_cpu_online_sipi(cpu: u32) -> i32 {
         -1
     } else {
         0
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S3 suspend: park every worker core for the sleep, restore them on wake
+// ---------------------------------------------------------------------------
+
+/// Bitmask of worker cores this module physically offlined for an S3 suspend.
+/// Only those are re-onlined: a core that was already offline (or the BSP) must
+/// never be INIT/SIPI-ed — an INIT to the BSP resets the machine.
+static SUSPENDED_WORKERS: AtomicU64 = AtomicU64::new(0);
+
+/// C-facing: physically offline every online worker core ahead of an ACPI S3
+/// suspend, so no core is executing or holding a lock while the machine sleeps.
+///
+/// Returns 0 once every worker is parked, or -1 when one could not be (a busy
+/// core, or runnable work anywhere).  On failure the cores already parked are
+/// brought back, leaving the machine exactly as it was — the caller must abort
+/// the suspend, never continue with some cores down.
+#[no_mangle]
+pub extern "C" fn smp_suspend_workers() -> i32 {
+    let present = energy::energy_core_count_present();
+    let mut mask: u64 = 0;
+    let mut cpu = 1u32;
+    while cpu < present && (cpu as usize) < MAX_CPUS {
+        if smp_cpu_online(cpu) == 0 {
+            cpu += 1;
+            continue;
+        }
+        if smp_cpu_offline(cpu) != 0 {
+            // Roll back: re-online whatever this call already parked.
+            let mut back = 1u32;
+            while back < cpu {
+                if mask & (1u64 << back) != 0 {
+                    let _ = smp_cpu_online_sipi(back);
+                }
+                back += 1;
+            }
+            return -1;
+        }
+        mask |= 1u64 << cpu;
+        cpu += 1;
+    }
+    SUSPENDED_WORKERS.store(mask, Ordering::SeqCst);
+    0
+}
+
+/// C-facing: re-online the worker cores parked by [`smp_suspend_workers`] after
+/// the machine wakes (each re-runs the boot trampoline, rebuilding its per-CPU
+/// LAPIC, tick and MSRs).  A no-op when nothing was parked.
+#[no_mangle]
+pub extern "C" fn smp_resume_workers() {
+    let mask = SUSPENDED_WORKERS.swap(0, Ordering::SeqCst);
+    if mask == 0 {
+        return;
+    }
+    let present = energy::energy_core_count_present();
+    let mut cpu = 1u32;
+    while cpu < present && (cpu as usize) < MAX_CPUS {
+        if mask & (1u64 << cpu) != 0 {
+            let _ = smp_cpu_online_sipi(cpu);
+        }
+        cpu += 1;
     }
 }
 

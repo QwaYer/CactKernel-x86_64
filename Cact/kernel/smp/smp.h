@@ -14,4 +14,12 @@ int smp_init(void);
 int smp_self_cpu(void);
 int smp_cpu_online(uint32_t cpu);
 
+/* ACPI S3: park every worker core before the machine sleeps, and bring them
+ * back afterwards.  smp_suspend_workers() returns 0 when all workers are
+ * parked, -1 when one is busy — in which case nothing is changed and the
+ * caller must abort the suspend.  smp_resume_workers() is a no-op when nothing
+ * was parked. */
+int  smp_suspend_workers(void);
+void smp_resume_workers(void);
+
 #endif

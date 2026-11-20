@@ -478,6 +478,43 @@ int apic_init(void)
     return 0;
 }
 
+/* Re-establish the LAPIC and the scheduler tick after an ACPI S3 resume.
+ *
+ * The sleep resets the LAPIC (IA32_APIC_BASE, TPR, SVR and every LVT entry), so
+ * the core setup runs again.  The LAPIC timer is then re-armed from the
+ * calibration taken at boot: the PM timer it was calibrated against does not
+ * come back after the sleep, and polling it for a fresh window would stall for
+ * as long as the machine was off. */
+void apic_resume(void)
+{
+    if (!lapic_base_addr)
+        return;                 /* the APIC never came up */
+
+    uint64_t base_msr = rdmsr(IA32_APIC_BASE);
+    if (apic_x2apic)
+        wrmsr(IA32_APIC_BASE, base_msr | APIC_ENABLE | APIC_X2APIC_ENABLE);
+    else
+        wrmsr(IA32_APIC_BASE, (base_msr & ~APIC_BASE_ADDR_MASK) |
+              (uint64_t)(lapic_base_addr & APIC_BASE_ADDR_MASK) | APIC_ENABLE);
+
+    lapic_common_setup();
+
+    /* ACPI may have (re)claimed the SCI gate; make sure the tick vector is the
+     * LAPIC ISR again before unmasking the timer. */
+    set_idt_gate(LAPIC_TIMER_VECTOR, (uint64_t)(uintptr_t)timer_isr);
+
+    uint32_t per_ms = lapic_timer_ticks_per_ms();
+    if (per_ms == 0) {
+        pr_crit("%s: no saved LAPIC calibration — tick not re-armed after resume\n",
+                "apic");
+        return;
+    }
+    lapic_timer_start_periodic(per_ms);
+    apic_enabled = 1;
+
+    pr_info("%s: LAPIC + scheduler tick re-armed after resume\n", "apic");
+}
+
 bool apic_is_enabled(void) { return apic_enabled; }
 
 bool apic_x2apic_mode(void) { return apic_x2apic != 0; }

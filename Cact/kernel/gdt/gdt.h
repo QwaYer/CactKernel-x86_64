@@ -47,6 +47,11 @@ struct tss_entry_struct {
 
 // GDT initialization
 void init_gdt();
+/* Reload the (already built) GDT: GDTR, the segment registers and TR, leaving
+ * the descriptors untouched — used after an S3 resume, where only the CPU's
+ * registers were reset.  Unlike init_gdt() this preserves the runtime TSS
+ * (whose rsp0 the scheduler owns). */
+void gdt_reload(void);
 void set_gdt_gate(int num, uint64_t base, uint32_t limit, uint8_t access, uint8_t gran);
 void write_tss(int num, uint64_t rsp0);
 void tss_set_ist(int index, uint64_t rsp);

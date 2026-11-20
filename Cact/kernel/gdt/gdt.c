@@ -102,6 +102,16 @@ void init_gdt() {
     tss_flush();
 }
 
+// Reload the live GDT without rebuilding it.  The descriptors (and the runtime
+// TSS the scheduler keeps rsp0 in) survive in memory; only the CPU's GDTR, its
+// segment registers and TR were reset — which is the whole of what an S3 resume
+// has to undo.  Rebuilding via init_gdt() would reset the BSP TSS rsp0 to the
+// boot stack and break the next ring-3 return.
+void gdt_reload(void) {
+    gdt_flush((uint64_t)(uintptr_t)&gp);
+    tss_flush();
+}
+
 static inline void wrmsr(uint32_t msr, uint64_t val) {
     uint32_t lo = (uint32_t)val, hi = (uint32_t)(val >> 32);
     __asm__ __volatile__("wrmsr" :: "c"(msr), "a"(lo), "d"(hi));

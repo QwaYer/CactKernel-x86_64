@@ -69,11 +69,12 @@ static mut PD_HIGH: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 /// [`PT_TRAMP`]; the rest of the low half is reached through the direct map.
 static mut PD_LOW: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
-/// The single remaining identity-mapped page: the AP trampoline at `TRAMP_ADDR`.
-/// A woken core starts fetching at that physical address with the kernel's CR3
-/// and reads its stack and info block from the same page before jumping to the
-/// higher half, so the page cannot be reached through the direct map.
-/// Supervisor-only, so no user mapping can touch it.
+/// The low-half identity window's page table: the AP trampoline at `TRAMP_ADDR`
+/// and the ACPI S3 wake trampoline at `WAKE_TRAMP_ADDR`.  A woken core starts
+/// fetching at its physical address with the kernel's CR3 and reads its stack
+/// and info block from the same page before jumping to the higher half, so those
+/// pages cannot be reached through the direct map.  Supervisor-only, so no user
+/// mapping can touch them.
 static mut PT_TRAMP: Aligned4K<Table> = Aligned4K([0u64; TABLE_ENTRIES]);
 
 /// PML4[256]: the direct map of physical memory at `DIRECT_MAP_BASE`.
@@ -425,13 +426,16 @@ fn build_kernel_map() {
     // recorded by its physical address.
     unsafe { *entry(pdpt_high, 510) = v2p(pd_high) | PAGE_PRESENT as u64 | PAGE_RW as u64 };
 
-    // Identity map: exactly one page — the AP trampoline at `TRAMP_ADDR`.  It is
-    // the only thing that must be reachable at its physical address: a woken core
-    // lands there with the kernel's CR3 and runs from it until it jumps to the
-    // higher half.  Everything else in the low half goes through the direct map.
-    // `TRAMP_ADDR` is inside the boot reservation and below 2 MiB, so it fits
-    // window 0's first page directory entry; the page is supervisor-only.
+    // Identity map: two pages — the AP trampoline at `TRAMP_ADDR` and the ACPI
+    // S3 wake trampoline at `WAKE_TRAMP_ADDR`.  They are the only things that
+    // must be reachable at their physical address: a woken core (INIT-SIPI or
+    // S3 resume) lands there with the kernel's CR3 and runs from it until it
+    // jumps to the higher half.  Everything else in the low half goes through
+    // the direct map.  Both addresses are inside the boot reservation and below
+    // 2 MiB, so they fit window 0's first page directory entry; the pages are
+    // supervisor-only.
     const TRAMP_ADDR: u64 = 0x8000;   // must match `smp.rs`
+    const WAKE_TRAMP_ADDR: u64 = 0xA000;   // must match `power.c`
     // SAFETY: `addr_of_mut!` projects the address of the static without forming
     // a reference; the cast gives a one-entry stride.
     let pt_tramp = unsafe { core::ptr::addr_of_mut!(PT_TRAMP.0).cast::<u64>() };
@@ -443,6 +447,11 @@ fn build_kernel_map() {
     unsafe {
         *pt_tramp.add((TRAMP_ADDR >> 12) as usize) =
             TRAMP_ADDR | PAGE_PRESENT as u64 | PAGE_RW as u64
+    };
+    // SAFETY: `(WAKE_TRAMP_ADDR >> 12) < 512`, so this PTE is in bounds.
+    unsafe {
+        *pt_tramp.add((WAKE_TRAMP_ADDR >> 12) as usize) =
+            WAKE_TRAMP_ADDR | PAGE_PRESENT as u64 | PAGE_RW as u64
     };
     // SAFETY: `addr_of_mut!` projects the address of the static without forming
     // a reference (the same one-entry stride as above).

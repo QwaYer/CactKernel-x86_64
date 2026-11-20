@@ -127,6 +127,34 @@ uint64_t acpi_pm_timer_get_usec(void)
     return secs * 1000000ull + (rem * 1000000ull) / ACPI_PM_TIMER_FREQ;
 }
 
+/* Freshen the PM-timer baseline just before an S3 sleep, so ktime_resume() can
+ * measure the slept interval as a single delta.  A no-op when the PM timer is
+ * absent (an invariant TSC needs no baseline). */
+void ktime_suspend(void)
+{
+    if (pm_timer_available)
+        (void)acpi_pm_timer_get_usec();
+}
+
+/* Fold the slept interval back into the wall clock after an S3 resume.  The PM
+ * counter is free-running and keeps counting through the sleep, so the delta
+ * since ktime_suspend() is exactly the time the machine was off — counting it
+ * keeps the clock continuous, matching an invariant TSC (which does not stop).
+ * A stopped/absent PM timer leaves the clock as the TSC's own. */
+void ktime_resume(void)
+{
+    if (!pm_timer_available)
+        return;
+
+    irq_spinlock_acquire(&pm_timer_lock);
+    uint32_t val = pm_timer_read_port() & pm_timer_get_max();
+    pm_total_counts += acpi_pm_timer_delta(pm_last_count, val);
+    pm_last_count = val;
+    irq_spinlock_release(&pm_timer_lock);
+
+    pr_info("%s: timebase restored after resume\n", "pm-timer");
+}
+
 /* ---------------------------------------------------------------------------
  * TSC timekeeping — the primary wall clock.
  *

@@ -15,6 +15,13 @@
 int      ktime_init(void);
 uint64_t ktime_get_usec(void);
 
+/* ACPI S3 bookkeeping.  ktime_suspend() freshens the PM-timer baseline just
+ * before the sleep; ktime_resume() folds the slept interval back in, so the
+ * wall clock stays continuous across a suspend (an invariant TSC — the only TSC
+ * ever used as the wall clock — keeps counting on its own). */
+void     ktime_suspend(void);
+void     ktime_resume(void);
+
 /* Busy-wait for at least `us` microseconds with interrupts enabled or
  * disabled (used by the ACPI OSL stall).  Prefers the calibrated TSC, then the
  * ACPI PM timer, and only when neither is usable a raw `pause` loop. */

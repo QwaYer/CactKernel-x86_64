@@ -42,4 +42,8 @@ void apic_ap_online(void);
 void apic_send_init_ipi(uint32_t dest_lapic);
 void apic_send_sipi(uint32_t dest_lapic, uint32_t vector);
 
+/* Re-establish the LAPIC and re-arm the LAPIC-timer scheduler tick after an
+ * ACPI S3 resume (the sleep reset both). */
+void apic_resume(void);
+
 #endif

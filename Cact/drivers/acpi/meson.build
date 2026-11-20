@@ -99,3 +99,40 @@ kernel_libs += static_library('cact_acpi',
   include_directories: cact_includes,
   implicit_include_directories: false,
   c_args: kernel_c_args)
+
+# ---------------------------------------------------------------------------
+# S3 wake trampoline.
+#
+# wake.asm is assembled as a flat binary at its load address (org 0xA000) and
+# embedded in the link, the same way kernel/smp/meson.build embeds the AP
+# trampoline: power.c copies the bytes to the identity-mapped 0xA000 page and
+# the platform enters them in real mode on wake.  objcopy names the blob's
+# symbols after the path it is handed, so --redefine-sym pins them onto the
+# names power.c links against, independent of the build directory's name.
+# ---------------------------------------------------------------------------
+
+wake_bin = custom_target('wake-bin',
+  input: 'wake.asm',
+  output: 'wake.bin',
+  command: [nasm, '-f', 'bin', '@INPUT@', '-o', '@OUTPUT@'])
+
+wake_blob = custom_target('wake-blob',
+  input: wake_bin,
+  output: 'wake-blob.o',
+  command: [objcopy, '-I', 'binary', '-O', 'elf64-x86-64', '-B', 'i386:x86-64',
+            '@INPUT@', '@OUTPUT@'])
+
+kernel_objects += custom_target('wake-obj',
+  input: wake_blob,
+  output: 'wake.o',
+  command: [objcopy,
+            '--redefine-sym', '_binary_Cact_drivers_acpi_wake_bin_start=_binary_build_wake_bin_start',
+            '--redefine-sym', '_binary_Cact_drivers_acpi_wake_bin_end=_binary_build_wake_bin_end',
+            '--redefine-sym', '_binary_Cact_drivers_acpi_wake_bin_size=_binary_build_wake_bin_size',
+            '@INPUT@', '@OUTPUT@'])
+
+# The kernel-side suspend stub: saves the resume context and calls into C.
+kernel_objects += custom_target('asm-acpi-suspend',
+  input: 'suspend.asm',
+  output: 'suspend_asm.o',
+  command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])

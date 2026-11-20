@@ -64,6 +64,12 @@ void acpi_reboot(void);              /* ACPI reset register / KBC / triple fault
 void acpi_halt(void);                /* stop the CPU with interrupts off */
 int  acpi_sleep_states(uint32_t *mask);  /* bit Sx set when \_Sx is present */
 
+/* Suspend to RAM (power.c).  1 when the firmware advertises the \_S3 state. */
+int  acpi_s3_supported(void);
+/* Enter S3 and return when the machine wakes: 0 on a completed
+ * suspend/resume, -1 when S3 is unavailable or the firmware did not sleep. */
+int  acpi_suspend(void);
+
 
 /* Shared OSL helpers (osl.c): a temporary physical->virtual mapping window and
  * a microsecond delay backed by ktime (TSC / ACPI PM timer).  The physical

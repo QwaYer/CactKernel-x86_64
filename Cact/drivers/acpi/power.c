@@ -14,7 +14,13 @@
  * convention, then a CPU-level fallback.  A machine with a broken or absent
  * FADT therefore still powers off / resets instead of hanging forever.
  *
- * Suspend-to-RAM (S3) is not implemented in 2.0.0.
+ * Suspend-to-RAM (S3) shares the PM1 write but, unlike the one-way paths, has
+ * to come back.  Before entering S3 the FACS waking vector is pointed at the
+ * wake trampoline (wake.asm, staged on the identity-mapped 0xA000 page) and
+ * the state the sleep resets is saved into its info block.  On wake the
+ * platform re-enters that page in real mode; the trampoline returns to
+ * acpi_suspend_lowlevel(), so acpi_suspend() reads as an ordinary call that
+ * merely took a long time.
  */
 
 #include "kernel.h"
@@ -22,6 +28,13 @@
 #include "acpi.h"
 #include "cact_acpi.h"
 #include "ktime.h"
+#include "apic.h"
+#include "cpu_cr.h"
+#include "cpudev.h"
+#include "gdt.h"
+#include "idt.h"
+#include "pat.h"
+#include "smp.h"
 
 /* Legacy PM1 control register layout (ACPI 1.0): SLP_TYP occupies bits 10-12,
  * SLP_EN is bit 13 of PM1x_CNT. */
@@ -115,6 +128,184 @@ int acpi_sleep_states(uint32_t *mask)
     if (mask)
         *mask = m;
     return pm_ready ? 0 : -1;
+}
+
+/* ---------------------------------------------------------------------------
+ * Suspend-to-RAM (S3)
+ * ------------------------------------------------------------------------- */
+
+/* The wake trampoline is staged on the identity-mapped 0xA000 page (paging.rs)
+ * and reads its saved-state block from the top of that page.  Both the page and
+ * the block layout must match wake.asm. */
+#define WAKE_TRAMP_PHYS   0xA000u
+#define WAKE_INFO_PHYS    0xAF00u
+#define WAKE_INFO         ((volatile uint64_t *)(uintptr_t)WAKE_INFO_PHYS)
+
+/* Info-block field indices (byte offset / 8); must match wake.asm. */
+#define WI_CR0       0
+#define WI_CR3       1
+#define WI_CR4       2
+#define WI_PAT       3
+#define WI_XCR0      4
+#define WI_FS_BASE   5
+#define WI_GS_BASE   6
+#define WI_KGS_BASE  7
+
+#define MSR_IA32_PAT             0x277u
+#define MSR_IA32_FS_BASE         0xC0000100u
+#define MSR_IA32_GS_BASE         0xC0000101u
+#define MSR_IA32_KERNEL_GS_BASE  0xC0000102u
+#define CR4_OSXSAVE              (1ull << 18)
+
+/* The wake trampoline blob, linked in as a flat binary (drivers/acpi/meson.build). */
+extern const unsigned char _binary_build_wake_bin_start[];
+extern const unsigned char _binary_build_wake_bin_end[];
+
+/* The suspend stub and the two C callbacks it calls (suspend.asm). */
+extern int acpi_suspend_lowlevel(void);
+int acpi_enter_sleep(void);
+void acpi_resume_finish(void);
+
+static int s3_entered;   /* set when AcpiEnterSleepState() returned (no sleep) */
+static int s3_resumed;   /* set by acpi_resume_finish() after a real wake      */
+
+static inline uint64_t msr_read(uint32_t msr)
+{
+    uint32_t lo, hi;
+    __asm__ __volatile__("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+static inline uint64_t xcr0_read(void)
+{
+    uint32_t lo, hi;
+    __asm__ __volatile__("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return ((uint64_t)hi << 32) | lo;
+}
+
+int acpi_s3_supported(void)
+{
+    return (pm_ready && (s_state_mask & (1u << ACPI_STATE_S3))) ? 1 : 0;
+}
+
+/* Copy the trampoline to its low page and record the machine state the sleep
+ * resets.  The stack pointer and resume RIP are filled in by suspend.asm. */
+static void wake_stage(void)
+{
+    uint32_t len = (uint32_t)(_binary_build_wake_bin_end - _binary_build_wake_bin_start);
+    uint32_t cr4;
+
+    if (len > 4096u)
+        len = 4096u;
+    memcpy((void *)(uintptr_t)WAKE_TRAMP_PHYS, _binary_build_wake_bin_start, len);
+
+    cr4 = (uint32_t)cpu_read_cr4();
+    WAKE_INFO[WI_CR0]      = cpu_read_cr0();
+    WAKE_INFO[WI_CR3]      = cpu_read_cr3();
+    WAKE_INFO[WI_CR4]      = cr4;
+    WAKE_INFO[WI_PAT]      = msr_read(MSR_IA32_PAT);
+    WAKE_INFO[WI_XCR0]     = (cr4 & CR4_OSXSAVE) ? xcr0_read() : 0;
+    WAKE_INFO[WI_FS_BASE]  = msr_read(MSR_IA32_FS_BASE);
+    WAKE_INFO[WI_GS_BASE]  = msr_read(MSR_IA32_GS_BASE);
+    WAKE_INFO[WI_KGS_BASE] = msr_read(MSR_IA32_KERNEL_GS_BASE);
+}
+
+/* Called from acpi_suspend_lowlevel() with interrupts already off.  Falling
+ * through AcpiEnterSleepState() means the machine never slept. */
+int acpi_enter_sleep(void)
+{
+    __asm__ __volatile__("cli");
+    ACPI_STATUS status = AcpiEnterSleepState(ACPI_STATE_S3);
+    s3_entered = 1;
+    return ACPI_FAILURE(status) ? -1 : 0;
+}
+
+/* The wake path: re-establish what the sleep reset, then return to
+ * acpi_suspend_lowlevel()'s epilogue.  Interrupts stay off to the end so the
+ * LAPIC and timebase are live before the first tick arrives. */
+void acpi_resume_finish(void)
+{
+    s3_resumed = 1;
+
+    /* The GDT/IDT tables and every MSR survive in RAM; only the CPU's
+     * registers were reset.  Reload the descriptor tables first — until the
+     * IDT is back, a fault (or the console's own code) has nowhere to go. */
+    gdt_reload();             /* GDTR, segment registers, TR                   */
+    idt_reload();             /* IDTR (the trampoline leaves it zeroed)        */
+
+    pr_notice("%s: resumed from S3\n", "power");
+
+    /* The rest of the CPU-level bring-up boot performs. */
+    fpu_global_init();        /* CR0.EM/MP, CR4.OSFXSR/OSXMMEXCPT, fninit      */
+    pat_init();               /* IA32_PAT write-combining entry                */
+    cpu_syscall_commit();     /* EFER.SCE, STAR/LSTAR/FMASK                    */
+
+    apic_resume();            /* LAPIC + the LAPIC-timer scheduler tick        */
+    ktime_resume();           /* resync the PM-timer baseline                  */
+
+    /* ACPI housekeeping: re-enable the runtime GPEs and run _WAK. */
+    (void)AcpiLeaveSleepStatePrep(ACPI_STATE_S3);
+    (void)AcpiLeaveSleepState(ACPI_STATE_S3);
+
+    __asm__ __volatile__("sti");
+}
+
+/* Point the firmware at the trampoline and evaluate _PTS, then let the asm
+ * stub save the resume context and enter the sleep. */
+static int wake_prepare(void)
+{
+    wake_stage();
+
+    /* The 32-bit waking vector is a real-mode entry point; the 64-bit one is
+     * cleared (ACPI 2.0+ prefers the 32-bit vector, and some firmware chokes on
+     * the 64-bit form). */
+    AcpiSetFirmwareWakingVector(WAKE_TRAMP_PHYS, 0);
+
+    if (ACPI_FAILURE(AcpiEnterSleepStatePrep(ACPI_STATE_S3))) {
+        pr_err("%s: _PTS/S3 preparation failed\n", "power");
+        return -1;
+    }
+    return 0;
+}
+
+int acpi_suspend(void)
+{
+    if (!acpi_s3_supported()) {
+        pr_warn("%s: firmware advertises no S3 state\n", "power");
+        return -1;
+    }
+
+    pr_notice("%s: suspend to RAM (S3)\n", "power");
+
+    /* Park the worker cores first: a core that is executing (or holding a
+     * scheduler lock) while the machine sleeps is never coming back cleanly.
+     * A busy worker aborts the suspend here, with nothing left changed. */
+    if (smp_suspend_workers() != 0) {
+        pr_warn("%s: a worker core is busy — refusing to suspend\n", "power");
+        return -1;
+    }
+
+    if (wake_prepare() != 0) {
+        smp_resume_workers();
+        return -1;
+    }
+
+    s3_entered = 0;
+    s3_resumed = 0;
+    ktime_suspend();          /* freshen the timebase baseline before the sleep */
+    (void)acpi_suspend_lowlevel();
+
+    /* Re-online the parked workers — on a completed resume, and equally when
+     * the sleep never happened (a no-op if none were parked). */
+    smp_resume_workers();
+
+    if (s3_resumed) {
+        pr_info("%s: S3 resume complete\n", "power");
+        return 0;
+    }
+    if (s3_entered)
+        pr_warn("%s: S3 was not entered — firmware ignored SLP_EN\n", "power");
+    return -1;
 }
 
 int acpi_pm_init(void)
