@@ -8,16 +8,18 @@
 ; very first byte of the page must be the entry instruction.
 ;
 ; It brings the core from real mode back into IA-32e long mode with the
-; kernel's own page tables, restores the machine state the sleep reset (segment
-; bases, PAT, XCR0, CR0/CR4) from the info block, and jumps to the saved
-; resume RIP — the point inside acpi_suspend_lowlevel() just after the sleep
-; call, on the suspended task's own kernel stack.  Everything else (GDT/IDT,
-; LAPIC, timebase, ACPI GPEs) is restored by acpi_resume_finish() in C.
+; kernel's page tables, restores the machine state the sleep reset (segment
+; bases, XCR0, CR0/CR4) from the info block, and jumps to the saved resume RIP
+; — the point inside acpi_suspend_lowlevel() just after the sleep call, on the
+; suspended task's own kernel stack.  Everything else (GDT/IDT, LAPIC,
+; timebase, PAT, ACPI GPEs) is restored by acpi_resume_finish() in C;
+; IA32_PAT in particular belongs to pat_init() (see pat.h: "an S3 resume resets
+; the MSR, so pat_init() sets it explicitly on every (re)initialisation").
 ;
 ; The layout mirrors kernel/smp/trampoline.asm: the info block lives at a fixed
 ; offset near the top of the page (INFO_BASE) so it can never be reached by
-; falling through the entry code.  power.c writes those fields through the
-; kernel's low-half alias before the sleep.
+; falling through the entry code.  power.c writes those fields through its
+; low-half alias before the sleep.
 ;
 ;   +0x0000              wake entry (real mode)
 ;   +0x0E00              real-mode stack top (grows down, below the info block)
@@ -104,12 +106,6 @@ wake_start64:
     wrmsr
     mov ecx, 0xC0000102             ; IA32_KERNEL_GS_BASE
     mov rax, [abs info_kgs_base]
-    wrmsr
-
-    ; The sleep resets IA32_PAT; restore it before the first cached access, or
-    ; the write-combining framebuffer entry comes back write-back (pat.c).
-    mov ecx, 0x277
-    mov rax, [abs info_pat]
     wrmsr
 
     ; Exact CR4/CR0 (the 32-bit writes were only the minimum to get here).

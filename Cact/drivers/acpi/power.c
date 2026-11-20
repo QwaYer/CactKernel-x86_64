@@ -275,6 +275,9 @@ static int wake_prepare(void)
     return 0;
 }
 
+/* Suspend to RAM: park the worker cores, point the firmware at the wake
+ * trampoline, enter S3, and — on wake — come back through
+ * acpi_suspend_lowlevel()'s resume path. */
 int acpi_suspend(void)
 {
     if (!acpi_s3_supported()) {

@@ -108,6 +108,10 @@ void init_gdt() {
 // has to undo.  Rebuilding via init_gdt() would reset the BSP TSS rsp0 to the
 // boot stack and break the next ring-3 return.
 void gdt_reload(void) {
+    // The boot `ltr` set the TSS descriptor's busy bit (type 9 -> 0xB), and the
+    // CPU refuses to load a busy TSS: make it available again before reloading
+    // TR, or `ltr` raises #GP (with no IDT yet, a triple fault).
+    gdt[GDT_TSS_SLOT].access = 0x89;   // Present, DPL 0, available 64-bit TSS
     gdt_flush((uint64_t)(uintptr_t)&gp);
     tss_flush();
 }

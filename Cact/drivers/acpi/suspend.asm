@@ -25,8 +25,8 @@ extern acpi_enter_sleep
 extern acpi_resume_finish
 
 %define INFO_BASE 0xAF00        ; identity-mapped trampoline page (paging.rs)
-%define OFF_RSP   0x0F40        ; must match wake.asm's info block layout
-%define OFF_RIP   0x0F48
+%define OFF_RSP   0x40          ; info_rsp, byte offset from the info base;
+%define OFF_RIP   0x48          ; must match wake.asm's info block layout
 
 section .text
 
