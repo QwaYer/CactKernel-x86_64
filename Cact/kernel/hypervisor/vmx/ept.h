@@ -50,6 +50,15 @@ uint64_t vmx_ept_build(const vmx_ept_map_t *maps, unsigned count);
 /* Release the tables built by vmx_ept_build().  Safe with none built. */
 void vmx_ept_free(void);
 
+/* 4 KiB pages currently held by the live EPT hierarchy (0 when none is built).
+ * Reported by /proc/meminfo as part of PageTables. */
+uint32_t vmx_ept_table_pages(void);
+
+/* 4 KiB guest frames the live EPT maps into the guest's physical address space
+ * (one per distinct GPA leaf).  This is the guest's RAM as the hypervisor backs
+ * it — reported by /proc/meminfo as GuestMemory. */
+uint32_t vmx_ept_leaf_pages(void);
+
 /* Invalidate cached EPT translations for `eptp` (INVEPT single-context).
  * Returns 0 on success. */
 int vmx_ept_invept_single(uint64_t eptp);

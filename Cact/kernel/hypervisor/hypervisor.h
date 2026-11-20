@@ -36,6 +36,16 @@ int hypervisor_init(void);
 /* OR of HV_CAP_* as detected at boot. */
 uint32_t hv_capabilities(void);
 
+/* 4 KiB pages the hypervisor currently holds as host-side nested translation
+ * tables (the EPT hierarchy).  Reported by /proc/meminfo as part of PageTables
+ * and as HypervisorTables; normally 0, since guests are run on demand. */
+uint32_t hv_ptable_pages(void);
+
+/* 4 KiB guest frames the hypervisor currently backs as the guest's physical
+ * memory (EPT leaves, the guest's own page tables included).  Reported by
+ * /proc/meminfo as GuestMemory; normally 0, since guests are run on demand. */
+uint32_t hv_guest_memory_pages(void);
+
 /* Non-zero when CactOS itself runs as a guest (CPUID.1:ECX[31]) — the case
  * where a backend is only usable from the "nested" half of the stack. */
 int hv_running_as_guest(void);

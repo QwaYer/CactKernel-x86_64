@@ -35,6 +35,9 @@
 static void *g_ept_pages[64];
 static unsigned g_ept_page_count;
 
+/* Distinct guest-physical leaf pages the live hierarchy maps — the guest's RAM. */
+static unsigned g_ept_leaf_count;
+
 /* A zeroed table page, recorded for vmx_ept_free().  kalloc() does not zero. */
 static void *ept_alloc(void) {
     if (g_ept_page_count >= sizeof(g_ept_pages) / sizeof(g_ept_pages[0]))
@@ -95,6 +98,7 @@ uint64_t vmx_ept_build(const vmx_ept_map_t *maps, unsigned count) {
         if (pt[i] & EPT_PERM_MASK)
             continue;   /* already mapped; the first mapping wins */
         pt[i] = (maps[m].hpa & EPT_PAGE_MASK) | (maps[m].flags & EPT_PERM_MASK);
+        g_ept_leaf_count++;
     }
 
     /* Write-back is the only memory type the CPU offers for EPT tables here
@@ -106,6 +110,15 @@ void vmx_ept_free(void) {
     for (unsigned i = 0; i < g_ept_page_count; i++)
         free_page(g_ept_pages[i]);
     g_ept_page_count = 0;
+    g_ept_leaf_count = 0;
+}
+
+uint32_t vmx_ept_table_pages(void) {
+    return g_ept_page_count;
+}
+
+uint32_t vmx_ept_leaf_pages(void) {
+    return g_ept_leaf_count;
 }
 
 int vmx_ept_invept_single(uint64_t eptp) {

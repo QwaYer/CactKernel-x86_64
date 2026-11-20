@@ -3,6 +3,7 @@
 
 #include "hypervisor.h"
 #include "vmx.h"
+#include "ept.h"
 #include "svm.h"
 #include "kernel.h"
 
@@ -52,5 +53,17 @@ int hypervisor_init(void) {
 }
 
 uint32_t hv_capabilities(void) { return g_caps; }
+
+uint32_t hv_ptable_pages(void) {
+    /* Host-side nested page tables: the EPT hierarchy on Intel (SVM/NPT will
+     * add its own when built).  The guest's own page tables are guest memory,
+     * not host page tables — see hv_guest_memory_pages(). */
+    return vmx_ept_table_pages();
+}
+
+uint32_t hv_guest_memory_pages(void) {
+    /* Guest-physical frames the hypervisor currently backs (EPT leaves). */
+    return vmx_ept_leaf_pages();
+}
 
 int hv_running_as_guest(void) { return g_guest; }
