@@ -239,6 +239,22 @@ static mut VMW_FAIL_FIELD: u64 = 0;
 struct HostStack([u8; 16384]);
 static mut HOST_STACK: HostStack = HostStack([0; 16384]);
 
+/* 4 KiB page-table pages the model holds for the guest while it is live (the
+ * PML4/PDPT/PD/PT of `build_guest_tables`); 0 when no guest runs.  These are
+ * host frames the hypervisor physically owns — reported by /proc/meminfo as
+ * part of PageTables/HypervisorTables.  They are also EPT-mapped, so they show
+ * up in GuestMemory too: the same frames serve as the guest's page tables and
+ * as its addressable RAM. */
+static mut GUEST_PTABLE_PAGES: u32 = 0;
+
+/// Guest page-table pages the model currently holds.
+#[no_mangle]
+pub extern "C" fn cact_hv_guest_table_pages() -> u32 {
+    // SAFETY: single-threaded guest bring-up; read without synchronisation, as
+    // with the other model statics.
+    unsafe { GUEST_PTABLE_PAGES }
+}
+
 /// Append `bytes` to `buf` at `*n`, never overrunning the reserved tail.
 unsafe fn put(buf: &mut [u8; 256], n: &mut usize, bytes: &[u8]) {
     for &b in bytes {
@@ -344,6 +360,8 @@ unsafe fn free_guest_pages(pages: &[*mut u8]) {
             unsafe { free_page(p) };
         }
     }
+    // SAFETY: the guest's page tables (if any) are among `pages` and are gone.
+    unsafe { GUEST_PTABLE_PAGES = 0 };
 }
 
 /// VM-exit entry, called by the C/asm stub with RDI = the saved-GPR frame.
@@ -474,6 +492,9 @@ unsafe fn run_guest() -> i32 {
             free_guest_pages(&guest_pages);
             return 1;
         }
+        /* pml4/pdpt/pd/pt are the guest's own page tables (the other four are
+         * the VMCS, code, data and TSS pages). */
+        GUEST_PTABLE_PAGES = 4;
 
         let vmcs_phys = vmm_v2p(vmcs);
         let code_phys = vmm_v2p(code);

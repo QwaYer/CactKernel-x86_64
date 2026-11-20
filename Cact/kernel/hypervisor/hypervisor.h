@@ -36,9 +36,11 @@ int hypervisor_init(void);
 /* OR of HV_CAP_* as detected at boot. */
 uint32_t hv_capabilities(void);
 
-/* 4 KiB pages the hypervisor currently holds as host-side nested translation
- * tables (the EPT hierarchy).  Reported by /proc/meminfo as part of PageTables
- * and as HypervisorTables; normally 0, since guests are run on demand. */
+/* 4 KiB page tables the hypervisor physically holds: the host EPT hierarchy on
+ * Intel plus a live guest's own 4-level tables.  Reported by /proc/meminfo as
+ * part of PageTables and as HypervisorTables; normally 0, since guests are run
+ * on demand.  The guest's tables also count in hv_guest_memory_pages(): the
+ * same frames are both its page tables and its RAM. */
 uint32_t hv_ptable_pages(void);
 
 /* 4 KiB guest frames the hypervisor currently backs as the guest's physical

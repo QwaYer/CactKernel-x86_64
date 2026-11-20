@@ -54,11 +54,15 @@ int hypervisor_init(void) {
 
 uint32_t hv_capabilities(void) { return g_caps; }
 
+/* The Rust model's guest page tables (crate `cact_hv`, rust_hv/src/lib.rs). */
+extern uint32_t cact_hv_guest_table_pages(void);
+
 uint32_t hv_ptable_pages(void) {
-    /* Host-side nested page tables: the EPT hierarchy on Intel (SVM/NPT will
-     * add its own when built).  The guest's own page tables are guest memory,
-     * not host page tables — see hv_guest_memory_pages(). */
-    return vmx_ept_table_pages();
+    /* Every page table the hypervisor physically holds: the host EPT hierarchy
+     * plus the guest's own 4-level tables (allocated and owned by the model).
+     * The guest's tables are also EPT-mapped, so the same frames appear in
+     * hv_guest_memory_pages() — they are both this guest's tables and its RAM. */
+    return vmx_ept_table_pages() + cact_hv_guest_table_pages();
 }
 
 uint32_t hv_guest_memory_pages(void) {
