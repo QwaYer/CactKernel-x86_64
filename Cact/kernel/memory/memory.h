@@ -83,6 +83,9 @@ void      kfree(void* ptr);
 uint32_t  get_free_heap_memory(void);
 uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
+/* Live end of the boot reservation in bytes (>= RESERVED_END); nothing below it
+ * is given to kalloc() or the heap. */
+uint32_t  pmm_reserved_end(void);
 void      vmm_map(uint64_t* pd, uint64_t virtual_addr, uint64_t physical_addr, int flags);
 uint64_t  vmm_get_phys(uint64_t* pd, uint64_t virtual_addr);
 /* Physical address behind a pointer the kernel can dereference (rust_mm
@@ -100,6 +103,17 @@ uint32_t  vmm_pte_flags(uint64_t* pd, uint64_t virt);
 /* Clear the 4 KiB mapping for `virt`; returns the frame it named (0 if none). */
 uint64_t  vmm_unmap(uint64_t* pd, uint64_t virt);
 void      vmm_sync_kernel_mmio_mappings(uint64_t* pd);
+/* Resident user pages and page-table pages of one address space, in 4 KiB
+ * pages (rust_mm vmm/stats.rs).  `proc` is the owning ProcMeta — its mmap table
+ * and shm attachments classify each page — or NULL for a bare address space. */
+typedef struct {
+    uint32_t anon_pages;    /* private pages: brk, stack, anon mmap, image   */
+    uint32_t file_pages;    /* pages inside a file-backed mmap region        */
+    uint32_t ptable_pages;  /* page-table pages owned by the address space   */
+} vmm_user_stats_t;
+vmm_user_stats_t vmm_user_stats(uint64_t* pd, void* proc);
+/* 4 KiB page-table pages held by the kernel's own address space. */
+uint32_t  vmm_kernel_ptable_pages(void);
 /* Set/clear cache-attribute bits on the kernel's own mapping for `va`
  * (rust_mm: paging.rs).  The kernel maps with 2 MiB pages, so this reaches the
  * page-directory entry when there is no PTE; pat.c uses it for write-combining

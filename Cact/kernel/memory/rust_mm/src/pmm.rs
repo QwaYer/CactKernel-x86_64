@@ -577,3 +577,12 @@ pub extern "C" fn pmm_free_frames() -> u32 {
     lock_release(PAGE_LOCK.as_ptr());
     free
 }
+
+/// Live boot-reservation boundary in bytes: the `RESERVED_END` floor, raised by
+/// `pmm_reserve_boot_images` past the Multiboot2 module images.  Nothing below
+/// it is handed to `kalloc` or the heap.  Reported by /proc/meminfo as
+/// `MemReserved`.
+#[unsafe(no_mangle)]
+pub extern "C" fn pmm_reserved_end() -> u32 {
+    reserved_end()
+}

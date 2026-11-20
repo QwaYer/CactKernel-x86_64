@@ -103,7 +103,7 @@ unsafe fn entry(table: *mut u64, idx: u32) -> *mut u64 {
 ///
 /// As [`entry`].
 #[inline(always)]
-unsafe fn entry_val(table: *const u64, idx: u32) -> u64 {
+pub(crate) unsafe fn entry_val(table: *const u64, idx: u32) -> u64 {
     unsafe { *entry(table as *mut u64, idx) }
 }
 

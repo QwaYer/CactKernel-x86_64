@@ -127,6 +127,38 @@ pub(crate) fn find_shm_va(num_pages: u32) -> u32 {
     0
 }
 
+/// Fill `ranges` with the `(base, end)` virtual-address windows of the shared
+/// segments attached to `proc`, under `SHM_LOCK`.  Returns how many windows
+/// were written.  Used by the address-space accounting walker to tell a
+/// shared-memory page (reported as `Shmem`) from an anonymous one.
+pub(crate) fn shm_attached_ranges(proc: *const ProcMeta, ranges: &mut [(u32, u32)]) -> usize {
+    if proc.is_null() || ranges.is_empty() {
+        return 0;
+    }
+    shm_ensure_init();
+    lock_acquire(SHM_LOCK.as_ptr());
+    let mut n = 0usize;
+    for i in 0..TASK_SHM_MAX {
+        if n >= ranges.len() {
+            break;
+        }
+        // SAFETY: `proc` is the caller's live `ProcMeta` and `i < TASK_SHM_MAX`, so
+        // this attachment field read is in bounds while `SHM_LOCK` is held.
+        let id = unsafe { (*proc).shm_attachments[i].shm_id };
+        if id == 0 || !seg_valid(id) {
+            continue;
+        }
+        // SAFETY: `SHM_TABLE[id-1]` read; `seg_valid(id)` passed and `SHM_LOCK` is held.
+        let seg = &(unsafe { KStatic::get_mut(SHM_TABLE.as_ptr()) })[(id - 1) as usize];
+        // SAFETY: as above, for the attachment's virtual address.
+        let base = unsafe { (*proc).shm_attachments[i].shm_vaddr };
+        ranges[n] = (base, base.saturating_add(seg.num_pages.saturating_mul(PAGE_SIZE)));
+        n += 1;
+    }
+    lock_release(SHM_LOCK.as_ptr());
+    n
+}
+
 pub(crate) fn shm_unmap_from(pd: *mut u64, va: u32, num_pages: u32) {
     // The four-level walk lives in the memory layer; let it resolve and clear
     // each page instead of indexing the tables with a two-level layout here.
