@@ -6,8 +6,8 @@
 use crate::ffi::*;
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int};
 use crate::pmm::{kalloc, free_page};
-use crate::alloc::heap::{kmalloc, kfree};
-use crate::alloc::slab_owner::SLAB_MAGIC;
+use crate::alloc::heap::{kmalloc_raw, kfree_raw};
+use crate::alloc::slab_owner::{is_slab_header, SLAB_MAGIC};
 
 #[repr(C)]
 pub struct Slab {
@@ -191,7 +191,7 @@ pub unsafe extern "C" fn slab_cache_create(
     }
     obj_size = align_up(obj_size, 8);
 
-    let cache = kmalloc(core::mem::size_of::<SlabCache>()) as *mut SlabCache;
+    let cache = kmalloc_raw(core::mem::size_of::<SlabCache>()) as *mut SlabCache;
     if cache.is_null() {
         return core::ptr::null_mut();
     }
@@ -360,6 +360,51 @@ pub unsafe extern "C" fn slab_free(cache: *mut SlabCache, obj: *mut u8) {
     lock_release(G_CACHE_LOCK.as_ptr());
 }
 
+/// The size class of the slab object at `ptr`, or 0 when `ptr` is not a slab
+/// object (so the caller treats it as a heap block).
+///
+/// `obj_size` is fixed when the cache is created, so this needs no lock — the same
+/// reasoning `slab_print_stats` relies on.
+pub extern "C" fn slab_object_size(ptr: *mut u8) -> u32 {
+    if ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: `ptr` is a live allocation; its page base is read and trusted only
+    // when the header magic matches.
+    let s = (ptr as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
+    // SAFETY: as above — the header is only read, never written.
+    let s = unsafe { &*s };
+    if is_slab_header(s.magic, s.capacity, !s.cache.is_null()) {
+        // SAFETY: a live slab header's `cache` is a live cache, and `obj_size` is
+        // immutable after `slab_cache_create`.
+        unsafe { (*s.cache).obj_size }
+    } else {
+        0
+    }
+}
+
+/// Free `ptr` if it is a slab object; return false when it is not (the caller
+/// then frees it as a heap block).  This is the ownership test the dispatcher
+/// `kfree` runs on every free.
+#[unsafe(no_mangle)]
+pub extern "C" fn slab_try_free(ptr: *mut u8) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    // SAFETY: `ptr` is a live allocation; its page base is read and trusted only
+    // when the header magic matches.
+    let s = (ptr as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
+    // SAFETY: as above — the header is only read here.
+    let s = unsafe { &*s };
+    if is_slab_header(s.magic, s.capacity, !s.cache.is_null()) {
+        // SAFETY: the header is a live slab header, so `s.cache` is a live cache
+        // and `ptr` is one of its objects.
+        unsafe { slab_free(s.cache, ptr) };
+        return true;
+    }
+    false
+}
+
 /// # Safety
 ///
 /// `cache` must be null or a live cache created by `slab_cache_create`, and it
@@ -485,9 +530,10 @@ pub unsafe extern "C" fn slab_cache_destroy(cache: *mut SlabCache) {
     }
 
     lock_release(G_CACHE_LOCK.as_ptr());
-    // SAFETY: `cache` was allocated with `kmalloc` in `slab_cache_create` and has
-    // just been unlinked from `G_CACHE_LIST`, so it is safe to return to the heap.
-    unsafe { kfree(cache as *mut u8); }
+    // SAFETY: `cache` was allocated with `kmalloc_raw` in `slab_cache_create` and
+    // has just been unlinked from `G_CACHE_LIST`, so it is safe to return to the
+    // heap.
+    unsafe { kfree_raw(cache as *mut u8); }
 }
 
 /// # Safety

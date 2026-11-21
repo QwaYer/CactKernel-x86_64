@@ -71,9 +71,11 @@ pub extern "C" fn init_heap() {
 ///
 /// The heap window is reached through the **direct map**, so the free list and
 /// every `HeapBlock` link hold direct-map VAs: the whole allocator works in one
-/// address space, and `kmalloc` hands the caller exactly the block address.
-#[unsafe(no_mangle)]
-pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
+/// address space, and the caller gets exactly the block address.
+///
+/// This is the **heap-only** entry point.  The C-visible `kmalloc` is the
+/// dispatcher in this module, which serves small requests from the slab caches.
+pub extern "C" fn kmalloc_raw(size: usize) -> *mut u8 {
     // A `HeapBlock` keeps its size in a `u32` and the window is a few MiB, so a
     // request the header cannot represent is unservable.  `MAX_BLOCK` leaves room
     // for the header and the rounding below to stay within `u32`.
@@ -170,38 +172,38 @@ pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
     core::ptr::null_mut()
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
+/// Heap-only aligned allocation: `kmalloc_raw` plus the back-pointer scheme
+/// `kfree_raw` reverses.  Used for alignments the slab objects cannot give.
+pub extern "C" fn kmalloc_aligned_raw(size: usize, align: usize) -> *mut u8 {
     let align = if align < 4 { 4 } else { align };
-    let raw = kmalloc(size + align + 4);
+    let raw = kmalloc_raw(size + align + 4);
     if raw.is_null() {
         return core::ptr::null_mut();
     }
     // Align in the direct-map VA the caller will use; the direct map is far
     // coarser (2 MiB) than any heap alignment, so the frame is aligned too.  The
     // four bytes below `aligned` hold the *physical* address of the raw block —
-    // `kfree` reads it back and re-derives the VA through the direct map.
+    // `kfree_raw` reads it back and re-derives the VA through the direct map.
     let raw_phys = v2p(raw) as u32;
     let addr = (raw as usize) + 4;
     let aligned = (addr + align - 1) & !(align - 1);
-    // SAFETY: `kmalloc_aligned` reserved four extra bytes below `aligned` for
+    // SAFETY: `kmalloc_aligned_raw` reserved four extra bytes below `aligned` for
     // exactly this back-pointer; `aligned` is inside the block just returned by
-    // `kmalloc`, which lives in the heap window.
+    // `kmalloc_raw`, which lives in the heap window.
     unsafe { *((aligned - 4) as *mut u32) = raw_phys; }
     aligned as *mut u8
 }
 
 /// # Safety
 ///
-/// `ptr` must be null or a **virtual** address (direct-map, as `kmalloc` /
-/// `kmalloc_aligned` hand out) of a block previously returned by those and not
-/// already freed, and it must stay valid for the duration of the call.
+/// `ptr` must be null or a **virtual** address (direct-map, as the heap
+/// allocators hand out) of a block previously returned by them and not already
+/// freed, and it must stay valid for the duration of the call.
 ///
 /// The free list is held in direct-map VAs, so the walk below works on the
-/// pointer itself; only the `kmalloc_aligned` back-pointer is stored physically
-/// and has to be translated on the way in.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn kfree(ptr: *mut u8) {
+/// pointer itself; only the `kmalloc_aligned_raw` back-pointer is stored
+/// physically and has to be translated on the way in.
+pub unsafe extern "C" fn kfree_raw(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
@@ -551,9 +553,8 @@ unsafe fn absorb_next(block: *mut HeapBlock, next: *mut HeapBlock, hdr_size: u32
 ///
 /// # Safety
 ///
-/// `ptr` must be null or a live block pointer previously returned by `kmalloc` /
-/// `kmalloc_aligned` and not yet freed.
-#[unsafe(no_mangle)]
+/// `ptr` must be null or a live **heap** block pointer previously returned by the
+/// heap allocators (`kmalloc_raw` / `kmalloc_aligned_raw`) and not yet freed.
 pub unsafe extern "C" fn kmalloc_usable_size(ptr: *mut u8) -> usize {
     // SAFETY: `raw_block` requires a live block pointer, which is this function's
     // caller contract.
@@ -566,22 +567,22 @@ pub unsafe extern "C" fn kmalloc_usable_size(ptr: *mut u8) -> usize {
     end.saturating_sub(ptr as usize).saturating_sub(4)
 }
 
-/// Grow or shrink a live block, keeping the same pointer whenever the block
-/// already fits on its own or after absorbing its physically next free block.
+/// Grow or shrink a live **heap** block, keeping the same pointer whenever the
+/// block already fits on its own or after absorbing its physically next free
+/// block.  Slab objects are handled by the `krealloc_aligned` dispatcher above.
 ///
 /// # Safety
 ///
-/// `ptr` must be null or a live block pointer from `kmalloc_aligned` (or
-/// `kmalloc`) that has not been freed, and `align` a power of two — the same
-/// alignment the block was allocated with.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8 {
+/// `ptr` must be null or a live heap block from the heap allocators that has not
+/// been freed, and `align` a power of two — the same alignment the block was
+/// allocated with.
+pub unsafe extern "C" fn krealloc_aligned_raw(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8 {
     if ptr.is_null() {
-        return kmalloc_aligned(new_size, align);
+        return kmalloc_aligned_raw(new_size, align);
     }
     if new_size == 0 {
         // SAFETY: `ptr` is a live block (caller contract), so it may be freed.
-        unsafe { kfree(ptr) };
+        unsafe { kfree_raw(ptr) };
         return core::ptr::null_mut();
     }
     // Same ceiling `kmalloc` enforces: a request the header cannot represent is
@@ -641,7 +642,7 @@ pub unsafe extern "C" fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: 
         }
         Realloc::Move => {
             lock_release(HEAP_LOCK.as_ptr());
-            let new = kmalloc_aligned(new_size, align);
+            let new = kmalloc_aligned_raw(new_size, align);
             if new.is_null() {
                 return core::ptr::null_mut();
             }
@@ -653,8 +654,106 @@ pub unsafe extern "C" fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: 
             // was just carved from the same heap.
             unsafe { core::ptr::copy_nonoverlapping(ptr, new, copy) };
             // SAFETY: `ptr` is the caller's live block, now superseded by `new`.
-            unsafe { kfree(ptr) };
+            unsafe { kfree_raw(ptr) };
             new
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatchers — the allocator the rest of the kernel (and C) calls.
+//
+// Small, 8-aligned requests come from the slab size caches; everything else
+// comes from the heap.  Freeing is uniform: `kfree` asks the slab allocator
+// first (a page header magic tells a slab object from a heap block) and falls
+// back to the heap, so a block is freed correctly whatever allocated it.
+// ---------------------------------------------------------------------------
+
+/// Allocate `size` bytes: from a slab size cache when the request fits one, from
+/// the heap otherwise.
+#[unsafe(no_mangle)]
+pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
+    if size == 0 {
+        return core::ptr::null_mut();
+    }
+    if size <= SLAB_MAX_OBJ_SIZE as usize {
+        crate::alloc::slab::slab_kmalloc(size)
+    } else {
+        kmalloc_raw(size)
+    }
+}
+
+/// Allocate `size` bytes aligned to `align`: the slab caches and heap blocks are
+/// all 8-aligned, so a request at or below that goes through `kmalloc`; a larger
+/// alignment needs the heap's back-pointer scheme.
+#[unsafe(no_mangle)]
+pub extern "C" fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
+    if align <= 8 {
+        kmalloc(size)
+    } else {
+        kmalloc_aligned_raw(size, align)
+    }
+}
+
+/// Free a block from `kmalloc` / `kmalloc_aligned` (any size or alignment).
+///
+/// # Safety
+///
+/// `ptr` must be null or a live block from those and not already freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn kfree(ptr: *mut u8) {
+    if ptr.is_null() {
+        return;
+    }
+    // A slab object's page carries `SLAB_MAGIC` at its base; anything else is a
+    // heap block, aligned or not.
+    if crate::alloc::slab::slab_try_free(ptr) {
+        return;
+    }
+    // SAFETY: `ptr` is a live block (caller contract) and not a slab object.
+    unsafe { kfree_raw(ptr) };
+}
+
+/// Grow or shrink a live block, keeping the same pointer whenever the block
+/// already fits — on its own, after absorbing the heap's next free block, or (for
+/// a slab object) while it still fits its size class.
+///
+/// # Safety
+///
+/// `ptr` must be null or a live block from `kmalloc` / `kmalloc_aligned` that has
+/// not been freed, and `align` a power of two — the alignment it was allocated
+/// with.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8 {
+    if ptr.is_null() {
+        return kmalloc_aligned(new_size, align);
+    }
+    if new_size == 0 {
+        // SAFETY: `ptr` is a live block (caller contract), so it may be freed.
+        unsafe { kfree(ptr) };
+        return core::ptr::null_mut();
+    }
+    // SAFETY: `ptr` is a live block (caller contract).
+    let obj_size = crate::alloc::slab::slab_object_size(ptr);
+    if obj_size > 0 {
+        // Slab object: a same-or-smaller 8-aligned request stays put; anything
+        // else needs a fresh block and a copy of the live bytes.
+        if new_size <= obj_size as usize && align <= 8 {
+            return ptr;
+        }
+        let new = kmalloc_aligned(new_size, align);
+        if new.is_null() {
+            return core::ptr::null_mut();
+        }
+        let copy = (obj_size as usize).min(new_size);
+        // SAFETY: `new` is a fresh block of at least `new_size` bytes and `ptr` a
+        // live `obj_size`-byte object; the two do not overlap.
+        unsafe { core::ptr::copy_nonoverlapping(ptr, new, copy) };
+        // SAFETY: `ptr` is the caller's live block, now superseded by `new`.
+        unsafe { kfree(ptr) };
+        return new;
+    }
+    // Heap block: the heap resize handles in-place grow/shrink itself.
+    // SAFETY: `ptr` is a live heap block (caller contract).
+    unsafe { krealloc_aligned_raw(ptr, new_size, align) }
 }

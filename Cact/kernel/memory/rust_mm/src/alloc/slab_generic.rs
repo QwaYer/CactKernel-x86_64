@@ -5,12 +5,10 @@
 
 use crate::ffi::*;
 use crate::safe::{KStatic, kprint_str, klog_msg};
-use crate::alloc::heap::{kmalloc, kfree};
+use crate::alloc::heap::{kmalloc_raw, kfree};
 use crate::alloc::slab::{
-    slab_alloc, slab_cache_create, slab_free, G_CACHE_LOCK, G_GENERIC_CACHES, Slab,
-    GENERIC_CACHE_COUNT,
+    slab_alloc, slab_cache_create, G_CACHE_LOCK, G_GENERIC_CACHES, GENERIC_CACHE_COUNT,
 };
-use crate::alloc::slab_owner::is_slab_header;
 
 const GENERIC_SIZES: [u32; GENERIC_CACHE_COUNT] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048];
 
@@ -75,37 +73,29 @@ pub extern "C" fn slab_kmalloc(size: usize) -> *mut u8 {
     let caches = unsafe { KStatic::get_mut(G_GENERIC_CACHES.as_ptr()) };
     for i in 0..GENERIC_CACHE_COUNT {
         if size <= GENERIC_SIZES[i] as usize {
-            // SAFETY: `caches[i]` is a live cache pointer installed by `slab_init`
-            // and never destroyed.
-            return unsafe { slab_alloc(caches[i]) };
+            let cache = caches[i];
+            if !cache.is_null() {
+                // SAFETY: `cache` is a live cache installed by `slab_init` and
+                // never destroyed.
+                return unsafe { slab_alloc(cache) };
+            }
+            // The size classes are created in order at boot, so a null entry means
+            // the caches are not up yet (an allocation this early must not fail):
+            // fall through to the heap, which serves it as a plain block.
+            break;
         }
     }
-    kmalloc(size)
+    kmalloc_raw(size)
 }
 
 /// # Safety
 ///
 /// `ptr` must be null, or a pointer to a live slab/heap block previously
-/// returned by `slab_kmalloc`/`kmalloc` and not yet freed.
+/// returned by this allocator and not yet freed.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn slab_kfree(ptr: *mut u8) {
-    if ptr.is_null() {
-        return;
-    }
-    // SAFETY: obj resides in a page whose start may be a Slab header.  Objects
-    // are direct-map VAs (their slab page is a `kalloc` frame) and the direct map
-    // is page-aligned, so masking the low 12 bits of the VA yields the page base.
-    let s = (ptr as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
-    // SAFETY: `s` is the start of the page containing `ptr`; the header is only
-    // read, and `is_slab_header` trusts it only when its magic matches.
-    let s = unsafe { &*s };
-    if is_slab_header(s.magic, s.capacity, !s.cache.is_null()) {
-        // SAFETY: the page header is a live slab header, so `s.cache` is a live
-        // cache and `ptr` is one of its objects, per the caller contract.
-        unsafe { slab_free(s.cache, ptr) };
-        return;
-    }
-    // SAFETY: `ptr` was not recognised as a live slab object, so it is handed to
-    // the heap, which validates the block before touching it.
-    unsafe { kfree(ptr); }
+    // `kfree` already tells a slab object from a heap block by the page magic, so
+    // this is just the same allocator's ordinary free.
+    // SAFETY: caller contract.
+    unsafe { kfree(ptr) };
 }
