@@ -12,8 +12,12 @@
  * header owned by the DRM core, so the kernel never reaches for a hosted
  * <sys/types.h> or a libc-flavoured types header.
  *
- * 32-bit kernel: long is 32 bits, so the __kernel_* aliases agree with the
- * C99 types above.
+ * The __kernel_* aliases follow Linux's x86_64 widths (<asm-generic/posix_types.h>:
+ * long and size_t are 64-bit).  They used to carry i386 widths, which made every
+ * struct that holds a __kernel_size_t — drm_version, drm_unique — a different size
+ * from Linux's, and therefore gave the DRM_IOCTL_* numbers a different payload
+ * size than libdrm and Mesa compute.  Userspace is the standard's copy of these
+ * headers (Cact/uapi/linux/types.h), and both sides must agree with Linux.
  */
 
 #include <stdint.h>
@@ -38,8 +42,8 @@ typedef __u8   __kernel_uchar;
 typedef __u16  __kernel_ushort;
 typedef __u32  __kernel_uint;
 typedef __u64  __kernel_ulong_long;
-typedef __s32  __kernel_long;
-typedef __u32  __kernel_ulong;
-typedef __u32  __kernel_size_t;
+typedef int64_t  __kernel_long;
+typedef uint64_t __kernel_ulong;
+typedef __kernel_ulong __kernel_size_t;
 
 #endif /* CACT_DRM_TYPES_H */

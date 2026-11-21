@@ -14,6 +14,10 @@
  * produces, or lookup and the copy size disagree.
  */
 
+/* The same encoders the libc's <sys/ioctl.h> provides, so the block is
+ * guarded: whichever a translation unit reaches first defines them and the
+ * other defers (a program may include both, e.g. through libsync.h). */
+#ifndef _IOC
 #define _IOC_NRBITS   8
 #define _IOC_TYPEBITS 8
 #define _IOC_SIZEBITS 14
@@ -50,5 +54,6 @@
 #define _IOC_TYPE(nr) (((nr) >> _IOC_TYPESHIFT) & _IOC_TYPEMASK)
 #define _IOC_NR(nr)   (((nr) >> _IOC_NRSHIFT) & _IOC_NRMASK)
 #define _IOC_SIZE(nr) (((nr) >> _IOC_SIZESHIFT) & _IOC_SIZEMASK)
+#endif /* !_IOC */
 
 #endif /* CACT_DRM_IOCTL_H */

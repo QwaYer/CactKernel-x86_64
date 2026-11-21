@@ -51,11 +51,12 @@ struct DrmVersion {
     version_major: c_int,
     version_minor: c_int,
     version_patchlevel: c_int,
-    name_len: u32, // __kernel_size_t on i386
+    // __kernel_size_t — 64-bit on x86_64 (Linux's width; see drm_types.h).
+    name_len: usize,
     name: *mut u8,
-    date_len: u32,
+    date_len: usize,
     date: *mut u8,
-    desc_len: u32,
+    desc_len: usize,
     desc: *mut u8,
 }
 
@@ -114,8 +115,8 @@ struct WaitVblank {
     tval_usec: i32, // reply.tval_usec
 }
 
-const _: () = assert!(core::mem::size_of::<DrmVersion>() == 56);
-const _: () = assert!(core::mem::offset_of!(DrmVersion, name) == 16);
+const _: () = assert!(core::mem::size_of::<DrmVersion>() == 64);
+const _: () = assert!(core::mem::offset_of!(DrmVersion, name) == 24);
 const _: () = assert!(core::mem::size_of::<DrmGetCap>() == 16);
 const _: () = assert!(core::mem::size_of::<DrmSetClientCap>() == 16);
 const _: () = assert!(core::mem::size_of::<DrmAuth>() == 4);
@@ -129,7 +130,7 @@ const _: () = assert!(core::mem::size_of::<WaitVblank>() == 16);
 const fn drm_ioc(dir: u32, nr: u32, size: u32) -> u32 {
     (dir << 30) | (0x64u32 << 8) | nr | (size << 16)
 }
-const DRM_IOCTL_VERSION: u32 = drm_ioc(3, 0x00, 36);
+const DRM_IOCTL_VERSION: u32 = drm_ioc(3, 0x00, 64);   // sizeof(struct drm_version), x86_64
 const DRM_IOCTL_GET_MAGIC: u32 = drm_ioc(2, 0x02, 4);
 const DRM_IOCTL_GEM_CLOSE: u32 = drm_ioc(1, 0x09, 8);
 const DRM_IOCTL_GEM_FLINK: u32 = drm_ioc(3, 0x0a, 8);
@@ -326,10 +327,10 @@ pub extern "C" fn drm_legacy_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void
                  * as libdrm does. */
                 // SAFETY: `name` is a NUL-terminated string (a driver static or the
                 // literal below), so `cstrlen`'s contract is met.
-                let n = unsafe { cstrlen(name) };
+                let n = unsafe { cstrlen(name) } as usize;
                 if !v.name.is_null() && v.name_len != 0 {
                     let c = if n < v.name_len { n } else { v.name_len };
-                    if drm_copy_out(v.name as *mut c_void, name as *const c_void, c) != 0 {
+                    if drm_copy_out(v.name as *mut c_void, name as *const c_void, c as u32) != 0 {
                         return -22;
                     }
                 }
