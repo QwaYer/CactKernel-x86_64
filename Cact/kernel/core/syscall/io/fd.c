@@ -7,6 +7,7 @@
 #include "pipe.h"
 #include "ioctl_abi.h"
 #include "kernel.h"   // terminal_winsize
+#include "memfd.h"    // memfd_fd_handle / the seals (F_ADD_SEALS / F_GET_SEALS)
 
 // SOCKCTL_* node-ioctl dispatcher (defined in net/net.c)
 int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg);
@@ -722,6 +723,16 @@ int sys_fcntl(int fd, int cmd, int arg) {
         if (f->node && f->node->type == VFS_PIPE)
             vfs_pipe_set_nonblock(f->node, (int)(new_flags & O_NONBLOCK));
         return 0;
+    }
+    case CACT_F_GET_SEALS: {
+        int h = memfd_fd_handle(fd);
+        if (h < 0) return -1;
+        return memfd_get_seals(h);
+    }
+    case CACT_F_ADD_SEALS: {
+        int h = memfd_fd_handle(fd);
+        if (h < 0) return -1;
+        return memfd_add_seals(h, (uint32_t)arg);
     }
     default:
         return -1;

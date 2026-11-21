@@ -32,6 +32,15 @@ pub const MEMFD_PAGES_GROW: u32 = 16 * 1024;
 /// array.  `grow_locked` also rolls back when `kalloc` runs out, so free RAM is
 /// the real limit.
 pub const MEMFD_PAGES_MAX: u32 = PMM_MAX_FRAMES;
+
+/// memfd_create flag and the seals — kept equal to CACT_MFD_ALLOW_SEALING and
+/// CACT_F_SEAL_* in `ioctl_abi.h` (the libc's <fcntl.h> defines the POSIX
+/// spellings of the same values).
+const MFD_ALLOW_SEALING: u32 = 0x0002;
+const F_SEAL_SEAL: u32 = 0x0001;
+const F_SEAL_SHRINK: u32 = 0x0002;
+const F_SEAL_GROW: u32 = 0x0004;
+const F_SEAL_WRITE: u32 = 0x0008;
 pub const MEMFD_NAME_MAX: usize = 128;
 
 pub const MFD_CLOEXEC: i32 = 0x0001;
@@ -49,6 +58,9 @@ struct MemFd {
     /// by `maybe_free_locked` when the object is destroyed.
     pages: *mut *mut u8,
     flags: u32,
+    /// Seal bits added by F_ADD_SEALS (CACT_F_SEAL_* in ioctl_abi.h); once
+    /// CACT_F_SEAL_SEAL is in the set it may never change again.
+    seals: u32,
     fds: i32,
     maps: i32,
     valid: i32,
@@ -62,6 +74,7 @@ const MEMFD_EMPTY: MemFd = MemFd {
     pages_cap: 0,
     pages: core::ptr::null_mut(),
     flags: 0,
+    seals: 0,
     fds: 0,
     maps: 0,
     valid: 0,
@@ -232,6 +245,7 @@ pub unsafe extern "C" fn memfd_create(name: *const u8, name_len: u32, flags: i32
     // allocated lazily by the first `grow_locked`.
     s.pages_cap = 0;
     s.flags = flags as u32;
+    s.seals = 0;
     s.fds = 0;
     s.maps = 0;
     s.valid = 1;
@@ -464,6 +478,11 @@ pub unsafe extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size
     // SAFETY: `MEMFD_TABLE[handle-1]` read/updated under `MEMFD_LOCK`; the frames
     // it owns stay live for the duration of the copy.
     let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
+    // F_SEAL_WRITE: a sealed object refuses further writes.
+    if s.seals & F_SEAL_WRITE != 0 {
+        lock_release(MEMFD_LOCK.as_ptr());
+        return -1;
+    }
     if !grow_locked(s, ceil_pages(end) as u32) {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
@@ -511,6 +530,14 @@ pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
     }
     // SAFETY: `MEMFD_TABLE[handle-1]` mutated under `MEMFD_LOCK`.
     let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
+    // The seals are exactly what Wayland's shm pool leans on: F_SEAL_SHRINK
+    // stops a client shrinking the pool out from under the compositor.
+    if (new_size < s.size && s.seals & F_SEAL_SHRINK != 0)
+        || (new_size > s.size && s.seals & F_SEAL_GROW != 0)
+    {
+        lock_release(MEMFD_LOCK.as_ptr());
+        return -1;
+    }
     if new_size > s.size
         && !grow_locked(s, ceil_pages(new_size) as u32) {
             lock_release(MEMFD_LOCK.as_ptr());
@@ -521,4 +548,42 @@ pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
     s.size = new_size;
     lock_release(MEMFD_LOCK.as_ptr());
     0
+}
+
+/// Add seals to a memfd (F_ADD_SEALS).  Linux's rule: only an object created
+/// with MFD_ALLOW_SEALING may be sealed, and F_SEAL_SEAL, once set, freezes the
+/// set.  Returns 0, or -1 when the object refuses.
+#[unsafe(no_mangle)]
+pub extern "C" fn memfd_add_seals(handle: i32, seals: u32) -> i32 {
+    memfd_ensure_init();
+    lock_acquire(MEMFD_LOCK.as_ptr());
+    if !handle_valid(handle) {
+        lock_release(MEMFD_LOCK.as_ptr());
+        return -1;
+    }
+    // SAFETY: `MEMFD_TABLE[handle-1]` mutated under `MEMFD_LOCK`.
+    let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
+    if s.flags & MFD_ALLOW_SEALING == 0 || s.seals & F_SEAL_SEAL != 0 {
+        lock_release(MEMFD_LOCK.as_ptr());
+        return -1;
+    }
+    s.seals |= seals;
+    lock_release(MEMFD_LOCK.as_ptr());
+    0
+}
+
+/// The memfd's seal bits (F_GET_SEALS), or -1 when the handle is not a memfd.
+#[unsafe(no_mangle)]
+pub extern "C" fn memfd_get_seals(handle: i32) -> i32 {
+    memfd_ensure_init();
+    lock_acquire(MEMFD_LOCK.as_ptr());
+    if !handle_valid(handle) {
+        lock_release(MEMFD_LOCK.as_ptr());
+        return -1;
+    }
+    // SAFETY: `MEMFD_TABLE[handle-1]` read under `MEMFD_LOCK`.
+    let s = &(unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
+    let seals = s.seals as i32;
+    lock_release(MEMFD_LOCK.as_ptr());
+    seals
 }

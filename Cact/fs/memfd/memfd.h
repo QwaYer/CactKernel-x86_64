@@ -24,6 +24,12 @@ int memfd_truncate(int handle, uint64_t size);
 int64_t memfd_size(int handle);     // -1 on error, else the 64-bit byte length
 int memfd_map_inc(int handle);      // MAP_SHARED region added
 int memfd_map_dec(int handle);      // MAP_SHARED region removed
+/* Seals (F_ADD_SEALS / F_GET_SEALS, see ioctl_abi.h).  Adding requires the
+ * object to have been created with CACT_MFD_ALLOW_SEALING and its
+ * CACT_F_SEAL_SEAL not yet set; the set is enforced by memfd_truncate (shrink /
+ * grow) and memfd_write (write).  Both return -1 on error. */
+int memfd_add_seals(int handle, uint32_t seals);
+int memfd_get_seals(int handle);
 
 /* Frame pointer for page `idx` of the object, or NULL when the handle/size is
  * invalid.  Frames are `kalloc`'d, so the result is a direct-map VA: usable

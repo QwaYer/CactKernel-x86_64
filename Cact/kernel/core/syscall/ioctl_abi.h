@@ -156,7 +156,6 @@ typedef struct cact_getdents_arg { void *buf; uint32_t count; } cact_getdents_ar
 #define CACT_O_WRONLY 1
 #define CACT_O_RDWR   2
 #define CACT_O_CREAT  0x0040
-#define CACT_O_EXCL   0x0080
 #define CACT_O_TRUNC  0x0200
 #define CACT_O_NONBLOCK 0x0800
 
@@ -712,7 +711,24 @@ typedef struct cact_crypt_x509_verify_arg {
 #define CACT_MEMFDCTL_CREATE 0x3801  // arg=cact_memfd_create_arg_t*; returns new fd
 
 // memfd_create(2) flags
-#define CACT_MFD_CLOEXEC 0x0001
+#define CACT_MFD_CLOEXEC       0x0001
+// Sealing is opt-in: a memfd may only be sealed if it was created with this
+// flag (Linux's rule), which is why Wayland passes it.
+#define CACT_MFD_ALLOW_SEALING 0x0002
+
+// Sealing (memfd_create(2) + fcntl(2)).  These two are the fcntl commands — the
+// same numbers as Linux's F_ADD_SEALS/F_GET_SEALS, which is what the libc passes
+// straight through — and the commands only make sense on a memfd, so they live
+// here with the rest of the memfd control ABI.
+#define CACT_F_ADD_SEALS 1033  // arg = seal bits; needs CACT_MFD_ALLOW_SEALING
+#define CACT_F_GET_SEALS 1034  // returns the object's seal bits
+
+// The seals themselves, the Linux values — the libc's <fcntl.h> must agree.
+#define CACT_F_SEAL_SEAL         0x0001  // freezes the seal set
+#define CACT_F_SEAL_SHRINK       0x0002  // no more shrinking (ftruncate)
+#define CACT_F_SEAL_GROW         0x0004  // no more growing (ftruncate)
+#define CACT_F_SEAL_WRITE        0x0008  // no more writes
+#define CACT_F_SEAL_FUTURE_WRITE 0x0010  // no new writable mappings
 
 typedef struct cact_memfd_create_arg {
     char     *name;      // optional, NUL-terminated (may be NULL)
