@@ -32,7 +32,9 @@ mod ffi;
 // Rust API for other kernel crates: the same functions the C ABI exports, but
 // reachable as ordinary Rust items, so `sched`/`rust_drm`/`rust_net` call them
 // with `use cact_mm::…` instead of re-declaring `extern "C"` themselves.
-pub use crate::alloc::heap::{kfree, kmalloc, kmalloc_aligned};
+pub use crate::alloc::heap::{
+    kfree, kmalloc, kmalloc_aligned, kmalloc_usable_size, krealloc_aligned,
+};
 pub use crate::ffi::PMM_MAX_FRAMES;
 pub use crate::pmm::{free_page, kalloc};
 pub use crate::process::proc_mm::{proc_free_pages, proc_tracker_add};

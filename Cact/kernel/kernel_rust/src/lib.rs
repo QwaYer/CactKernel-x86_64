@@ -48,6 +48,31 @@ unsafe impl GlobalAlloc for CactAllocator {
         // is a live block from `kmalloc_aligned` that `kfree` may release.
         unsafe { cact_mm::kfree(ptr) };
     }
+
+    /// # Safety
+    ///
+    /// See [`GlobalAlloc::realloc`]: `ptr` must come from `alloc`/`realloc` on
+    /// this allocator with `layout`, and `new_size` must be non-zero.
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        // SAFETY: the caller upholds `GlobalAlloc::realloc`'s contract, so `ptr`
+        // is a live block from this allocator; `realloc` keeps it in place when it
+        // fits and otherwise allocates a fresh `new_size` block and copies.
+        unsafe { cact_mm::krealloc_aligned(ptr, new_size, layout.align()) }
+    }
+
+    /// # Safety
+    ///
+    /// See [`GlobalAlloc::alloc_zeroed`]: `layout` must have a non-zero size.
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let ptr = cact_mm::kmalloc_aligned(layout.size(), layout.align());
+        if !ptr.is_null() {
+            // SAFETY: `ptr` is a fresh block of at least `layout.size()` bytes, so
+            // zeroing exactly that many is in bounds; the block holds no typed
+            // contents yet.
+            unsafe { core::ptr::write_bytes(ptr, 0, layout.size()) };
+        }
+        ptr
+    }
 }
 
 #[global_allocator]
