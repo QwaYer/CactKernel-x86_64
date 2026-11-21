@@ -7,10 +7,11 @@
 //!
 //! `kmalloc` / `kfree` are IRQ-spinlocked and back much of the kernel and Rust MM code.
 
+use crate::alloc::heap_stats::HeapAggregate;
 use crate::alloc::realloc_plan::{plan, should_split, Realloc};
 use crate::ffi::*;
 use crate::pmm::{heap_end, heap_start};
-use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, klog_msg};
+use crate::safe::{KStatic, lock_acquire, lock_release, kprint_int, kprint_str, klog_msg};
 use crate::vmm::paging::{p2v, v2p};
 
 #[repr(C)]
@@ -378,25 +379,71 @@ fn kfree_impl(ptr: *mut u8) {
     lock_release(HEAP_LOCK.as_ptr());
 }
 
+/// Kernel-heap fragmentation summary, reported by `/proc/meminfo`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct HeapStats {
+    /// Sum of the sizes of the free blocks.
+    pub free_bytes: u32,
+    /// Sum of the sizes of the in-use blocks.
+    pub used_bytes: u32,
+    /// Number of free blocks.
+    pub free_blocks: u32,
+    /// Number of blocks of any kind.
+    pub total_blocks: u32,
+    /// Size of the largest free block (0 when the list holds no free block).
+    pub largest_free: u32,
+}
+
+/// Walk the heap list once and fold it into a [`HeapStats`].  The list is
+/// address-ordered and every block carries its own size, so one pass gives both
+/// the totals and the fragmentation shape (free-block count, largest free).
 #[unsafe(no_mangle)]
-pub extern "C" fn get_free_heap_memory() -> u32 {
-    let mut free_mem: u32 = 0;
+pub extern "C" fn heap_get_stats() -> HeapStats {
+    let mut agg = HeapAggregate::new();
     lock_acquire(HEAP_LOCK.as_ptr());
     // SAFETY: `HEAP_START_PTR` read under `HEAP_LOCK`.
     let mut current = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
     while !current.is_null() {
-        // SAFETY: `(*current).is_free` of a heap-list node, under `HEAP_LOCK`.
-        let is_free = unsafe { (*current).is_free };
-        // SAFETY: `(*current).size` of the same node.
+        // SAFETY: `(*current).size` of a heap-list node, under `HEAP_LOCK`.
         let size = unsafe { (*current).size };
-        if is_free != 0 {
-            free_mem += size;
-        }
+        // SAFETY: `(*current).is_free` of the same node.
+        let is_free = unsafe { (*current).is_free } != 0;
+        agg.add(size, is_free);
         // SAFETY: following `(*current).next` in the locked heap list.
         current = unsafe { (*current).next };
     }
     lock_release(HEAP_LOCK.as_ptr());
-    free_mem
+    HeapStats {
+        free_bytes: agg.free_bytes,
+        used_bytes: agg.used_bytes,
+        free_blocks: agg.free_blocks,
+        total_blocks: agg.total_blocks,
+        largest_free: agg.largest_free,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn get_free_heap_memory() -> u32 {
+    heap_get_stats().free_bytes
+}
+
+/// One-line heap summary for the boot log and manual debugging; the same
+/// numbers `/proc/meminfo` reports, without the kB scaling.
+#[unsafe(no_mangle)]
+pub extern "C" fn kmalloc_print_stats() {
+    let s = heap_get_stats();
+    kprint_str(c"heap: free=".as_ptr() as *const u8);
+    kprint_int(s.free_bytes as i32);
+    kprint_str(c" used=".as_ptr() as *const u8);
+    kprint_int(s.used_bytes as i32);
+    kprint_str(c" free_blocks=".as_ptr() as *const u8);
+    kprint_int(s.free_blocks as i32);
+    kprint_str(c" total_blocks=".as_ptr() as *const u8);
+    kprint_int(s.total_blocks as i32);
+    kprint_str(c" largest_free=".as_ptr() as *const u8);
+    kprint_int(s.largest_free as i32);
+    kprint_str(c"\n".as_ptr() as *const u8);
 }
 
 /// Resolve a live block pointer to its raw `HeapBlock` and the pointer's byte

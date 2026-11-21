@@ -81,6 +81,18 @@ void*     kmalloc(size_t size);
 void*     kmalloc_aligned(size_t size, size_t align);
 void      kfree(void* ptr);
 uint32_t  get_free_heap_memory(void);
+/* Kernel-heap fragmentation summary (rust_mm: alloc/heap.rs).  Sizes are raw
+ * block payloads and exclude the per-block headers, so free_bytes + used_bytes
+ * is the window minus the headers, not the window. */
+typedef struct {
+    uint32_t free_bytes;    /* sum of the free blocks' sizes            */
+    uint32_t used_bytes;    /* sum of the in-use blocks' sizes          */
+    uint32_t free_blocks;   /* number of free blocks                    */
+    uint32_t total_blocks;  /* number of blocks of any kind             */
+    uint32_t largest_free;  /* largest free block, 0 when none          */
+} heap_stats_t;
+heap_stats_t heap_get_stats(void);
+void         kmalloc_print_stats(void);
 uint32_t  pmm_total_frames(void);
 uint32_t  pmm_free_frames(void);
 /* Live end of the boot reservation in bytes (>= RESERVED_END); nothing below it

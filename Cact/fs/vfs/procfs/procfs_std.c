@@ -341,9 +341,11 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
                                                        : pmm_total_kb;
 
     uint32_t heap_total_kb = HEAP_SIZE / 1024u;
-    uint32_t heap_free_kb  = get_free_heap_memory() / 1024u;
+    heap_stats_t heap_stats = heap_get_stats();
+    uint32_t heap_free_kb  = heap_stats.free_bytes / 1024u;
     if (heap_free_kb > heap_total_kb) heap_free_kb = heap_total_kb;
     uint32_t heap_used_kb  = heap_total_kb - heap_free_kb;
+    uint32_t heap_largest_kb = heap_stats.largest_free / 1024u;
 
     uint32_t mem_free_kb = pmm_free_kb + heap_free_kb;
     if (mem_free_kb > mem_total_kb) mem_free_kb = mem_total_kb;
@@ -423,6 +425,8 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
     _A("HeapTotal:       "); _N(heap_total_kb); _A(" kB\n");
     _A("HeapFree:        "); _N(heap_free_kb);  _A(" kB\n");
     _A("HeapUsed:        "); _N(heap_used_kb);  _A(" kB\n");
+    _A("HeapLargest:     "); _N(heap_largest_kb); _A(" kB\n");
+    _A("HeapBlocks:      "); _N(heap_stats.free_blocks); _A("/"); _N(heap_stats.total_blocks); _A("\n");
     _A("MemReserved:     "); _N(mem_reserved_kb); _A(" kB\n");
     _A("PmmManaged:      "); _N(pmm_managed_kb);  _A(" kB\n");
     _A("PageCachePool:   "); _N(pc.pool_pages);    _A(" pages\n");
