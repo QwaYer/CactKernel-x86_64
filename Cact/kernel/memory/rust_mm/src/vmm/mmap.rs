@@ -8,7 +8,10 @@ use crate::munmap_plan::{clip_region, MunmapClip};
 use crate::pmm::{kalloc, free_page, page_ref_inc};
 use crate::vmm::paging::{vmm_map, p2v, v2p, walk};
 use crate::fault::page_fault::vmm_map_zero;
-use crate::process::memfd::{memfd_get_page, memfd_grow_to, memfd_map_dec, memfd_map_inc};
+use crate::process::memfd::{
+    memfd_get_page, memfd_get_seals, memfd_grow_to, memfd_map_dec, memfd_map_inc,
+    F_SEAL_FUTURE_WRITE, F_SEAL_WRITE,
+};
 
 unsafe extern "C" {
     /// Flush a file-backed mapping's page-cache range back to its filesystem.
@@ -311,6 +314,18 @@ pub unsafe extern "C" fn do_mmap(
             // Shared backing: map the object's own frames so that fd I/O,
             // truncate, fork, and other MAP_SHARED mappings see one storage.
             if !offset.is_multiple_of(PAGE_SIZE) || !obj_off.is_multiple_of(PAGE_SIZE) {
+                return MAP_FAILED as *mut u8;
+            }
+            // F_SEAL_WRITE / F_SEAL_FUTURE_WRITE: a sealed object refuses a *new*
+            // writable shared mapping — this is the mmap half of the seal, the
+            // other half being the refuse-write in memfd_write.  Mappings that
+            // already exist are not revoked: this region table cannot split a
+            // region, so that half of Linux's semantics is documented, not
+            // emulated.  `memfd_get_seals` is -1 when the backing object is not
+            // a memfd, which must not count as sealed.
+            let seals = memfd_get_seals(shobj);
+            let write_sealed = seals >= 0 && seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) as i32 != 0;
+            if prot & PROT_WRITE != 0 && write_sealed {
                 return MAP_FAILED as *mut u8;
             }
             if memfd_map_inc(shobj) != 0 {

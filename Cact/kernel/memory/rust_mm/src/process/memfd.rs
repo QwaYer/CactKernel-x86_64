@@ -36,11 +36,12 @@ pub const MEMFD_PAGES_MAX: u32 = PMM_MAX_FRAMES;
 /// memfd_create flag and the seals — kept equal to CACT_MFD_ALLOW_SEALING and
 /// CACT_F_SEAL_* in `ioctl_abi.h` (the libc's <fcntl.h> defines the POSIX
 /// spellings of the same values).
-const MFD_ALLOW_SEALING: u32 = 0x0002;
-const F_SEAL_SEAL: u32 = 0x0001;
-const F_SEAL_SHRINK: u32 = 0x0002;
-const F_SEAL_GROW: u32 = 0x0004;
-const F_SEAL_WRITE: u32 = 0x0008;
+pub const MFD_ALLOW_SEALING: u32 = 0x0002;
+pub const F_SEAL_SEAL: u32 = 0x0001;
+pub const F_SEAL_SHRINK: u32 = 0x0002;
+pub const F_SEAL_GROW: u32 = 0x0004;
+pub const F_SEAL_WRITE: u32 = 0x0008;
+pub const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
 pub const MEMFD_NAME_MAX: usize = 128;
 
 pub const MFD_CLOEXEC: i32 = 0x0001;
