@@ -58,11 +58,13 @@ pub struct CactStat {
     pub mode:  u32, // POSIX-ish mode (type bits | rwxrwxrwx)
     pub size:  u64, // 64-bit byte length
     pub type_: u32, // VFS node type
+    pub rdev:  u32, // device number (0 unless a device node sets one)
 }
 
 const _: () = assert!(core::mem::size_of::<CactStat>() == 24);
 const _: () = assert!(core::mem::offset_of!(CactStat, size) == 8);
 const _: () = assert!(core::mem::offset_of!(CactStat, type_) == 16);
+const _: () = assert!(core::mem::offset_of!(CactStat, rdev) == 20);
 
 /// Rich stat (`cact_statx_t`): POSIX-style metadata the small `cact_stat_t`
 /// cannot carry (uid/gid/nlink/size in bytes/blocks).  Times are reported from
@@ -82,12 +84,14 @@ pub struct CactStatx {
     pub mtime:   u64,
     pub ctime:   u64,
     pub type_:   u32, // VFS node type
+    pub rdev:    u32, // device number (0 unless a device node sets one)
 }
 
 const _: () = assert!(core::mem::size_of::<CactStatx>() == 72);
 const _: () = assert!(core::mem::offset_of!(CactStatx, size) == 24);
 const _: () = assert!(core::mem::offset_of!(CactStatx, atime) == 40);
 const _: () = assert!(core::mem::offset_of!(CactStatx, type_) == 64);
+const _: () = assert!(core::mem::offset_of!(CactStatx, rdev) == 68);
 
 /// Filesystem statistics (`cact_statfs_t`, 32 bytes / POSIX `struct statfs`).
 #[repr(C)]

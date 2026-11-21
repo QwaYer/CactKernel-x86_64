@@ -349,6 +349,10 @@ pub unsafe extern "C" fn vfs_fill_stat(node: *mut VfsNode, buf: *mut CactStat) {
         (*buf).mode = vfs_type_to_mode((*node).type_) | ((*node).mode & 0o777);
         (*buf).size = (*node).size;
         (*buf).type_ = (*node).type_;
+        // No device number by default: CactOS has no device-number namespace,
+        // and only a device node that cares (the DRM nodes, through their
+        // `ops->stat`) reports one.
+        (*buf).rdev = 0;
     }
 }
 
@@ -386,6 +390,7 @@ pub unsafe extern "C" fn vfs_fill_statx(node: *mut VfsNode, buf: *mut CactStatx)
         (*buf).mtime = now;
         (*buf).ctime = now;
         (*buf).type_ = (*node).type_;
+        (*buf).rdev = 0;
     }
 }
 

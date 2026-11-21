@@ -21,17 +21,50 @@ use crate::ioctl::drm_ioctl_dispatch;
 use crate::kms::framebuffer::drm_fb_handle_release;
 use crate::structs::{DrmDevice, DrmFile, EventVblank, FILE_NAME_MAX};
 use crate::vfs::{
-    copy_cstr, File, VfsFileOps, VfsNode, VfsOps, VFS_CHARDEVICE, VFS_POLLERR, VFS_POLLIN,
-    VFS_POLLOUT,
+    copy_cstr, vfs_fill_stat, CactStat, File, VfsFileOps, VfsNode, VfsOps, VFS_CHARDEVICE,
+    VFS_POLLERR, VFS_POLLIN, VFS_POLLOUT,
 };
 
-/// The node-ops table of a DRM card: only the mmap hook, which is how
-/// `DRM_IOCTL_MODE_MAP_DUMB` offsets reach `do_mmap()`.
+/// The Linux DRM major.  CactOS has no device-number namespace of its own, so
+/// the DRM nodes adopt this one because the userspace DRM stack (libdrm) picks
+/// a node by `major(st_rdev) == 226` and `minor(st_rdev)`.
+const DRM_MAJOR: u32 = 226;
+
+/// The node-ops table of a DRM card: the mmap hook (how
+/// `DRM_IOCTL_MODE_MAP_DUMB` offsets reach `do_mmap()`) and the stat hook that
+/// gives the node a device number.
 static mut DRM_NODE_OPS: VfsOps = VfsOps {
     before: [core::ptr::null_mut(); 17],
     mmap_backing: Some(drm_node_mmap_backing),
-    after: [core::ptr::null_mut(); 7],
+    after_mmap: [core::ptr::null_mut(); 4],
+    stat: Some(drm_node_stat),
+    after_stat: [core::ptr::null_mut(); 2],
 };
+
+/// `stat` for a card/render node: the VFS fields plus the device number.
+/// CactOS's `st_rdev` exists for exactly this — libdrm decides card vs render
+/// by it — so the number follows Linux: major 226, minor N for cardN and
+/// 128 + N for renderDN (the DRM core numbers its devices that way).
+extern "C" fn drm_node_stat(node: *mut VfsNode, buf: *mut CactStat) -> c_int {
+    if node.is_null() || buf.is_null() {
+        return 0;
+    }
+    // SAFETY: the VFS calls this with the live node whose ops table carries
+    // this hook, and with a writable `cact_stat_t`; the same contract holds for
+    // `vfs_fill_stat`.
+    unsafe {
+        vfs_fill_stat(node, buf);
+        let dev = (*node).priv_ as *mut DrmDevice;
+        if dev.is_null() {
+            return 0;
+        }
+        let minor = (*dev).minor as u32;
+        let devnum = if (*dev).render_node == node { 128 + minor } else { minor };
+        // glibc device-number encoding, so libc's major()/minor() decode it.
+        (*buf).rdev = (DRM_MAJOR << 8) | (devnum & 0xff) | ((devnum & 0xfff00) << 12);
+    }
+    0
+}
 
 /// The file-ops table: every operation on an open card fd.
 static mut DRM_NODE_FOPS: VfsFileOps = VfsFileOps {

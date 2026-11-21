@@ -74,20 +74,45 @@ pub struct VfsFileOps {
 
 const _: () = assert!(core::mem::size_of::<VfsFileOps>() == 48);
 
+/* ── cact_stat_t ────────────────────────────────────────────────────────── */
+
+/// `cact_stat_t` (24 bytes).  The DRM stat hook only writes `rdev`; the generic
+/// fields are filled by the VFS's own `vfs_fill_stat`.
+#[repr(C)]
+pub struct CactStat {
+    pub inode: u32,
+    pub mode:  u32,
+    pub size:  u64,
+    pub type_: u32,
+    pub rdev:  u32,
+}
+
+const _: () = assert!(core::mem::size_of::<CactStat>() == 24);
+
+extern "C" {
+    /// Fill the generic `cact_stat_t` fields from a node (`rust_vfs`).  The
+    /// contract is the same as for `VfsOps::stat`: `node` is the node whose ops
+    /// table carries this hook and `buf` is a writable `cact_stat_t`.
+    pub fn vfs_fill_stat(node: *mut VfsNode, buf: *mut CactStat);
+}
+
 /* ── vfs_ops_t ──────────────────────────────────────────────────────────── */
 
-/// Only `mmap_backing` is ever set on a DRM node; the other 24 slots stay NULL,
-/// so they are carried as opaque words.  The slot positions are what matter,
-/// and the size assert pins them.
+/// A DRM node sets two hooks — `mmap_backing` (slot 17) and `stat` (slot 22) —
+/// and every other slot stays NULL, so those are carried as opaque words.  The
+/// slot positions are what matter, and the offset asserts pin them.
 #[repr(C)]
 pub struct VfsOps {
     pub before: [*mut c_void; 17],
     pub mmap_backing: Option<extern "C" fn(*mut VfsNode, u32, u32, *mut c_int, *mut u32) -> c_int>,
-    pub after: [*mut c_void; 7],
+    pub after_mmap: [*mut c_void; 4],          // slots 18..21
+    pub stat: Option<extern "C" fn(*mut VfsNode, *mut CactStat) -> c_int>, // slot 22
+    pub after_stat: [*mut c_void; 2],          // slots 23..24
 }
 
 const _: () = assert!(core::mem::size_of::<VfsOps>() == 200);
 const _: () = assert!(core::mem::offset_of!(VfsOps, mmap_backing) == 136);
+const _: () = assert!(core::mem::offset_of!(VfsOps, stat) == 176);
 
 /* ── vfs_dirent_t ───────────────────────────────────────────────────────── */
 
