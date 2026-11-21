@@ -165,7 +165,7 @@ pub const SHM_RDONLY: i32 = 0x1000;
 pub const SHM_RND: i32 = 0x2000;
 
 pub const MAX_FD: usize = 256;
-pub const NSIG: usize = 13;
+pub const NSIG: usize = 19;
 pub const SIGKILL: u32 = 1 << 0;
 pub const SIGSEGV: u32 = 1 << 8;
 /// si_code for a signal the kernel generated itself (a fault).

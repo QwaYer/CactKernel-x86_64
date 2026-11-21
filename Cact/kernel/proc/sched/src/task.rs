@@ -33,6 +33,12 @@ pub const SIGWINCH: u32 = 1 << 9;
 pub const SIGHUP:   u32 = 1 << 10;
 pub const SIGINT:   u32 = 1 << 11;
 pub const SIGQUIT:  u32 = 1 << 12;
+pub const SIGILL:   u32 = 1 << 13;
+pub const SIGTRAP:  u32 = 1 << 14;
+pub const SIGABRT:  u32 = 1 << 15;
+pub const SIGBUS:   u32 = 1 << 16;
+pub const SIGUSR1:  u32 = 1 << 17;
+pub const SIGUSR2:  u32 = 1 << 18;
 pub const SIG_UNCATCHABLE: u32 = SIGKILL | SIGSTOP;
 
 pub const SIG_DFL: u32 = 0;

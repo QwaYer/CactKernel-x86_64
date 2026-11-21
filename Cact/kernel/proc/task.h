@@ -31,7 +31,20 @@
 #define SIGINT   (1u << 11)
 #define SIGQUIT  (1u << 12)
 
-#define NSIG     13
+/* The rest of POSIX's fault/job-control set — CactOS keeps a real slot for each,
+ * so a hardware fault reaches its own handler.  The values are mask bits like
+ * the rest (bit 0 is SIGKILL), and NSIG is the slot count: the pending/mask
+ * words are uint32_t, so NSIG stays <= 32.  Keep in step with CactLibc's
+ * <signal.h> KERNEL_NSIG and with the Rust mirrors (sync/src/task_abi.rs,
+ * memory/rust_mm/src/ffi.rs). */
+#define SIGILL   (1u << 13)
+#define SIGTRAP  (1u << 14)
+#define SIGABRT  (1u << 15)
+#define SIGBUS   (1u << 16)
+#define SIGUSR1  (1u << 17)
+#define SIGUSR2  (1u << 18)
+
+#define NSIG     19
 
 #define SIG_DFL  ((uint32_t)0)
 #define SIG_IGN  ((uint32_t)1)

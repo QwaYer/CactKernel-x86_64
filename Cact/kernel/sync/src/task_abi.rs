@@ -5,7 +5,7 @@ use core::ffi::c_void;
 
 use crate::kernel_types::{MmapTable, ProcPageTracker, TaskFdTable, VfsNode};
 
-pub const NSIG: usize = 13;
+pub const NSIG: usize = 19;
 pub const TASK_SHM_MAX: usize = 16;
 
 /// Runnable lifecycle state stored in `TaskStruct.state` (u32 on the wire).

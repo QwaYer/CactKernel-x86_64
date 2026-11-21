@@ -336,8 +336,11 @@ void exception_handler(struct context_frame* regs) {
 
     if (is_user_task) {
         switch (regs->int_no) {
-        case 0: case 16: signal = SIGFPE; break;
-        case 13: case 14: signal = SIGSEGV; break;
+        case 0: case 16: signal = SIGFPE;  break;   /* #DE, #MF */
+        case 13: case 14: signal = SIGSEGV; break;  /* #GP, #PF */
+        case 6:  signal = SIGILL;  break;           /* #UD — invalid opcode */
+        case 3:  signal = SIGTRAP; break;           /* #BP — int3 from ring 3 */
+        case 17: signal = SIGBUS;  break;           /* #AC — alignment check */
         default: signal = SIGKILL; break;
         }
     }
