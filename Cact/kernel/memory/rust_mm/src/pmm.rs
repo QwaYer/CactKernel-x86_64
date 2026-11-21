@@ -452,6 +452,48 @@ pub extern "C" fn kalloc() -> *mut u8 {
     core::ptr::null_mut()
 }
 
+/// Allocate `nframes` **physically contiguous** 4 KiB frames and return their
+/// direct-map VA, or null when no such run is free.
+///
+/// Only frames below `PCI_HOLE_START` are considered, so the run is expressible
+/// as a 32-bit physical range (what the heap's regions need).  This is a
+/// best-effort primitive for the heap's growth path: it never reclaims, so it
+/// fails rather than evict, exactly like the caller can handle.
+pub(crate) fn kalloc_contig(nframes: u32) -> *mut u8 {
+    if nframes == 0 {
+        return core::ptr::null_mut();
+    }
+    let need = nframes as u64;
+    let limit = addr_to_page(PCI_HOLE_START as u64).min(managed_frames());
+    lock_acquire(PAGE_LOCK.as_ptr());
+    let mut run_start: u64 = 0;
+    let mut run_len: u64 = 0;
+    let mut i: u64 = 0;
+    while i < limit {
+        if bitmap_test(i) {
+            run_len = 0;
+        } else {
+            if run_len == 0 {
+                run_start = i;
+            }
+            run_len += 1;
+            if run_len == need {
+                for k in 0..need {
+                    bitmap_set(run_start + k);
+                    // SAFETY: `run_start + k` lies inside the managed range
+                    // (`< limit`), the same invariant `kalloc` sets refcounts under.
+                    unsafe { *refcount_ptr().add((run_start + k) as usize) = 1 };
+                }
+                lock_release(PAGE_LOCK.as_ptr());
+                return p2v(page_to_addr(run_start)) as *mut u8;
+            }
+        }
+        i += 1;
+    }
+    lock_release(PAGE_LOCK.as_ptr());
+    core::ptr::null_mut()
+}
+
 /// # Safety
 ///
 /// `ptr` must be null or a page-aligned **virtual** address of a frame previously

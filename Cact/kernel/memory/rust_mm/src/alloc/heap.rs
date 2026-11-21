@@ -23,7 +23,6 @@ struct HeapBlock {
     next: *mut HeapBlock,
 }
 
-static HEAP_START_PTR: KStatic<*mut HeapBlock> = KStatic::new(HEAP_START as *mut HeapBlock);
 static HEAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
 const HEAP_TAIL_MAGIC: u32 = 0xC0DEC0DE;
 
@@ -89,13 +88,147 @@ unsafe fn class_remove(block: *mut HeapBlock) {
     }
 }
 
-/// True when `ptr` — a pointer the heap list holds, i.e. a direct-map VA — names
-/// a byte inside the heap window.  The window is a *physical* range, so the
-/// check translates through the direct map first.
-#[inline(always)]
-fn heap_addr_in_range(ptr: *const u8) -> bool {
+/// One heap region: a contiguous physical range with its own address-ordered
+/// block list.  Regions are independent, so a block's physical successor is
+/// always inside the same region — the last block of a region has `next == null`
+/// and never coalesces into the next region.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct HeapRegion {
+    base: u32,
+    end: u32,
+    head: *mut HeapBlock,
+    next: *mut HeapRegion,
+}
+
+/// Maximum number of regions: the boot window (region 0) plus the ones
+/// `grow_heap` adds on demand.
+const MAX_REGIONS: usize = 8;
+
+/// Region descriptors, handed out in order by `grow_heap` and never freed (the
+/// heap does not shrink).  A descriptor is fully filled in before it is linked.
+static REGION_DESCS: KStatic<[HeapRegion; MAX_REGIONS]> = KStatic::new(
+    [HeapRegion {
+        base: 0,
+        end: 0,
+        head: core::ptr::null_mut(),
+        next: core::ptr::null_mut(),
+    };
+        MAX_REGIONS],
+);
+/// Head of the region list (region 0 first).
+static REGIONS: KStatic<*mut HeapRegion> = KStatic::new(core::ptr::null_mut());
+/// How many descriptors have been handed out.
+static REGION_USED: KStatic<usize> = KStatic::new(0);
+
+/// True when `ptr` names a byte inside any heap region.  Regions are *physical*
+/// ranges, so the check translates through the direct map first.
+///
+/// Safe to call without `HEAP_LOCK`: the list only grows, and a region is fully
+/// initialised before it is linked, so a concurrent `grow_heap` cannot hide an
+/// existing region or expose a half-built one.
+fn ptr_in_region(ptr: *const u8) -> bool {
     let phys = v2p(ptr);
-    phys >= heap_start() as u64 && phys < heap_end() as u64
+    // SAFETY: `REGIONS` is the published list head.
+    let mut r = unsafe { *KStatic::get_mut(REGIONS.as_ptr()) };
+    while !r.is_null() {
+        // SAFETY: `r` is a published region descriptor.
+        let (base, end) = unsafe { ((*r).base as u64, (*r).end as u64) };
+        if phys >= base && phys < end {
+            return true;
+        }
+        // SAFETY: `(*r).next` of a published descriptor.
+        r = unsafe { (*r).next };
+    }
+    false
+}
+
+/// Pop the head of the smallest non-empty size class that fits `size`, or null.
+///
+/// The `FREE_CLASSES` borrow is taken and released here, so a caller never holds
+/// it across a call that also touches the array.
+fn take_block(size: u32) -> *mut HeapBlock {
+    // SAFETY: `FREE_CLASSES` head array, mutated under `HEAP_LOCK` (held by the
+    // caller).
+    let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
+    let mut i = class_of(size);
+    while i < CLASS_COUNT {
+        if !classes[i].is_null() {
+            let block = classes[i];
+            // SAFETY: `block` is a live free block; its payload holds the class links.
+            let next =
+                unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
+            classes[i] = next;
+            if !next.is_null() {
+                // SAFETY: `next` is a live free block of the same class.
+                unsafe {
+                    *((next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) =
+                        core::ptr::null_mut()
+                };
+            }
+            return block;
+        }
+        i += 1;
+    }
+    core::ptr::null_mut()
+}
+
+/// Add a region so the heap can serve `need` bytes: allocate a contiguous run of
+/// frames from the PMM and link it as a region with one free block.
+///
+/// Called with `HEAP_LOCK` held.  `kalloc_contig` only takes `PAGE_LOCK`, and
+/// nothing takes those two the other way, so the nesting is safe.  Returns false
+/// when no run is free or the region budget is exhausted; the caller then fails
+/// the allocation exactly as before.
+fn grow_heap(need: usize) -> bool {
+    /// Smallest region to add, so one growth covers more than the one request.
+    const MIN_REGION_FRAMES: usize = 256; // 1 MiB
+    /// Largest region to add; a request beyond this cannot be served in one region.
+    const MAX_REGION_FRAMES: usize = 1 << 14; // 64 MiB
+
+    // SAFETY: `REGION_USED` read under `HEAP_LOCK`.
+    let idx = unsafe { *KStatic::get_mut(REGION_USED.as_ptr()) };
+    if idx >= MAX_REGIONS {
+        return false;
+    }
+    let want = (HEAP_HDR + need).div_ceil(PAGE_SIZE as usize);
+    let frames = want.clamp(MIN_REGION_FRAMES, MAX_REGION_FRAMES);
+    if want > MAX_REGION_FRAMES {
+        return false;
+    }
+    // SAFETY: called under `HEAP_LOCK`; `kalloc_contig` takes only `PAGE_LOCK`.
+    let base_va = crate::pmm::kalloc_contig(frames as u32);
+    if base_va.is_null() {
+        return false;
+    }
+    let phys = v2p(base_va) as u32;
+    let end = phys + (frames as u32) * PAGE_SIZE;
+
+    // SAFETY: `REGION_DESCS` is only written under `HEAP_LOCK` (held here).
+    let descs = unsafe { KStatic::get_mut(REGION_DESCS.as_ptr()) };
+    let r = &mut descs[idx];
+    r.base = phys;
+    r.end = end;
+    let head = base_va as *mut HeapBlock;
+    r.head = head;
+    // SAFETY: `REGIONS` list head read under `HEAP_LOCK`; the new region is pushed
+    // at the head.
+    r.next = unsafe { *KStatic::get_mut(REGIONS.as_ptr()) };
+
+    // SAFETY: `head` is the start of the fresh run; its single block covers the
+    // whole region.
+    let head_ref = unsafe { &mut *head };
+    head_ref.magic = HEAP_MAGIC;
+    head_ref.size = (frames as u32) * PAGE_SIZE - HEAP_HDR as u32;
+    head_ref.is_free = 1;
+    head_ref.next = core::ptr::null_mut();
+    // SAFETY: publishing the fully initialised region as the new list head.
+    unsafe { *KStatic::get_mut(REGIONS.as_ptr()) = r as *mut HeapRegion };
+    // SAFETY: the descriptor is now in use.
+    unsafe { *KStatic::get_mut(REGION_USED.as_ptr()) = idx + 1 };
+    // SAFETY: the new block is a live free block, not yet on a class list.
+    unsafe { class_push(head) };
+    true
 }
 
 #[unsafe(no_mangle)]
@@ -111,25 +244,32 @@ pub extern "C" fn init_heap() {
     // SAFETY: boot-time initialisation of `HEAP_LOCK` before any kernel thread or
     // SMP AP exists; single-threaded.
     unsafe { irq_spinlock_init(HEAP_LOCK.as_ptr()) };
-    // SAFETY: `HEAP_START_PTR` is seeded with the direct-map VA of the start of
-    // the dedicated heap window during single-threaded boot; no concurrent
-    // allocator call yet.
-    *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) } = p2v(start as u64) as *mut HeapBlock;
 
-    // SAFETY: `HEAP_START_PTR` read during the same single-threaded init.
-    let head = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
-    // SAFETY: `head` is the freshly seeded first `HeapBlock` at the window start,
-    // reached through the direct map; it is large enough for the header it is
-    // being initialised with and this is its only reference during
-    // single-threaded init.
-    let head = unsafe { &mut *head };
-    head.magic = HEAP_MAGIC;
-    head.size = window - core::mem::size_of::<HeapBlock>() as u32;
-    head.is_free = 1;
-    head.next = core::ptr::null_mut();
-    // SAFETY: the initial block is the whole window and free; it is the only free
-    // block and no other allocator call can race this single-threaded init.
-    unsafe { class_push(head as *mut HeapBlock) };
+    // Region 0 is the boot window; later regions are added by `grow_heap`.
+    // SAFETY: single-threaded boot; `REGION_DESCS` is untouched before this.
+    let descs = unsafe { KStatic::get_mut(REGION_DESCS.as_ptr()) };
+    let r0 = &mut descs[0];
+    r0.base = start;
+    r0.end = end;
+    r0.next = core::ptr::null_mut();
+    // SAFETY: the window start is reached through the direct map during
+    // single-threaded boot; this is its only reference yet.
+    let head = p2v(start as u64) as *mut HeapBlock;
+    r0.head = head;
+    // SAFETY: `head` is the freshly seeded first `HeapBlock` of the region, large
+    // enough for the header being written.
+    let head_ref = unsafe { &mut *head };
+    head_ref.magic = HEAP_MAGIC;
+    head_ref.size = window - core::mem::size_of::<HeapBlock>() as u32;
+    head_ref.is_free = 1;
+    head_ref.next = core::ptr::null_mut();
+    // SAFETY: publishing region 0 as the list head, during single-threaded boot.
+    unsafe { *KStatic::get_mut(REGIONS.as_ptr()) = r0 as *mut HeapRegion };
+    // SAFETY: one descriptor is now in use.
+    unsafe { *KStatic::get_mut(REGION_USED.as_ptr()) = 1 };
+    // SAFETY: the initial block is the whole window and free; nothing can race
+    // this single-threaded init.
+    unsafe { class_push(head) };
 }
 
 /// Allocate `size` bytes from the heap window.
@@ -156,17 +296,11 @@ pub extern "C" fn kmalloc_raw(size: usize) -> *mut u8 {
     lock_acquire(HEAP_LOCK.as_ptr());
 
     // Take the head of the smallest non-empty class that can hold the request,
-    // instead of scanning every block for a best fit.
-    // SAFETY: `FREE_CLASSES` head array, read under `HEAP_LOCK`.
-    let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
-    let mut block: *mut HeapBlock = core::ptr::null_mut();
-    let mut c = class_of(size);
-    while c < CLASS_COUNT {
-        if !classes[c].is_null() {
-            block = classes[c];
-            break;
-        }
-        c += 1;
+    // instead of scanning every block for a best fit.  If nothing fits, try to
+    // add a region and look once more.
+    let mut block = take_block(size);
+    if block.is_null() && grow_heap(size as usize) {
+        block = take_block(size);
     }
     if block.is_null() {
         lock_release(HEAP_LOCK.as_ptr());
@@ -174,19 +308,7 @@ pub extern "C" fn kmalloc_raw(size: usize) -> *mut u8 {
         return core::ptr::null_mut();
     }
 
-    // `block` is the class head: pop it (O(1)) and clear the new head's prev link.
-    // SAFETY: `block` is a live free block; its payload holds the class links.
-    let head_next =
-        unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
-    classes[c] = head_next;
-    if !head_next.is_null() {
-        // SAFETY: `head_next` is a live free block of the same class.
-        unsafe {
-            *((head_next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) =
-                core::ptr::null_mut()
-        };
-    }
-    // SAFETY: `block` is the popped live free block.
+    // SAFETY: `block` is the live free block popped from its class list.
     let block_size = unsafe { (*block).size };
     // SAFETY: marking the chosen block in use, under `HEAP_LOCK`.
     unsafe { (*block).is_free = 0 };
@@ -269,9 +391,9 @@ pub unsafe extern "C" fn kfree_raw(ptr: *mut u8) {
     // stepping back by the header size stays inside the same heap block; the
     // result is range-checked before any dereference.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    // SAFETY: `block` is inside the heap window and correctly aligned (checked
-    // by `heap_addr_in_range` before the dereference).
-    if heap_addr_in_range(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
+    // SAFETY: `block` belongs to a heap region, checked by `ptr_in_region` before
+    // the dereference.
+    if ptr_in_region(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
         kfree_impl(ptr);
         return;
     }
@@ -281,15 +403,14 @@ pub unsafe extern "C" fn kfree_raw(ptr: *mut u8) {
     // that slot is `p2v(v2p(ptr) - 4)`.
     // SAFETY: aligned-allocation fallback — the slot holds the raw block's
     // physical address, recorded at allocation time; the VA is validated by
-    // `heap_addr_in_range` before any dereference of the block itself.
+    // `ptr_in_region` before any dereference of the block itself.
     let raw_phys = unsafe { *(p2v(v2p(ptr) - 4) as *const u32) };
     let raw = p2v(raw_phys as u64) as *mut u8;
-    if heap_addr_in_range(raw as *const u8) {
-        // SAFETY: `raw` is only dereferenced after `heap_addr_in_range` proved it
-        // lies in the heap window, so stepping back by the header size stays within
-        // that window.
+    if ptr_in_region(raw as *const u8) {
+        // SAFETY: `ptr_in_region` proved `raw` lies in a heap region, so stepping
+        // back by the header size stays within that region.
         let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;
-        // SAFETY: `rblock` is inside the heap window, verified by the check above.
+        // SAFETY: `rblock` is inside a heap region, verified by the check above.
         if unsafe { (*rblock).magic } == HEAP_MAGIC {
             kfree_impl(raw);
         }
@@ -308,13 +429,13 @@ fn kfree_impl(ptr: *mut u8) {
     // step-back stays in the same block and `HEAP_LOCK` is already held, so the
     // list cannot move under us.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    if !heap_addr_in_range(block as *const u8) {
-        klog_msg(LOG_WARN, c"kfree pointer outside heap range".as_ptr() as *const u8);
+    if !ptr_in_region(block as *const u8) {
+        klog_msg(LOG_WARN, c"kfree pointer outside any heap region".as_ptr() as *const u8);
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
 
-    // SAFETY: `block` is inside the heap window (checked above); read its header
+    // SAFETY: `block` is inside a heap region (checked above); read its header
     // under `HEAP_LOCK`.
     if unsafe { (*block).magic } != HEAP_MAGIC {
         klog_msg(LOG_WARN, c"kfree ignored for unknown block".as_ptr() as *const u8);
@@ -399,25 +520,35 @@ pub struct HeapStats {
     pub total_blocks: u32,
     /// Size of the largest free block (0 when the list holds no free block).
     pub largest_free: u32,
+    /// Number of heap regions (the boot window plus any `grow_heap` added).
+    pub regions: u32,
 }
 
-/// Walk the heap list once and fold it into a [`HeapStats`].  The list is
-/// address-ordered and every block carries its own size, so one pass gives both
-/// the totals and the fragmentation shape (free-block count, largest free).
+/// Walk every region's block list once and fold it into a [`HeapStats`].  Each
+/// region's list is address-ordered and every block carries its own size, so one
+/// pass gives both the totals and the fragmentation shape.
 #[unsafe(no_mangle)]
 pub extern "C" fn heap_get_stats() -> HeapStats {
     let mut agg = HeapAggregate::new();
+    let mut regions: u32 = 0;
     lock_acquire(HEAP_LOCK.as_ptr());
-    // SAFETY: `HEAP_START_PTR` read under `HEAP_LOCK`.
-    let mut current = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
-    while !current.is_null() {
-        // SAFETY: `(*current).size` of a heap-list node, under `HEAP_LOCK`.
-        let size = unsafe { (*current).size };
-        // SAFETY: `(*current).is_free` of the same node.
-        let is_free = unsafe { (*current).is_free } != 0;
-        agg.add(size, is_free);
-        // SAFETY: following `(*current).next` in the locked heap list.
-        current = unsafe { (*current).next };
+    // SAFETY: `REGIONS` list head read under `HEAP_LOCK`.
+    let mut r = unsafe { *KStatic::get_mut(REGIONS.as_ptr()) };
+    while !r.is_null() {
+        regions = regions.saturating_add(1);
+        // SAFETY: `(*r).head` of a live region descriptor, under `HEAP_LOCK`.
+        let mut current = unsafe { (*r).head };
+        while !current.is_null() {
+            // SAFETY: `(*current).size` of a heap-list node, under `HEAP_LOCK`.
+            let size = unsafe { (*current).size };
+            // SAFETY: `(*current).is_free` of the same node.
+            let is_free = unsafe { (*current).is_free } != 0;
+            agg.add(size, is_free);
+            // SAFETY: following `(*current).next` in the locked region list.
+            current = unsafe { (*current).next };
+        }
+        // SAFETY: `(*r).next` of a live region descriptor, under `HEAP_LOCK`.
+        r = unsafe { (*r).next };
     }
     lock_release(HEAP_LOCK.as_ptr());
     HeapStats {
@@ -426,6 +557,7 @@ pub extern "C" fn heap_get_stats() -> HeapStats {
         free_blocks: agg.free_blocks,
         total_blocks: agg.total_blocks,
         largest_free: agg.largest_free,
+        regions,
     }
 }
 
@@ -449,6 +581,8 @@ pub extern "C" fn kmalloc_print_stats() {
     kprint_int(s.total_blocks as i32);
     kprint_str(c" largest_free=".as_ptr() as *const u8);
     kprint_int(s.largest_free as i32);
+    kprint_str(c" regions=".as_ptr() as *const u8);
+    kprint_int(s.regions as i32);
     kprint_str(c"\n".as_ptr() as *const u8);
 }
 
@@ -469,8 +603,8 @@ unsafe fn raw_block(ptr: *mut u8) -> Option<(*mut HeapBlock, u32)> {
     // the header size stays inside the same block; the result is range-checked
     // before the header is read.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    // SAFETY: `block` was range-checked by `heap_addr_in_range` before this read.
-    if heap_addr_in_range(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
+    // SAFETY: `block` was range-checked by `ptr_in_region` before this read.
+    if ptr_in_region(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
         return Some((block, hdr_size as u32));
     }
     // Aligned block: `kmalloc_aligned` recorded the raw block's *physical*
@@ -479,7 +613,7 @@ unsafe fn raw_block(ptr: *mut u8) -> Option<(*mut HeapBlock, u32)> {
     // allocator wrote at allocation time, translated back through the direct map.
     let raw_phys = unsafe { *(p2v(v2p(ptr) - 4) as *const u32) };
     let raw = p2v(raw_phys as u64) as *mut u8;
-    if heap_addr_in_range(raw as *const u8) {
+    if ptr_in_region(raw as *const u8) {
         // SAFETY: `raw` is inside the heap window (checked above), so stepping
         // back by the header size stays within that window.
         let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;

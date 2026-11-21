@@ -90,6 +90,7 @@ typedef struct {
     uint32_t free_blocks;   /* number of free blocks                    */
     uint32_t total_blocks;  /* number of blocks of any kind             */
     uint32_t largest_free;  /* largest free block, 0 when none          */
+    uint32_t regions;       /* heap regions: boot window + grown ones    */
 } heap_stats_t;
 heap_stats_t heap_get_stats(void);
 void         kmalloc_print_stats(void);
