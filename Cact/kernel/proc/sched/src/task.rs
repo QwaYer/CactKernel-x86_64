@@ -42,7 +42,20 @@ pub const SIG_IGN: u32 = 1;
 // bigger than a single page: syscall handoffs, the VFS, and now in-kernel
 // crypto (the DRBG, and webpki's X.509 chain validation) all run on the
 // caller's kernel stack, and 4 KiB was not enough room for that chain.
-pub const KERNEL_STACK_SIZE: usize = 16384;
+//
+// 16 KiB was not enough either.  Measured against the built kernel, the
+// `/dev/crypto` X.509 path is
+//   syscall entry (176 B) → syscall_handler → sys_ioctl → _crypto_ioctl
+//   (1.2 KiB) → cact_x509_verify (5.7 KiB) → webpki build_chain_inner
+//   (968 B per certificate in the path, recursing up to MAX_SUB_CA_COUNT = 6)
+//   → the signature algorithm (sig::verify 2.7 KiB + the P-384/P-256
+//   projective mul 3.3/2.2 KiB, or RSA through num-bigint).
+// A routine two/three-certificate chain already sums to ≈16.7 KiB and a
+// six-deep one to ≈19.7 KiB, and an IRQ nests on the same stack on top of
+// that.  An overflow runs past the base straight into the heap block below —
+// the canary only *reports* that afterwards, as a flood of "heap list magic
+// corrupted".  32 KiB covers the measured worst case with room for the IRQ.
+pub const KERNEL_STACK_SIZE: usize = 32768;
 pub const KERNEL_BASE: u32 = 0xC000_0000;
 
 /// Canary words at the base of every kernel stack.  A stack that runs past its

@@ -38,7 +38,10 @@
 
 #define SIG_UNCATCHABLE  (SIGKILL | SIGSTOP)
 
-#define KERNEL_STACK_SIZE 16384
+/* 32 KiB: the /dev/crypto X.509 verify path (webpki + the signature math) runs
+ * on the caller's kernel stack and measures ~17 KiB; see
+ * Cact/kernel/proc/sched/src/task.rs.  Keep the two in step. */
+#define KERNEL_STACK_SIZE 32768
 #define USER_STACK_PAGES  4
 #define USER_STACK_BYTES  (USER_STACK_PAGES * 4096)
 
