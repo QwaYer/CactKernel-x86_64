@@ -21,6 +21,12 @@ struct HeapBlock {
     size: u32,
     is_free: u32,
     next: *mut HeapBlock,
+    /// Segregated-free-list links, meaningful only while the block is free.  They
+    /// live in the header (not in the payload) so a free block's tail canary never
+    /// has to share its payload with them — that is what lets `is_block_start`
+    /// check the *predecessor's* canary.
+    cprev: *mut HeapBlock,
+    cnext: *mut HeapBlock,
 }
 
 static HEAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
@@ -32,14 +38,9 @@ const HEAP_HDR: usize = core::mem::size_of::<HeapBlock>();
 /// Segregated free lists — one head per power-of-two size class, indexed by
 /// `class_of(size)`.  `kmalloc` takes a block off the smallest non-empty class
 /// that fits (O(1) instead of a whole-heap best-fit scan), and `kfree` puts it
-/// back.  A free block is linked through two words stored in its own payload
-/// (unused while free; >= `MIN_FREE` bytes, enough for both).
+/// back through the block's own `cprev`/`cnext` header links.
 static FREE_CLASSES: KStatic<[*mut HeapBlock; CLASS_COUNT]> =
     KStatic::new([core::ptr::null_mut(); CLASS_COUNT]);
-
-/// Byte offset, inside a free block's payload, of the class-list links.
-const CLINK_PREV: usize = 0;
-const CLINK_NEXT: usize = core::mem::size_of::<*mut HeapBlock>();
 
 /// Push a free `block` onto the head of its size class list.  O(1).
 ///
@@ -48,19 +49,26 @@ const CLINK_NEXT: usize = core::mem::size_of::<*mut HeapBlock>();
 /// `block` must be a live free block that is not already on a class list.
 unsafe fn class_push(block: *mut HeapBlock) {
     // SAFETY: `block` is a live free block, so reading its size is in bounds.
-    let c = class_of(unsafe { (*block).size });
+    let size = unsafe { (*block).size };
+    let c = class_of(size);
     // SAFETY: `FREE_CLASSES` head array, mutated under `HEAP_LOCK`.
     let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
     let head = classes[c];
-    // SAFETY: a free block's payload holds its two class links; store prev = null.
-    unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = core::ptr::null_mut() };
-    // SAFETY: the same payload, the next link = the old head.
-    unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) = head };
+    {
+        // SAFETY: the block's own header fields; `block` is a live free block.
+        let b = unsafe { &mut *block };
+        b.cprev = core::ptr::null_mut();
+        b.cnext = head;
+    }
     if !head.is_null() {
-        // SAFETY: `head` is a live free block of the same class; fix its prev link.
-        unsafe { *((head as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = block };
+        // SAFETY: `head` is a live free block of the same class; relink it back.
+        unsafe { (*head).cprev = block };
     }
     classes[c] = block;
+    // A free block keeps a valid tail canary too: `is_block_start` checks the
+    // *predecessor's* canary, so every block — free or in use — must carry one.
+    // SAFETY: `size >= 16`, so the last four bytes lie inside the block's payload.
+    unsafe { *((block as *mut u8).add(HEAP_HDR + size as usize - 4) as *mut u32) = HEAP_TAIL_MAGIC };
 }
 
 /// Unlink a free `block` from its size class list.  O(1).
@@ -71,20 +79,20 @@ unsafe fn class_push(block: *mut HeapBlock) {
 unsafe fn class_remove(block: *mut HeapBlock) {
     // SAFETY: reading the live free block's size.
     let c = class_of(unsafe { (*block).size });
-    // SAFETY: the block's payload holds its class links.
-    let prev = unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) };
-    // SAFETY: the same payload, the next link.
-    let next = unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
+    // SAFETY: the block's own header link fields.
+    let prev = unsafe { (*block).cprev };
+    // SAFETY: the block's own header link fields.
+    let next = unsafe { (*block).cnext };
     if prev.is_null() {
         // SAFETY: `block` was the class head; make its successor the new head.
         (unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) })[c] = next;
     } else {
         // SAFETY: `prev` is a live free block of the same class; relink it forward.
-        unsafe { *((prev as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) = next };
+        unsafe { (*prev).cnext = next };
     }
     if !next.is_null() {
         // SAFETY: `next` is a live free block of the same class; fix its prev link.
-        unsafe { *((next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = prev };
+        unsafe { (*next).cprev = prev };
     }
 }
 
@@ -121,13 +129,14 @@ static REGIONS: KStatic<*mut HeapRegion> = KStatic::new(core::ptr::null_mut());
 /// How many descriptors have been handed out.
 static REGION_USED: KStatic<usize> = KStatic::new(0);
 
-/// True when `ptr` names a byte inside any heap region.  Regions are *physical*
-/// ranges, so the check translates through the direct map first.
+/// VA of the first block of the region containing `ptr`, or null when `ptr` lies
+/// outside every region.  Regions are *physical* ranges, so the check translates
+/// through the direct map first.
 ///
 /// Safe to call without `HEAP_LOCK`: the list only grows, and a region is fully
 /// initialised before it is linked, so a concurrent `grow_heap` cannot hide an
 /// existing region or expose a half-built one.
-fn ptr_in_region(ptr: *const u8) -> bool {
+fn region_head_of(ptr: *const u8) -> *mut HeapBlock {
     let phys = v2p(ptr);
     // SAFETY: `REGIONS` is the published list head.
     let mut r = unsafe { *KStatic::get_mut(REGIONS.as_ptr()) };
@@ -135,12 +144,43 @@ fn ptr_in_region(ptr: *const u8) -> bool {
         // SAFETY: `r` is a published region descriptor.
         let (base, end) = unsafe { ((*r).base as u64, (*r).end as u64) };
         if phys >= base && phys < end {
-            return true;
+            // SAFETY: `(*r).head` of a published descriptor.
+            return unsafe { (*r).head };
         }
         // SAFETY: `(*r).next` of a published descriptor.
         r = unsafe { (*r).next };
     }
-    false
+    core::ptr::null_mut()
+}
+
+/// True when `block` is exactly the start of a live heap block: it lies in a
+/// region, carries the header magic, and — unless it is the region's very first
+/// block — the tail canary of the block ending right before it is intact.
+///
+/// The predecessor check is the membership test `free` uses now that the block
+/// list is not walked: a pointer into the middle of a block, or one from another
+/// allocator, has no block ending exactly where it begins and fails here.  It is
+/// O(regions), and requiring magic *and* the canary makes a forged header far
+/// harder than the magic alone.
+fn is_block_start(block: *const HeapBlock) -> bool {
+    let head = region_head_of(block as *const u8);
+    if head.is_null() {
+        return false;
+    }
+    // SAFETY: `block` is inside a published region; read its header.
+    if unsafe { (*block).magic } != HEAP_MAGIC {
+        return false;
+    }
+    if block != head {
+        // SAFETY: `block` is not the region's first block, so a block ends exactly
+        // at it: its tail canary is the four bytes just before, still inside the
+        // region.
+        let prev_tail = unsafe { *((block as *const u8).sub(4) as *const u32) };
+        if prev_tail != HEAP_TAIL_MAGIC {
+            return false;
+        }
+    }
+    true
 }
 
 /// Pop the head of the smallest non-empty size class that fits `size`, or null.
@@ -155,16 +195,12 @@ fn take_block(size: u32) -> *mut HeapBlock {
     while i < CLASS_COUNT {
         if !classes[i].is_null() {
             let block = classes[i];
-            // SAFETY: `block` is a live free block; its payload holds the class links.
-            let next =
-                unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
+            // SAFETY: `block` is a live free block; its header holds the class links.
+            let next = unsafe { (*block).cnext };
             classes[i] = next;
             if !next.is_null() {
                 // SAFETY: `next` is a live free block of the same class.
-                unsafe {
-                    *((next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) =
-                        core::ptr::null_mut()
-                };
+                unsafe { (*next).cprev = core::ptr::null_mut() };
             }
             return block;
         }
@@ -389,11 +425,9 @@ pub unsafe extern "C" fn kfree_raw(ptr: *mut u8) {
     // Normal heap block?
     // SAFETY: `kfree` may only be called with a pointer from `kmalloc`, so
     // stepping back by the header size stays inside the same heap block; the
-    // result is range-checked before any dereference.
+    // result is validated before any dereference of the block's payload.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    // SAFETY: `block` belongs to a heap region, checked by `ptr_in_region` before
-    // the dereference.
-    if ptr_in_region(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
+    if is_block_start(block) {
         kfree_impl(ptr);
         return;
     }
@@ -403,17 +437,14 @@ pub unsafe extern "C" fn kfree_raw(ptr: *mut u8) {
     // that slot is `p2v(v2p(ptr) - 4)`.
     // SAFETY: aligned-allocation fallback — the slot holds the raw block's
     // physical address, recorded at allocation time; the VA is validated by
-    // `ptr_in_region` before any dereference of the block itself.
+    // `is_block_start` before any dereference of the block itself.
     let raw_phys = unsafe { *(p2v(v2p(ptr) - 4) as *const u32) };
     let raw = p2v(raw_phys as u64) as *mut u8;
-    if ptr_in_region(raw as *const u8) {
-        // SAFETY: `ptr_in_region` proved `raw` lies in a heap region, so stepping
-        // back by the header size stays within that region.
-        let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;
-        // SAFETY: `rblock` is inside a heap region, verified by the check above.
-        if unsafe { (*rblock).magic } == HEAP_MAGIC {
-            kfree_impl(raw);
-        }
+    // SAFETY: stepping back by the header size from the raw VA recorded at
+    // allocation time.
+    let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;
+    if is_block_start(rblock) {
+        kfree_impl(raw);
     }
 }
 
@@ -426,26 +457,19 @@ fn kfree_impl(ptr: *mut u8) {
 
     // SAFETY: `kfree_impl` is called from `kfree` with a direct-map VA of a
     // block returned by `kmalloc` (the free list's own terms); the header
-    // step-back stays in the same block and `HEAP_LOCK` is already held, so the
-    // list cannot move under us.
+    // step-back stays in the same block and `HEAP_LOCK` is already held.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    if !ptr_in_region(block as *const u8) {
-        klog_msg(LOG_WARN, c"kfree pointer outside any heap region".as_ptr() as *const u8);
-        lock_release(HEAP_LOCK.as_ptr());
-        return;
-    }
-
-    // SAFETY: `block` is inside a heap region (checked above); read its header
-    // under `HEAP_LOCK`.
-    if unsafe { (*block).magic } != HEAP_MAGIC {
+    // Re-validate under the lock: `block` must be a real block start, so a stray
+    // pointer (middle of a block, another allocator, garbage) is rejected.
+    if !is_block_start(block) {
         klog_msg(LOG_WARN, c"kfree ignored for unknown block".as_ptr() as *const u8);
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
 
-    // The double-free guard must run before the canary check: freeing a block puts
-    // its class links into the payload, which can overlap the canary slot, so a
-    // second free would see a clobbered canary first.
+    // The double-free guard is the only thing that catches a second free now: a
+    // freed block keeps a valid tail canary (class_push writes it for the
+    // predecessor check), so the canary test below would not screen it.
     // SAFETY: `(*block).is_free` of the live locked block.
     if unsafe { (*block).is_free } != 0 {
         klog_msg(LOG_WARN, c"double free ignored".as_ptr() as *const u8);
@@ -600,11 +624,10 @@ unsafe fn raw_block(ptr: *mut u8) -> Option<(*mut HeapBlock, u32)> {
     let hdr_size = core::mem::size_of::<HeapBlock>();
     // Plain block: the header sits exactly `hdr_size` below the pointer.
     // SAFETY: `ptr` is a caller-guaranteed live heap pointer, so stepping back by
-    // the header size stays inside the same block; the result is range-checked
+    // the header size stays inside the same block; the result is validated
     // before the header is read.
     let block = unsafe { ptr.sub(hdr_size) } as *mut HeapBlock;
-    // SAFETY: `block` was range-checked by `ptr_in_region` before this read.
-    if ptr_in_region(block as *const u8) && unsafe { (*block).magic } == HEAP_MAGIC {
+    if is_block_start(block) {
         return Some((block, hdr_size as u32));
     }
     // Aligned block: `kmalloc_aligned` recorded the raw block's *physical*
@@ -613,14 +636,11 @@ unsafe fn raw_block(ptr: *mut u8) -> Option<(*mut HeapBlock, u32)> {
     // allocator wrote at allocation time, translated back through the direct map.
     let raw_phys = unsafe { *(p2v(v2p(ptr) - 4) as *const u32) };
     let raw = p2v(raw_phys as u64) as *mut u8;
-    if ptr_in_region(raw as *const u8) {
-        // SAFETY: `raw` is inside the heap window (checked above), so stepping
-        // back by the header size stays within that window.
-        let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;
-        // SAFETY: `rblock` is inside the heap window, verified by the check above.
-        if unsafe { (*rblock).magic } == HEAP_MAGIC {
-            return Some((rblock, (ptr as usize - raw as usize) as u32));
-        }
+    // SAFETY: stepping back by the header size from the raw VA recorded at
+    // allocation time.
+    let rblock = unsafe { raw.sub(hdr_size) } as *mut HeapBlock;
+    if is_block_start(rblock) {
+        return Some((rblock, (ptr as usize - raw as usize) as u32));
     }
     None
 }
