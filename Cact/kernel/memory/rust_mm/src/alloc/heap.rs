@@ -20,11 +20,11 @@ struct HeapBlock {
     magic: u32,
     size: u32,
     is_free: u32,
+    /// Address-order links within the block's region (doubly linked, so a block
+    /// can prove it is a real list node in O(1) — see `is_block_start`).
     next: *mut HeapBlock,
-    /// Segregated-free-list links, meaningful only while the block is free.  They
-    /// live in the header (not in the payload) so a free block's tail canary never
-    /// has to share its payload with them — that is what lets `is_block_start`
-    /// check the *predecessor's* canary.
+    prev: *mut HeapBlock,
+    /// Segregated-free-list links, meaningful only while the block is free.
     cprev: *mut HeapBlock,
     cnext: *mut HeapBlock,
 }
@@ -65,10 +65,6 @@ unsafe fn class_push(block: *mut HeapBlock) {
         unsafe { (*head).cprev = block };
     }
     classes[c] = block;
-    // A free block keeps a valid tail canary too: `is_block_start` checks the
-    // *predecessor's* canary, so every block — free or in use — must carry one.
-    // SAFETY: `size >= 16`, so the last four bytes lie inside the block's payload.
-    unsafe { *((block as *mut u8).add(HEAP_HDR + size as usize - 4) as *mut u32) = HEAP_TAIL_MAGIC };
 }
 
 /// Unlink a free `block` from its size class list.  O(1).
@@ -154,33 +150,35 @@ fn region_head_of(ptr: *const u8) -> *mut HeapBlock {
 }
 
 /// True when `block` is exactly the start of a live heap block: it lies in a
-/// region, carries the header magic, and — unless it is the region's very first
-/// block — the tail canary of the block ending right before it is intact.
+/// region, carries the header magic, and is a real node of that region's
+/// address-ordered list — its predecessor links back to it.
 ///
-/// The predecessor check is the membership test `free` uses now that the block
-/// list is not walked: a pointer into the middle of a block, or one from another
-/// allocator, has no block ending exactly where it begins and fails here.  It is
-/// O(regions), and requiring magic *and* the canary makes a forged header far
-/// harder than the magic alone.
+/// The predecessor round-trip is the membership test `free` uses now that the
+/// list is not walked.  For a pointer into the middle of a block, or one from
+/// another allocator, the header bytes are unrelated data and an 8-byte
+/// `prev.next == block` match does not hold.  It is O(1) and self-contained: it
+/// never depends on a *neighbour's* payload or canary.
 fn is_block_start(block: *const HeapBlock) -> bool {
     let head = region_head_of(block as *const u8);
     if head.is_null() {
         return false;
     }
-    // SAFETY: `block` is inside a published region; read its header.
+    // SAFETY: `block` is inside a published region; read its header magic.
     if unsafe { (*block).magic } != HEAP_MAGIC {
         return false;
     }
-    if block != head {
-        // SAFETY: `block` is not the region's first block, so a block ends exactly
-        // at it: its tail canary is the four bytes just before, still inside the
-        // region.
-        let prev_tail = unsafe { *((block as *const u8).sub(4) as *const u32) };
-        if prev_tail != HEAP_TAIL_MAGIC {
-            return false;
-        }
+    if block == head {
+        // The region's first block has no predecessor.
+        // SAFETY: `(*block).prev` of a block inside a region.
+        return unsafe { (*block).prev.is_null() };
     }
-    true
+    // SAFETY: `(*block).prev` of a block inside a region.
+    let prev = unsafe { (*block).prev };
+    if prev.is_null() {
+        return false;
+    }
+    // SAFETY: `prev` is a candidate predecessor; only its `next` field is read.
+    unsafe { (*prev).next == block as *mut HeapBlock }
 }
 
 /// Pop the head of the smallest non-empty size class that fits `size`, or null.
@@ -258,6 +256,7 @@ fn grow_heap(need: usize) -> bool {
     head_ref.size = (frames as u32) * PAGE_SIZE - HEAP_HDR as u32;
     head_ref.is_free = 1;
     head_ref.next = core::ptr::null_mut();
+    head_ref.prev = core::ptr::null_mut();
     // SAFETY: publishing the fully initialised region as the new list head.
     unsafe { *KStatic::get_mut(REGIONS.as_ptr()) = r as *mut HeapRegion };
     // SAFETY: the descriptor is now in use.
@@ -299,6 +298,7 @@ pub extern "C" fn init_heap() {
     head_ref.size = window - core::mem::size_of::<HeapBlock>() as u32;
     head_ref.is_free = 1;
     head_ref.next = core::ptr::null_mut();
+    head_ref.prev = core::ptr::null_mut();
     // SAFETY: publishing region 0 as the list head, during single-threaded boot.
     unsafe { *KStatic::get_mut(REGIONS.as_ptr()) = r0 as *mut HeapRegion };
     // SAFETY: one descriptor is now in use.
@@ -363,6 +363,12 @@ pub extern "C" fn kmalloc_raw(size: usize) -> *mut u8 {
         next_ref.size = block_size - size - hdr_size;
         next_ref.is_free = 1;
         next_ref.next = next_next;
+        next_ref.prev = block;
+        if !next_next.is_null() {
+            // SAFETY: `next_next` is the block that followed `block`; keep its back
+            // link pointing at the remainder now inserted before it.
+            unsafe { (*next_next).prev = next_block };
+        }
         // SAFETY: sizing `block` down to the request, under `HEAP_LOCK`.
         unsafe { (*block).size = size };
         // SAFETY: linking the free remainder right after `block` in the address list.
@@ -467,9 +473,9 @@ fn kfree_impl(ptr: *mut u8) {
         return;
     }
 
-    // The double-free guard is the only thing that catches a second free now: a
-    // freed block keeps a valid tail canary (class_push writes it for the
-    // predecessor check), so the canary test below would not screen it.
+    // The double-free guard is what catches a second free: a freed block's own
+    // tail canary is stale (only allocations refresh it), so the canary test below
+    // would not screen a double free.
     // SAFETY: `(*block).is_free` of the live locked block.
     if unsafe { (*block).is_free } != 0 {
         klog_msg(LOG_WARN, c"double free ignored".as_ptr() as *const u8);
@@ -518,6 +524,11 @@ fn kfree_impl(ptr: *mut u8) {
             unsafe { (*block).size = bsize as u32 + hdr_size as u32 + succ_size };
             // SAFETY: relinking `block` past the absorbed `succ`.
             unsafe { (*block).next = succ_next };
+            if !succ_next.is_null() {
+                // SAFETY: `succ_next` followed `succ`; its back link now points at
+                // `block`, which absorbed `succ`.
+                unsafe { (*succ_next).prev = block };
+            }
             // SAFETY: retiring the absorbed node's magic.
             unsafe { (*succ).magic = 0 };
         }
@@ -671,6 +682,12 @@ unsafe fn resize_block(block: *mut HeapBlock, new_size: u32, hdr_size: u32) {
         tail_ref.size = cur_size - new_size - hdr_size;
         tail_ref.is_free = 1;
         tail_ref.next = tail_next;
+        tail_ref.prev = block;
+        if !tail_next.is_null() {
+            // SAFETY: `tail_next` followed `block`; its back link now points at the
+            // tail inserted before it.
+            unsafe { (*tail_next).prev = tail };
+        }
         // SAFETY: sizing `block` down to its leading part, under `HEAP_LOCK`.
         unsafe { (*block).size = new_size };
         // SAFETY: linking the just-carved free tail after `block`.
@@ -708,6 +725,11 @@ unsafe fn absorb_next(block: *mut HeapBlock, next: *mut HeapBlock, hdr_size: u32
     unsafe { (*block).size = block_size + hdr_size + next_size };
     // SAFETY: relinking `block` past the absorbed `next`.
     unsafe { (*block).next = next_next };
+    if !next_next.is_null() {
+        // SAFETY: `next_next` followed `next`; its back link now points at `block`,
+        // which absorbed `next`.
+        unsafe { (*next_next).prev = block };
+    }
 }
 
 /// Usable payload bytes of a live block: everything from `ptr` up to (but not
