@@ -26,6 +26,7 @@ kernel_libs += static_library('cact_elf',
   files(
     'elf_loader.c',
     'ksym.c',
+    'mod_image.c',
     'mod_tag.c',
     'sym.c',
   ) + mod_pubkey_h,

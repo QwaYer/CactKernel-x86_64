@@ -12,6 +12,7 @@
 #include "kernel.h"
 #include "klib.h"
 #include "ksym.h"
+#include "mod_image.h"
 #include "mod_tag.h"
 
 static void module_proc_name(const char *path, char *out, int out_sz) {
@@ -161,8 +162,10 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
         return -8;
     }
 
-    // Allocate and zero the module private image
-    uint8_t *image = (uint8_t *)kmalloc((size_t)total);
+    // Allocate and zero the module private image.  It is mapped in the module
+    // window (within ±2 GiB of the kernel image), not the heap: its code and
+    // data are relocated with 32-bit signed fields the direct map cannot reach.
+    uint8_t *image = (uint8_t *)module_image_alloc((size_t)total);
     if (!image) {
         pr_err("pciloader: module image alloc failed (%llu bytes)",
                (unsigned long long)total);
@@ -178,7 +181,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
             pr_err("pciloader: section %u exceeds file (off=0x%llx size=0x%llx file=0x%x): %s\n",
                    (unsigned)i, (unsigned long long)sh->sh_offset,
                    (unsigned long long)sh->sh_size, (unsigned)file_size, path);
-            kfree(image); kfree(elf_data);
+            module_image_free(image, (size_t)total); kfree(elf_data);
             return -8;
         }
         memcpy(image + sh->sh_addr, elf_data + sh->sh_offset, (size_t)sh->sh_size);
@@ -197,7 +200,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
     }
     if (!symtab_sh) {
         pr_err("pciloader: no .symtab in %s\n", path);
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -4;
     }
 
@@ -205,14 +208,14 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
         pr_err("pciloader: symtab exceeds file (off=0x%llx size=0x%llx file=0x%x): %s\n",
                (unsigned long long)symtab_sh->sh_offset,
                (unsigned long long)symtab_sh->sh_size, (unsigned)file_size, path);
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -8;
     }
     Elf64_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
     if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > (uint64_t)file_size) {
         pr_err("pciloader: strtab exceeds file (idx=%u file=0x%x): %s\n",
                (unsigned)strtab_idx, (unsigned)file_size, path);
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -8;
     }
 
@@ -235,14 +238,14 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
             if (sym_idx >= sym_cnt) {
                 pr_err("pciloader: relocation symbol index %u >= %u: %s\n",
                        (unsigned)sym_idx, (unsigned)sym_cnt, path);
-                kfree(image);
+                module_image_free(image, (size_t)total);
                 kfree(elf_data);
                 return -7;
             }
             if (width == 0) {
                 pr_err("pciloader: unsupported relocation type %u: %s\n",
                        (unsigned)type, path);
-                kfree(image);
+                module_image_free(image, (size_t)total);
                 kfree(elf_data);
                 return -7;
             }
@@ -254,14 +257,14 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
                 if (!sym_name) {
                     pr_err("pciloader: bad string table index (name %u): %s\n",
                            (unsigned)sym->st_name, path);
-                    kfree(image);
+                    module_image_free(image, (size_t)total);
                     kfree(elf_data);
                     return -7;
                 }
                 S = (uint64_t)ksym_resolve(sym_name);
                 if (S == 0 && ELF64_ST_BIND(sym->st_info) != STB_WEAK) {
                     pr_err("pciloader: unresolved symbol '%s': %s", (char *)sym_name, path);
-                    kfree(image);
+                    module_image_free(image, (size_t)total);
                     kfree(elf_data);
                     return -7;
                 }
@@ -270,14 +273,14 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
                 if (!sym_sh) {
                     pr_err("pciloader: symbol section index %u out of bounds: %s\n",
                            (unsigned)sym->st_shndx, path);
-                    kfree(image);
+                    module_image_free(image, (size_t)total);
                     kfree(elf_data);
                     return -7;
                 }
                 if (!(sym_sh->sh_flags & SHF_ALLOC)) {
                     pr_err("pciloader: symbol in non-ALLOC section %u: %s\n",
                            (unsigned)sym->st_shndx, path);
-                    kfree(image);
+                    module_image_free(image, (size_t)total);
                     kfree(elf_data);
                     return -7;
                 }
@@ -287,7 +290,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
                 pr_err("pciloader: relocation offset 0x%llx >= section size 0x%llx: %s\n",
                        (unsigned long long)rels[r].r_offset,
                        (unsigned long long)target_sh->sh_size, path);
-                kfree(image);
+                module_image_free(image, (size_t)total);
                 kfree(elf_data);
                 return -7;
             }
@@ -314,7 +317,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
 
     if (!found_probe) {
         pr_err("pciloader: symbol 'pci_driver_probe' not found in %s\n", path);
-        kfree(image);
+        module_image_free(image, (size_t)total);
         kfree(elf_data);
         return -5;
     }
@@ -340,7 +343,7 @@ int pci_load_module(const char *path, struct pci_driver *drv) {
     mod_mem_t *mm  = (mod_mem_t *)kmalloc(sizeof(mod_mem_t));
     if (!mm) {
         pr_err("pciloader: module bookkeeping alloc failed for %s", path);
-        kfree(image);
+        module_image_free(image, (size_t)total);
         kfree(elf_data);
         drv->probe = NULL;
         return -6;
@@ -362,7 +365,7 @@ void pci_unload_module(struct pci_driver *drv) {
     if (!drv || !drv->priv) return;
     mod_mem_t *mm = (mod_mem_t *)drv->priv;
     if (drv->remove) drv->remove(NULL);
-    kfree(mm->image);
+    module_image_free(mm->image, mm->image_size);
     kfree(mm);
     drv->priv   = NULL;
     drv->probe  = NULL;

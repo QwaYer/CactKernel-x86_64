@@ -19,6 +19,7 @@
 #include "klib.h"
 #include "memory.h"
 #include "kernel.h"
+#include "mod_image.h"
 #include "mod_tag.h"
 #include "elf.h"
 
@@ -174,7 +175,9 @@ static int load_module_image(const char *path, uint8_t **image_out,
         return -8;
     }
 
-    uint8_t *image = (uint8_t *)kmalloc((size_t)total);
+    // The image lives in the module window (±2 GiB of the kernel), not the heap:
+    // its code and data are relocated with 32-bit signed fields.
+    uint8_t *image = (uint8_t *)module_image_alloc((size_t)total);
     if (!image) { kfree(elf_data); return -ENOMEM; }
     memset(image, 0, (size_t)total);
 
@@ -185,7 +188,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
             pr_err("usbmod: section %u exceeds file (off=0x%llx size=0x%llx file=0x%x): %s\n",
                    (unsigned)i, (unsigned long long)sh->sh_offset,
                    (unsigned long long)sh->sh_size, (unsigned)file_size, path);
-            kfree(image); kfree(elf_data);
+            module_image_free(image, (size_t)total); kfree(elf_data);
             return -8;
         }
         memcpy(image + sh->sh_addr, elf_data + sh->sh_offset, (size_t)sh->sh_size);
@@ -204,16 +207,16 @@ static int load_module_image(const char *path, uint8_t **image_out,
     }
     if (!symtab_sh) {
         pr_err("usbmod: no .symtab in %s\n", path);
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -4;
     }
     if (symtab_sh->sh_offset + symtab_sh->sh_size > (uint64_t)file_size) {
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -8;
     }
     Elf64_Shdr *strtab_sh = get_shdr(eh, strtab_idx);
     if (!strtab_sh || strtab_sh->sh_offset + strtab_sh->sh_size > (uint64_t)file_size) {
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -8;
     }
     Elf64_Sym *syms    = (Elf64_Sym *)(elf_data + symtab_sh->sh_offset);
@@ -235,24 +238,24 @@ static int load_module_image(const char *path, uint8_t **image_out,
             if (sym_idx >= sym_cnt) {
                 pr_err("usbmod: relocation symbol index %u >= %u: %s\n",
                        (unsigned)sym_idx, (unsigned)sym_cnt, path);
-                kfree(image); kfree(elf_data);
+                module_image_free(image, (size_t)total); kfree(elf_data);
                 return -7;
             }
             if (width == 0) {
                 pr_err("usbmod: unsupported relocation type %u: %s\n",
                        (unsigned)type, path);
-                kfree(image); kfree(elf_data);
+                module_image_free(image, (size_t)total); kfree(elf_data);
                 return -7;
             }
             Elf64_Sym *sym = &syms[sym_idx];
             uint64_t   S;
             if (sym->st_shndx == SHN_UNDEF) {
                 const char *sym_name = get_str(eh, strtab_idx, sym->st_name);
-                if (!sym_name) { kfree(image); kfree(elf_data); return -7; }
+                if (!sym_name) { module_image_free(image, (size_t)total); kfree(elf_data); return -7; }
                 S = (uint64_t)ksym_resolve(sym_name);
                 if (S == 0 && ELF64_ST_BIND(sym->st_info) != STB_WEAK) {
                     pr_err("usbmod: unresolved symbol '%s': %s\n", sym_name, path);
-                    kfree(image); kfree(elf_data);
+                    module_image_free(image, (size_t)total); kfree(elf_data);
                     return -7;
                 }
             } else {
@@ -260,7 +263,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                 if (!sym_sh || !(sym_sh->sh_flags & SHF_ALLOC)) {
                     pr_err("usbmod: symbol in non-ALLOC section %u: %s\n",
                            (unsigned)sym->st_shndx, path);
-                    kfree(image); kfree(elf_data);
+                    module_image_free(image, (size_t)total); kfree(elf_data);
                     return -7;
                 }
                 S = (uint64_t)(uintptr_t)(image + sym_sh->sh_addr + sym->st_value);
@@ -269,7 +272,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                 pr_err("usbmod: relocation offset 0x%llx >= section size 0x%llx: %s\n",
                        (unsigned long long)rels[r].r_offset,
                        (unsigned long long)target_sh->sh_size, path);
-                kfree(image); kfree(elf_data);
+                module_image_free(image, (size_t)total); kfree(elf_data);
                 return -7;
             }
             uint8_t *patch = image + target_sh->sh_addr + rels[r].r_offset;
@@ -281,7 +284,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                                         "usb_driver_init");
     if (!init_addr) {
         pr_err("usbmod: symbol 'usb_driver_init' not found in %s\n", path);
-        kfree(image); kfree(elf_data);
+        module_image_free(image, (size_t)total); kfree(elf_data);
         return -5;
     }
     uintptr_t exit_addr = find_func_sym(eh, syms, sym_cnt, strtab_idx, image,
@@ -348,7 +351,7 @@ int usb_mod_load(const char *path) {
     if (irc != 0) {
         pr_err("usbmod: usb_driver_init failed: %d\n", irc);
         memset(s, 0, sizeof(*s));
-        kfree(image);
+        module_image_free(image, size);
         return irc;
     }
 
@@ -372,7 +375,7 @@ int usb_mod_unload(const char *instance) {
     if (s->exit)
         s->exit();
     if (s->image)
-        kfree(s->image);
+        module_image_free(s->image, s->size);
     memset(s, 0, sizeof(*s));
     pr_info("usbmod: module unloaded: %s\n", instance);
     return 0;
