@@ -12,6 +12,11 @@
 /// next block's header stays aligned.
 pub const ALIGN: u32 = 8;
 
+/// Smallest block the heap keeps.  A free block stores its two segregated-list
+/// links in its own payload, so it must be at least this many bytes; no split
+/// leaves a smaller remainder.
+pub const MIN_FREE: u32 = 16;
+
 const fn align_up(v: u32) -> u32 {
     match v.checked_add(ALIGN - 1) {
         Some(x) => x & !(ALIGN - 1),
@@ -74,8 +79,8 @@ pub fn plan(
 }
 
 /// True when the slack left by an in-place resize can carry its own block
-/// header plus a minimal payload, i.e. it is worth splitting off instead of
+/// header plus a minimal free block, i.e. it is worth splitting off instead of
 /// keeping as internal slack.
 pub fn should_split(block_size: u32, new_size: u32, hdr: u32) -> bool {
-    block_size >= new_size + hdr + ALIGN
+    block_size >= new_size + hdr + MIN_FREE
 }

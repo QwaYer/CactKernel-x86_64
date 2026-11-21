@@ -7,8 +7,9 @@
 //!
 //! `kmalloc` / `kfree` are IRQ-spinlocked and back much of the kernel and Rust MM code.
 
+use crate::alloc::heap_class::{class_of, CLASS_COUNT};
 use crate::alloc::heap_stats::HeapAggregate;
-use crate::alloc::realloc_plan::{plan, should_split, Realloc};
+use crate::alloc::realloc_plan::{plan, should_split, Realloc, MIN_FREE};
 use crate::ffi::*;
 use crate::pmm::{heap_end, heap_start};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_int, kprint_str, klog_msg};
@@ -25,6 +26,68 @@ struct HeapBlock {
 static HEAP_START_PTR: KStatic<*mut HeapBlock> = KStatic::new(HEAP_START as *mut HeapBlock);
 static HEAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
 const HEAP_TAIL_MAGIC: u32 = 0xC0DEC0DE;
+
+/// Header size, i.e. the offset of a block's payload.
+const HEAP_HDR: usize = core::mem::size_of::<HeapBlock>();
+
+/// Segregated free lists — one head per power-of-two size class, indexed by
+/// `class_of(size)`.  `kmalloc` takes a block off the smallest non-empty class
+/// that fits (O(1) instead of a whole-heap best-fit scan), and `kfree` puts it
+/// back.  A free block is linked through two words stored in its own payload
+/// (unused while free; >= `MIN_FREE` bytes, enough for both).
+static FREE_CLASSES: KStatic<[*mut HeapBlock; CLASS_COUNT]> =
+    KStatic::new([core::ptr::null_mut(); CLASS_COUNT]);
+
+/// Byte offset, inside a free block's payload, of the class-list links.
+const CLINK_PREV: usize = 0;
+const CLINK_NEXT: usize = core::mem::size_of::<*mut HeapBlock>();
+
+/// Push a free `block` onto the head of its size class list.  O(1).
+///
+/// # Safety
+///
+/// `block` must be a live free block that is not already on a class list.
+unsafe fn class_push(block: *mut HeapBlock) {
+    // SAFETY: `block` is a live free block, so reading its size is in bounds.
+    let c = class_of(unsafe { (*block).size });
+    // SAFETY: `FREE_CLASSES` head array, mutated under `HEAP_LOCK`.
+    let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
+    let head = classes[c];
+    // SAFETY: a free block's payload holds its two class links; store prev = null.
+    unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = core::ptr::null_mut() };
+    // SAFETY: the same payload, the next link = the old head.
+    unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) = head };
+    if !head.is_null() {
+        // SAFETY: `head` is a live free block of the same class; fix its prev link.
+        unsafe { *((head as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = block };
+    }
+    classes[c] = block;
+}
+
+/// Unlink a free `block` from its size class list.  O(1).
+///
+/// # Safety
+///
+/// `block` must be a live free block that is currently on its class list.
+unsafe fn class_remove(block: *mut HeapBlock) {
+    // SAFETY: reading the live free block's size.
+    let c = class_of(unsafe { (*block).size });
+    // SAFETY: the block's payload holds its class links.
+    let prev = unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) };
+    // SAFETY: the same payload, the next link.
+    let next = unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
+    if prev.is_null() {
+        // SAFETY: `block` was the class head; make its successor the new head.
+        (unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) })[c] = next;
+    } else {
+        // SAFETY: `prev` is a live free block of the same class; relink it forward.
+        unsafe { *((prev as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) = next };
+    }
+    if !next.is_null() {
+        // SAFETY: `next` is a live free block of the same class; fix its prev link.
+        unsafe { *((next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) = prev };
+    }
+}
 
 /// True when `ptr` — a pointer the heap list holds, i.e. a direct-map VA — names
 /// a byte inside the heap window.  The window is a *physical* range, so the
@@ -64,7 +127,9 @@ pub extern "C" fn init_heap() {
     head.size = window - core::mem::size_of::<HeapBlock>() as u32;
     head.is_free = 1;
     head.next = core::ptr::null_mut();
-
+    // SAFETY: the initial block is the whole window and free; it is the only free
+    // block and no other allocator call can race this single-threaded init.
+    unsafe { class_push(head as *mut HeapBlock) };
 }
 
 /// Allocate `size` bytes from the heap window.
@@ -90,86 +155,76 @@ pub extern "C" fn kmalloc_raw(size: usize) -> *mut u8 {
     let hdr_size = core::mem::size_of::<HeapBlock>() as u32;
     lock_acquire(HEAP_LOCK.as_ptr());
 
-    // SAFETY: `HEAP_START_PTR` read under `HEAP_LOCK`, acquired above, so the list
-    // head cannot be swapped by a concurrent allocation.
-    let mut current = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
-    if v2p(current) < heap_start() as u64 {
+    // Take the head of the smallest non-empty class that can hold the request,
+    // instead of scanning every block for a best fit.
+    // SAFETY: `FREE_CLASSES` head array, read under `HEAP_LOCK`.
+    let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
+    let mut block: *mut HeapBlock = core::ptr::null_mut();
+    let mut c = class_of(size);
+    while c < CLASS_COUNT {
+        if !classes[c].is_null() {
+            block = classes[c];
+            break;
+        }
+        c += 1;
+    }
+    if block.is_null() {
         lock_release(HEAP_LOCK.as_ptr());
-        kprint_str(c"[FATAL] kmalloc: heap pointer below reserved boundary\n".as_ptr() as *const u8);
+        klog_msg(LOG_WARN, c"heap out of memory".as_ptr() as *const u8);
         return core::ptr::null_mut();
     }
-    let mut best_fit: *mut HeapBlock = core::ptr::null_mut();
 
-    while !current.is_null() {
-        // SAFETY: `current` walks the heap list under `HEAP_LOCK`; every node was
-        // range-checked when the list was built.
-        let magic = unsafe { (*current).magic };
-        if magic != HEAP_MAGIC {
-            kprint_str(c"[FATAL] Heap corruption detected!\n".as_ptr() as *const u8);
-            klog_msg(LOG_FAIL, c"heap corruption in allocation walk".as_ptr() as *const u8);
-            lock_release(HEAP_LOCK.as_ptr());
-            return core::ptr::null_mut();
-        }
-        // SAFETY: `(*current).is_free` of the same locked heap-list node.
-        let is_free = unsafe { (*current).is_free };
-        // SAFETY: `(*current).size` of the same locked heap-list node.
-        let cur_size = unsafe { (*current).size };
-        if is_free != 0 && cur_size >= size {
-            // SAFETY: `best_fit` is a heap-list node found by this same locked walk.
-            let best_size = if best_fit.is_null() { u32::MAX } else { unsafe { (*best_fit).size } };
-            if cur_size < best_size {
-                best_fit = current;
-            }
-        }
-        // SAFETY: following the `next` link of a locked heap-list node.
-        current = unsafe { (*current).next };
+    // `block` is the class head: pop it (O(1)) and clear the new head's prev link.
+    // SAFETY: `block` is a live free block; its payload holds the class links.
+    let head_next =
+        unsafe { *((block as *mut u8).add(HEAP_HDR + CLINK_NEXT) as *mut *mut HeapBlock) };
+    classes[c] = head_next;
+    if !head_next.is_null() {
+        // SAFETY: `head_next` is a live free block of the same class.
+        unsafe {
+            *((head_next as *mut u8).add(HEAP_HDR + CLINK_PREV) as *mut *mut HeapBlock) =
+                core::ptr::null_mut()
+        };
+    }
+    // SAFETY: `block` is the popped live free block.
+    let block_size = unsafe { (*block).size };
+    // SAFETY: marking the chosen block in use, under `HEAP_LOCK`.
+    unsafe { (*block).is_free = 0 };
+
+    // Split off the remainder, which goes back on its own class list.
+    if block_size >= size + hdr_size + MIN_FREE {
+        // SAFETY: the remainder lies `hdr_size + size` bytes into `block`, which the
+        // size check above proved is still inside `block`'s own extent.
+        let next_block =
+            unsafe { (block as *mut u8).add(hdr_size as usize + size as usize) as *mut HeapBlock };
+        // SAFETY: `(*block).next` is the block's address-list link, under `HEAP_LOCK`.
+        let next_next = unsafe { (*block).next };
+        // SAFETY: `next_block` is the freshly-carved sub-block inside `block`.
+        let next_ref = unsafe { &mut *next_block };
+        next_ref.magic = HEAP_MAGIC;
+        next_ref.size = block_size - size - hdr_size;
+        next_ref.is_free = 1;
+        next_ref.next = next_next;
+        // SAFETY: sizing `block` down to the request, under `HEAP_LOCK`.
+        unsafe { (*block).size = size };
+        // SAFETY: linking the free remainder right after `block` in the address list.
+        unsafe { (*block).next = next_block };
+        // SAFETY: `next_block` is a live free block, not yet on a class list.
+        unsafe { class_push(next_block) };
     }
 
-    if !best_fit.is_null() {
-        // SAFETY: `(*best_fit).size` of a locked heap-list node.
-        let bf_size = unsafe { (*best_fit).size };
-        if bf_size >= size + hdr_size + 8 {
-            // SAFETY: splitting `best_fit` under `HEAP_LOCK`: `next_block` lies
-            // `hdr_size + size` bytes into the block, which the size check above
-            // proved is still inside that block's own extent in the heap window.
-            let next_block = unsafe {
-                (best_fit as *mut u8).add(hdr_size as usize + size as usize) as *mut HeapBlock
-            };
-            // SAFETY: `next_block` is the freshly-carved sub-block inside
-            // `best_fit`'s extent and no reference to it exists yet.
-            let next_block_ref = unsafe { &mut *next_block };
-            // SAFETY: `best_fit` is the chosen free block and this call owns it
-            // under `HEAP_LOCK`; the borrow ends at the end of this block, before
-            // the tail canary below.
-            let best_fit_ref = unsafe { &mut *best_fit };
-            next_block_ref.magic = HEAP_MAGIC;
-            next_block_ref.size = best_fit_ref.size - size - hdr_size;
-            next_block_ref.is_free = 1;
-            next_block_ref.next = best_fit_ref.next;
-            best_fit_ref.size = size;
-            best_fit_ref.next = next_block;
-        }
-        // SAFETY: marking the chosen block in-use, under `HEAP_LOCK`.
-        unsafe { (*best_fit).is_free = 0; }
-        lock_release(HEAP_LOCK.as_ptr());
-        // SAFETY: `user_ptr` is `best_fit + hdr_size`, still inside the block whose
-        // size was validated above (every block is at least `hdr_size + 4` bytes).
-        let user_ptr = unsafe { (best_fit as *mut u8).add(hdr_size as usize) };
-        // SAFETY: `(*best_fit).size` of the block this call owns under `HEAP_LOCK`.
-        let block_size = unsafe { (*best_fit).size };
-        // SAFETY: the tail canary lives at `user_ptr + block_size - 4`, i.e. 4 bytes
-        // before the end of the block whose size was reserved by `kmalloc`.
-        let tail = unsafe { user_ptr.add(block_size as usize - 4) as *mut u32 };
-        // SAFETY: writing the tail canary into the reserved slot computed above.
-        unsafe { *tail = HEAP_TAIL_MAGIC; }
-        // The list lives in direct-map VAs, so `user_ptr` is already the address
-        // the caller must see.
-        return user_ptr;
-    }
-
+    // SAFETY: `user_ptr` is `block + hdr_size`, inside the block whose size was just
+    // fixed (every block is at least `hdr_size + 4` bytes).
+    let user_ptr = unsafe { (block as *mut u8).add(hdr_size as usize) };
+    // SAFETY: `(*block).size` of the block this call owns under `HEAP_LOCK`.
+    let block_size = unsafe { (*block).size };
+    // SAFETY: the tail canary lives in the last four bytes of the block.
+    let tail = unsafe { user_ptr.add(block_size as usize - 4) as *mut u32 };
+    // SAFETY: writing the tail canary into the reserved slot.
+    unsafe { *tail = HEAP_TAIL_MAGIC };
     lock_release(HEAP_LOCK.as_ptr());
-    klog_msg(LOG_WARN, c"heap out of memory".as_ptr() as *const u8);
-    core::ptr::null_mut()
+    // The heap lives in direct-map VAs, so `user_ptr` is already the caller's address.
+    user_ptr
 }
 
 /// Heap-only aligned allocation: `kmalloc_raw` plus the back-pointer scheme
@@ -259,49 +314,25 @@ fn kfree_impl(ptr: *mut u8) {
         return;
     }
 
-    // Accept free() only for blocks that are still linked in the heap list.
-    // SAFETY: `HEAP_START_PTR` read under `HEAP_LOCK`.
-    let mut walk = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
-    let mut found = false;
-    while !walk.is_null() {
-        if !heap_addr_in_range(walk as *const u8) {
-            kprint_str(c"[FATAL] kfree: walk pointer left heap range\n".as_ptr() as *const u8);
-            klog_msg(LOG_FAIL, c"heap list pointer out of range".as_ptr() as *const u8);
-            lock_release(HEAP_LOCK.as_ptr());
-            return;
-        }
-        // SAFETY: `walk` is a node of the locked heap list, range-checked at the top
-        // of every iteration before the dereference.
-        let walk_magic = unsafe { (*walk).magic };
-        if walk_magic != HEAP_MAGIC {
-            kprint_str(c"[FATAL] kfree: list magic corrupted during lookup\n".as_ptr() as *const u8);
-            klog_msg(LOG_FAIL, c"heap list magic corrupted".as_ptr() as *const u8);
-            lock_release(HEAP_LOCK.as_ptr());
-            return;
-        }
-        if walk == block {
-            found = true;
-            break;
-        }
-        // SAFETY: `(*walk).next` of a node proven to be in the heap range.
-        walk = unsafe { (*walk).next };
-    }
-    if !found {
+    // SAFETY: `block` is inside the heap window (checked above); read its header
+    // under `HEAP_LOCK`.
+    if unsafe { (*block).magic } != HEAP_MAGIC {
         klog_msg(LOG_WARN, c"kfree ignored for unknown block".as_ptr() as *const u8);
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
 
-    // SAFETY: `block` was just found to be a linked node of the heap list, so it
-    // is a live `HeapBlock`; still under `HEAP_LOCK`.
-    let magic = unsafe { (*block).magic };
-    if magic != HEAP_MAGIC {
-        klog_msg(LOG_WARN, c"kfree bad block magic".as_ptr() as *const u8);
+    // The double-free guard must run before the canary check: freeing a block puts
+    // its class links into the payload, which can overlap the canary slot, so a
+    // second free would see a clobbered canary first.
+    // SAFETY: `(*block).is_free` of the live locked block.
+    if unsafe { (*block).is_free } != 0 {
+        klog_msg(LOG_WARN, c"double free ignored".as_ptr() as *const u8);
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
 
-    // SAFETY: `(*block).size` of the validated heap block.
+    // SAFETY: `(*block).size` of the live locked block.
     let bsize = unsafe { (*block).size } as usize;
     if bsize < 4 {
         kprint_str(c"[FATAL] kfree: block too small for tail canary\n".as_ptr() as *const u8);
@@ -309,75 +340,48 @@ fn kfree_impl(ptr: *mut u8) {
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
-    // SAFETY: `bsize >= 4` is checked above and the block was validated as a live
-    // heap block, so `ptr + bsize - 4` is the tail canary slot.
+    // SAFETY: `bsize >= 4`, so `ptr + bsize - 4` is the block's tail canary slot.
     let tail = unsafe { ptr.add(bsize - 4) as *mut u32 };
     // SAFETY: reading the tail canary slot computed above, inside the block.
-    let tail_magic = unsafe { *tail };
-    if tail_magic != HEAP_TAIL_MAGIC {
+    if unsafe { *tail } != HEAP_TAIL_MAGIC {
         kprint_str(c"[FATAL] kfree: tail canary corrupted (buffer overflow)\n".as_ptr() as *const u8);
         klog_msg(LOG_FAIL, c"heap tail canary corrupted".as_ptr() as *const u8);
         lock_release(HEAP_LOCK.as_ptr());
         return;
     }
 
-    // SAFETY: `(*block).is_free` of the validated heap block, under `HEAP_LOCK`.
-    if unsafe { (*block).is_free } != 0 {
-        klog_msg(LOG_WARN, c"double free ignored".as_ptr() as *const u8);
-        lock_release(HEAP_LOCK.as_ptr());
-        return;
+    // Coalesce forward with the physically next block.  The address-ordered list
+    // names it as `(*block).next`, and the window is contiguous, so it lies exactly
+    // one header plus `bsize` later; that check also keeps a corrupted size from
+    // reading past the window.  (Backward coalescing would need a predecessor link
+    // the design does not carry; a freed block merges only into its successor.)
+    // SAFETY: `(*block).next` of the live locked block.
+    let succ = unsafe { (*block).next };
+    if !succ.is_null() && succ as usize == block as usize + hdr_size + bsize {
+        // SAFETY: `succ` is the adjacent live block, read under `HEAP_LOCK`.
+        let succ_magic = unsafe { (*succ).magic };
+        // SAFETY: `(*succ).is_free` of the adjacent live block.
+        let succ_free = unsafe { (*succ).is_free };
+        if succ_magic == HEAP_MAGIC && succ_free != 0 {
+            // SAFETY: `succ` is a live free block, so it is on its class list.
+            unsafe { class_remove(succ) };
+            // SAFETY: `(*succ).size` of the live free block.
+            let succ_size = unsafe { (*succ).size };
+            // SAFETY: `(*succ).next` of the live free block.
+            let succ_next = unsafe { (*succ).next };
+            // SAFETY: absorbing `succ` into `block`, under `HEAP_LOCK`.
+            unsafe { (*block).size = bsize as u32 + hdr_size as u32 + succ_size };
+            // SAFETY: relinking `block` past the absorbed `succ`.
+            unsafe { (*block).next = succ_next };
+            // SAFETY: retiring the absorbed node's magic.
+            unsafe { (*succ).magic = 0 };
+        }
     }
 
-    // SAFETY: releasing `block` back to the heap list, under `HEAP_LOCK`.
-    unsafe { (*block).is_free = 1; }
-
-    // SAFETY: `HEAP_START_PTR` re-read under `HEAP_LOCK` for the coalescing walk.
-    let mut curr = *unsafe { KStatic::get_mut(HEAP_START_PTR.as_ptr()) };
-    while !curr.is_null() {
-        // SAFETY: `curr` walks the locked heap list; each node is range/ magic checked
-        // before use.
-        let curr_magic = unsafe { (*curr).magic };
-        if curr_magic != HEAP_MAGIC {
-            kprint_str(c"[FATAL] kfree: heap corruption at curr\n".as_ptr() as *const u8);
-            klog_msg(LOG_FAIL, c"heap corruption during coalesce".as_ptr() as *const u8);
-            break;
-        }
-        // SAFETY: `(*curr).is_free` of the validated list node.
-        let curr_free = unsafe { (*curr).is_free };
-        // SAFETY: `(*curr).next` of the validated list node.
-        let next = unsafe { (*curr).next };
-        if curr_free != 0 && !next.is_null() {
-            // SAFETY: `(*next).magic` of a node checked non-null and in heap range.
-            let next_magic = unsafe { (*next).magic };
-            if next_magic != HEAP_MAGIC {
-                kprint_str(c"[FATAL] kfree: next header corrupted, stopping coalesce\n".as_ptr() as *const u8);
-                klog_msg(LOG_FAIL, c"next heap header corrupted".as_ptr() as *const u8);
-                break;
-            }
-            // SAFETY: `(*next).is_free` of the magic-checked node.
-            let next_free = unsafe { (*next).is_free };
-            if next_free != 0 {
-                // SAFETY: `(*next).size` of the magic-checked node.
-                let next_size = unsafe { (*next).size };
-                // SAFETY: `(*next).next` of the magic-checked node.
-                let next_next = unsafe { (*next).next };
-                {
-                    // SAFETY: `next` is the adjacent node being absorbed, and this
-                    // call owns the locked heap list.
-                    let next_ref = unsafe { &mut *next };
-                    // SAFETY: `curr` is the node being widened; it is distinct from
-                    // `next` (adjacent list nodes) and this call owns it under
-                    // `HEAP_LOCK`.
-                    let curr_ref = unsafe { &mut *curr };
-                    next_ref.magic = 0;
-                    curr_ref.size += next_size + hdr_size as u32;
-                    curr_ref.next = next_next;
-                }
-                continue;
-            }
-        }
-        curr = next;
-    }
+    // SAFETY: releasing `block` back to the heap, under `HEAP_LOCK`.
+    unsafe { (*block).is_free = 1 };
+    // SAFETY: `block` is a live free block that is not on any class list yet.
+    unsafe { class_push(block) };
     lock_release(HEAP_LOCK.as_ptr());
 }
 
@@ -517,6 +521,8 @@ unsafe fn resize_block(block: *mut HeapBlock, new_size: u32, hdr_size: u32) {
         unsafe { (*block).size = new_size };
         // SAFETY: linking the just-carved free tail after `block`.
         unsafe { (*block).next = tail };
+        // SAFETY: `tail` is a live free block, not yet on a class list.
+        unsafe { class_push(tail) };
     }
     // SAFETY: `(*block).size` of the live locked block, after any split.
     let bsize = unsafe { (*block).size };
@@ -540,6 +546,8 @@ unsafe fn absorb_next(block: *mut HeapBlock, next: *mut HeapBlock, hdr_size: u32
     let next_next = unsafe { (*next).next };
     // SAFETY: `(*block).size` of the locked live block.
     let block_size = unsafe { (*block).size };
+    // SAFETY: `next` is a live free block, so it is on its class list.
+    unsafe { class_remove(next) };
     // SAFETY: clearing the absorbed node's magic retires it as a list node.
     unsafe { (*next).magic = 0 };
     // SAFETY: widening `block` over `next`'s whole extent.
