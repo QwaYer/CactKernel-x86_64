@@ -421,7 +421,16 @@ pub extern "C" fn kalloc() -> *mut u8 {
         }
         round += 1;
 
-        let reclaimed = if crate::fault::swap::swap_is_enabled() {
+        // An empty slab page is the cheapest memory to get back, so hand the slab
+        // caches' free slabs to the PMM before evicting a user page or killing a
+        // task.  (kalloc released PAGE_LOCK above, and slab_shrink_all only takes
+        // the cache lock, so the ordering is PAGE_LOCK -> G_CACHE_LOCK with nothing
+        // the other way.)
+        let freed_from_slab = crate::alloc::slab::slab_shrink_all();
+
+        let reclaimed = if freed_from_slab > 0 {
+            true
+        } else if crate::fault::swap::swap_is_enabled() {
             let pd = crate::safe::current_page_dir();
             // SAFETY: `pd` is the live page directory read from CR3 above, and
             // eviction only walks/mutates that directory's own user PTEs.

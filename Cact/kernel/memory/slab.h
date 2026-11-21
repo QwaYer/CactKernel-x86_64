@@ -11,7 +11,16 @@
 #define SLAB_MIN_OBJ_SIZE  8
 #define SLAB_NAME_LEN      32
 
+/*
+ * SLAB_MAGIC stamps every slab page header (rust_mm: alloc/slab_owner.rs), so
+ * slab_kfree can tell a slab object's page from a plain kmalloc block's page by
+ * the header word instead of guessing from the capacity field.  The value is
+ * set and checked in Rust only; it is mirrored here so the struct stays in sync.
+ */
+#define SLAB_MAGIC 0x51AB5EEDu
+
 typedef struct slab {
+    uint32_t      magic;    /* SLAB_MAGIC — checked by the Rust allocator    */
     struct slab*  next;
     struct slab*  prev;
     void*         freelist;
@@ -41,6 +50,9 @@ void*         slab_alloc(slab_cache_t* cache);
 void          slab_free(slab_cache_t* cache, void* obj);
 void          slab_cache_destroy(slab_cache_t* cache);
 void          slab_cache_shrink(slab_cache_t* cache);
+/* Reclaim the free slabs of every cache; returns the 4 KiB frames handed back to
+ * the PMM.  The PMM's kalloc OOM path calls it before swapping or OOM-killing. */
+uint32_t      slab_shrink_all(void);
 void          slab_print_stats(const slab_cache_t* cache);
 void          slab_init(void);
 void*         slab_kmalloc(size_t size);

@@ -10,6 +10,7 @@ use crate::alloc::slab::{
     slab_alloc, slab_cache_create, slab_free, G_CACHE_LOCK, G_GENERIC_CACHES, Slab,
     GENERIC_CACHE_COUNT,
 };
+use crate::alloc::slab_owner::is_slab_header;
 
 const GENERIC_SIZES: [u32; GENERIC_CACHE_COUNT] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048];
 
@@ -91,17 +92,16 @@ pub unsafe extern "C" fn slab_kfree(ptr: *mut u8) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: obj resides in a page whose start is a Slab header.  Objects are
-    // direct-map VAs (their slab page is a `kalloc` frame) and the direct map is
-    // page-aligned, so masking the low 12 bits of the VA yields the page base.
+    // SAFETY: obj resides in a page whose start may be a Slab header.  Objects
+    // are direct-map VAs (their slab page is a `kalloc` frame) and the direct map
+    // is page-aligned, so masking the low 12 bits of the VA yields the page base.
     let s = (ptr as u64 & !(PAGE_SIZE as u64 - 1)) as *mut Slab;
-    // SAFETY: `s` is the `Slab` header at the start of the page containing `ptr`
-    // (slab objects are page-aligned per slab); this shared borrow is consumed by
-    // the checks below.
+    // SAFETY: `s` is the start of the page containing `ptr`; the header is only
+    // read, and `is_slab_header` trusts it only when its magic matches.
     let s = unsafe { &*s };
-    if !s.cache.is_null() && s.capacity > 0 && s.capacity <= 512 {
-        // SAFETY: `s.cache` is a live slab cache pointer and `ptr` is a live slab
-        // object belonging to it, per the caller contract.
+    if is_slab_header(s.magic, s.capacity, !s.cache.is_null()) {
+        // SAFETY: the page header is a live slab header, so `s.cache` is a live
+        // cache and `ptr` is one of its objects, per the caller contract.
         unsafe { slab_free(s.cache, ptr) };
         return;
     }

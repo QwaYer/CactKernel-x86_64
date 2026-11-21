@@ -7,3 +7,4 @@ pub mod heap;
 pub mod heap_stats;
 pub mod realloc_plan;
 pub mod slab;
+pub mod slab_owner;

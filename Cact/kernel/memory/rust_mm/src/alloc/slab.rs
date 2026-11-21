@@ -7,9 +7,11 @@ use crate::ffi::*;
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int};
 use crate::pmm::{kalloc, free_page};
 use crate::alloc::heap::{kmalloc, kfree};
+use crate::alloc::slab_owner::SLAB_MAGIC;
 
 #[repr(C)]
 pub struct Slab {
+    magic: u32,
     next: *mut Slab,
     prev: *mut Slab,
     freelist: *mut u8,
@@ -104,6 +106,7 @@ fn slab_create_slab(cache: *mut SlabCache) -> *mut Slab {
     // SAFETY: `cache` is the live cache whose slab this is (per the caller
     // contract); the fresh slab above does not alias it.
     let cache_ref = unsafe { &mut *cache };
+    s.magic = SLAB_MAGIC;
     s.next = core::ptr::null_mut();
     s.prev = core::ptr::null_mut();
     s.inuse = 0;
@@ -329,8 +332,8 @@ pub unsafe extern "C" fn slab_free(cache: *mut SlabCache, obj: *mut u8) {
         // so this borrow of the header is exclusive; it ends before the list
         // operations below re-touch `s` through the raw pointer.
         let s_ref = unsafe { &mut *s };
-        if s_ref.cache != cache {
-            kprint_str(c"slab: slab_free: wrong cache!\n".as_ptr() as *const u8);
+        if s_ref.magic != SLAB_MAGIC || s_ref.cache != cache {
+            kprint_str(c"slab: slab_free: bad slab header or wrong cache!\n".as_ptr() as *const u8);
             lock_release(G_CACHE_LOCK.as_ptr());
             return;
         }
@@ -367,18 +370,52 @@ pub unsafe extern "C" fn slab_cache_shrink(cache: *mut SlabCache) {
         return;
     }
     lock_acquire(G_CACHE_LOCK.as_ptr());
-    // SAFETY: `cache` is a live cache (per the caller contract) and
-    // `G_CACHE_LOCK` is held, so the free-slab list head is exclusively read here.
+    slab_shrink_locked(cache);
+    lock_release(G_CACHE_LOCK.as_ptr());
+}
+
+/// Destroy every slab on `cache`'s free list and return how many were released.
+///
+/// `Locking:` the caller must hold `G_CACHE_LOCK`, so the free list is
+/// exclusively owned.
+fn slab_shrink_locked(cache: *mut SlabCache) -> u32 {
+    let mut freed = 0;
+    // SAFETY: `cache` is a live cache and `G_CACHE_LOCK` is held, so the free-slab
+    // list head is exclusively read here.
     let mut s = unsafe { (*cache).free };
     while !s.is_null() {
         // SAFETY: `s` is a live slab node of that list.
         let next = unsafe { (*s).next };
         slab_destroy_slab(cache, s);
+        freed += 1;
         s = next;
     }
     // SAFETY: clearing the free-slab list head of the live cache, under the lock.
     unsafe { (*cache).free = core::ptr::null_mut() };
+    freed
+}
+
+/// Reclaim the free slabs of every cache and return the number of 4 KiB frames
+/// handed back to the PMM.
+///
+/// This is the slab shrinker: the PMM's `kalloc` out-of-memory path calls it
+/// before evicting a page or killing a task, because an empty slab is the
+/// cheapest memory to recover.  A cache's *partial* slabs are left alone — their
+/// objects may still be in use.
+#[unsafe(no_mangle)]
+pub extern "C" fn slab_shrink_all() -> u32 {
+    let mut freed: u32 = 0;
+    lock_acquire(G_CACHE_LOCK.as_ptr());
+    // SAFETY: `G_CACHE_LIST` head read under `G_CACHE_LOCK`, which serialises it
+    // against cache creation/destruction and the list relinks.
+    let mut c = unsafe { *KStatic::get_mut(G_CACHE_LIST.as_ptr()) };
+    while !c.is_null() {
+        freed = freed.saturating_add(slab_shrink_locked(c));
+        // SAFETY: following `(*c).next` in the locked cache list.
+        c = unsafe { (*c).next };
+    }
     lock_release(G_CACHE_LOCK.as_ptr());
+    freed
 }
 
 /// # Safety
