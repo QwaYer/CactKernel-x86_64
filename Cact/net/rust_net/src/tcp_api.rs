@@ -2,17 +2,47 @@
 // Copyright (C) 2026 CactOS Project
 
 //! TCP C ABI entry points. Split out of `tcp.rs`; shared state lives there.
+//!
+//! A TCP socket is created (its smoltcp socket built) only when it is pinned to an
+//! interface: `connect()` routes by destination subnet and creates it in that
+//! interface's `SocketSet`; `listen()` creates it on the primary interface.  Until
+//! then the C slot has no smoltcp socket (`TCP_SLOT == -1`).
 
 use core::net::Ipv4Addr;
 
-use smoltcp::iface::SocketHandle;
 use smoltcp::socket::tcp;
 use smoltcp::wire::{IpAddress, IpListenEndpoint};
 
 use crate::ffi_kernel;
 use crate::stack::{self};
-use crate::tcp::{alloc_tcp_smoltcp, tcp_lock, tcp_sockets, tcp_unlock, NEXT_EPHEMERAL, TCP_HANDLE};
+use crate::tcp::{
+    alloc_tcp_smoltcp, tcp_lock, tcp_set_slot, tcp_slot_of, tcp_sockets, tcp_unlock, TCP_HANDLE,
+    NEXT_EPHEMERAL,
+};
 use crate::types::*;
+
+/// Build the smoltcp TCP socket for C slot `idx` in interface `slot`'s set and
+/// record it.  Returns 0 on success, -1 on failure (leaving the slot unplaced).
+fn place_tcp(idx: usize, slot: usize) -> i32 {
+    let r = stack::with_slot_socks(slot, |socks| match alloc_tcp_smoltcp(idx, socks) {
+        Some(h) => {
+            tcp_lock();
+            // SAFETY: `idx < TCP_MAX_SOCKETS` is the caller's contract and
+            // `tcp_lock` is held, so this handle store cannot race the poll thread.
+            unsafe { TCP_HANDLE[idx] = Some(h) };
+            tcp_unlock();
+            0
+        }
+        None => -1,
+    });
+    match r {
+        Some(0) => {
+            tcp_set_slot(idx, slot as i32);
+            0
+        }
+        _ => -1,
+    }
+}
 
 #[no_mangle]
 pub extern "C" fn tcp_socket() -> i32 {
@@ -50,40 +80,9 @@ pub extern "C" fn tcp_socket() -> i32 {
     if idx < 0 {
         return -1;
     }
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        // Runs inside `with_iface_sockets` (stack lock held); `tcp_lock`
-        // serializes the `TCP_HANDLE` update and `alloc_tcp_smoltcp` against the
-        // poll thread, and `idx` was bounds-checked above.
-        {
-            let h = match alloc_tcp_smoltcp(idx as usize, socks) {
-                Some(h) => h,
-                None => {
-                    tcp_lock();
-                    // SAFETY: `idx` is bounds-checked above and `tcp_lock` is
-                    // held, so this row store is exclusive.
-                    unsafe { tcp_sockets[idx as usize].used = 0 };
-                    tcp_unlock();
-                    return -1;
-                }
-            };
-            tcp_lock();
-            // SAFETY: `TCP_HANDLE` is written under `tcp_lock`, as every access
-            // is.
-            unsafe { TCP_HANDLE[idx as usize] = Some(h) };
-            tcp_unlock();
-            idx as i32
-        }
-    });
-    r.unwrap_or_else(|| {
-        // SAFETY: same table, same `tcp_lock`; this only rolls back the `used` flag of
-        // the slot this call owns (`idx` bounds-checked above).
-        unsafe {
-            tcp_lock();
-            tcp_sockets[idx as usize].used = 0;
-            tcp_unlock();
-        }
-        -1
-    })
+    // Not yet pinned to an interface; `connect`/`listen` does that.
+    tcp_set_slot(idx as usize, -1);
+    idx
 }
 
 /// How long `connect()` waits for the handshake (ticks at 100 Hz, same budget
@@ -140,18 +139,24 @@ pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
-    // SAFETY: `TCP_HANDLE` is read under `tcp_lock` and `sock` was bounds-checked
-    // above, so the read is in bounds and cannot race the poll thread.
-    let h = unsafe {
-        tcp_lock();
-        let h = TCP_HANDLE[sock as usize];
-        tcp_unlock();
-        h
-    };
-    let Some(h) = h else {
+    let i = sock as usize;
+    // Pick the interface by destination subnet and create the socket there.
+    let slot = crate::config::route_slot(dst_ip);
+    if place_tcp(i, slot) != 0 {
         return -1;
-    };
-    let r = stack::with_iface_sockets(|iface, socks| {
+    }
+    let r = stack::with_slot(slot, |iface, socks| {
+        // SAFETY: the handle is read under `tcp_lock`, as every access is; `i` was
+        // bounds-checked above.
+        let h = {
+            tcp_lock();
+            let h = unsafe { TCP_HANDLE[i] };
+            tcp_unlock();
+            h
+        };
+        let Some(h) = h else {
+            return -1;
+        };
         let s = socks.get_mut::<tcp::Socket>(h);
         if s.is_open() {
             return -1;
@@ -164,9 +169,9 @@ pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
         // `connect`), and `sock` was bounds-checked above.
         let local_port = {
             tcp_lock();
-            // SAFETY: `sock` is bounds-checked above and `tcp_lock` is held, so
+            // SAFETY: `i` is bounds-checked above and `tcp_lock` is held, so
             // this slot read cannot race another `connect`.
-            let bound = unsafe { tcp_sockets[sock as usize].local_port };
+            let bound = unsafe { tcp_sockets[i].local_port };
             let p = if bound != 0 {
                 bound
             } else {
@@ -236,18 +241,25 @@ pub extern "C" fn tcp_listen(sock: i32, local_port: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
-    // SAFETY: `TCP_HANDLE` is read under `tcp_lock`, and `sock` was bounds-checked
-    // above, so the read is in bounds and cannot race the poll thread.
-    let h = unsafe {
-        tcp_lock();
-        let h = TCP_HANDLE[sock as usize];
-        tcp_unlock();
-        h
-    };
-    let Some(h) = h else {
+    let i = sock as usize;
+    // A listener is not addressed to any peer yet, so it lives on the primary
+    // interface.
+    let slot = 0usize;
+    if place_tcp(i, slot) != 0 {
         return -1;
-    };
-    let r = stack::with_iface_sockets(|_iface, socks| {
+    }
+    let r = stack::with_slot_socks(slot, |socks| {
+        // SAFETY: the handle is read under `tcp_lock`, as every access is; `i` was
+        // bounds-checked above.
+        let h = {
+            tcp_lock();
+            let h = unsafe { TCP_HANDLE[i] };
+            tcp_unlock();
+            h
+        };
+        let Some(h) = h else {
+            return -1;
+        };
         let s = socks.get_mut::<tcp::Socket>(h);
         if s.listen(local_port).is_err() {
             return -1;
@@ -270,19 +282,7 @@ pub unsafe extern "C" fn tcp_send(sock: i32, data: *mut u8, len: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS || data.is_null() {
         return -1;
     }
-    // SAFETY: `TCP_HANDLE` is read under `tcp_lock`, and `sock` was bounds-checked
-    // above, so the read is in bounds and cannot race the poll thread.
-    let h = unsafe {
-        tcp_lock();
-        let h = TCP_HANDLE[sock as usize];
-        tcp_unlock();
-        h
-    };
-    let Some(h) = h else {
-        return -1;
-    };
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        let s = socks.get_mut::<tcp::Socket>(h);
+    let r = crate::tcp::with_tcp_socket(sock, |s| {
         if !s.may_send() {
             return -1;
         }
@@ -322,11 +322,11 @@ fn close_settled(state: tcp::State) -> bool {
     )
 }
 
-/// Queue the FIN and drive the interface until it has been acknowledged.
+/// Queue the FIN and drive the slot's interface until it has been acknowledged.
 /// LISTEN/SYN-SENT sockets move straight to CLOSED; a connected socket keeps
 /// its buffered bytes until the peer acknowledges them and the FIN.
-fn wait_close_settled(h: SocketHandle) -> bool {
-    if stack::with_iface_sockets(|_iface, socks| {
+fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
+    if stack::with_slot_socks(slot, |socks| {
         socks.get_mut::<tcp::Socket>(h).close();
     })
     .is_none()
@@ -341,7 +341,7 @@ fn wait_close_settled(h: SocketHandle) -> bool {
         // only kicks it every NET_POLL_PERIOD_TICKS, and every close() would
         // pay that delay in full.
         stack::stack_poll();
-        match stack::with_iface_sockets(|_iface, socks| socks.get_mut::<tcp::Socket>(h).state()) {
+        match stack::with_slot_socks(slot, |socks| socks.get_mut::<tcp::Socket>(h).state()) {
             Some(state) if close_settled(state) => return true,
             Some(_) => {}
             None => return false,
@@ -363,6 +363,7 @@ pub extern "C" fn tcp_close(sock: i32) -> i32 {
         return -1;
     }
     let i = sock as usize;
+    let slot = tcp_slot_of(i);
     // SAFETY: `TCP_HANDLE[i]` is read under `tcp_lock`, and `i` derives from the
     // bounds check at the top of the function, so the read is in bounds and cannot
     // race the poll thread.
@@ -372,29 +373,33 @@ pub extern "C" fn tcp_close(sock: i32) -> i32 {
         tcp_unlock();
         h
     };
-    if let Some(h) = handle {
-        if !wait_close_settled(h) {
-            // The peer never acknowledged the FIN (or the stack is down).
-            // Sending an RST says so; dropping the socket without one would
-            // leave the peer waiting on a half-open connection.
-            stack::with_iface_sockets(|_iface, socks| {
-                socks.get_mut::<tcp::Socket>(h).abort();
+    if slot >= 0 {
+        let slot = slot as usize;
+        if let Some(h) = handle {
+            if !wait_close_settled(slot, h) {
+                // The peer never acknowledged the FIN (or the stack is down).
+                // Sending an RST says so; dropping the socket without one would
+                // leave the peer waiting on a half-open connection.
+                stack::with_slot_socks(slot, |socks| {
+                    socks.get_mut::<tcp::Socket>(h).abort();
+                });
+                stack::stack_poll();
+            }
+            // Unlink the handle before removing the socket: `stack_poll`'s mirror
+            // update resolves the handle, and smoltcp panics on a stale one.
+            // SAFETY: clears `TCP_HANDLE[i]` under `tcp_lock` so `stack_poll`'s mirror
+            // update cannot resolve the handle while the socket is being removed.
+            unsafe {
+                tcp_lock();
+                TCP_HANDLE[i] = None;
+                tcp_unlock();
+            }
+            let _ = stack::with_slot_socks(slot, |socks| {
+                let _ = socks.remove(h);
             });
-            stack::stack_poll();
         }
-        // Unlink the handle before removing the socket: `stack_poll`'s mirror
-        // update resolves the handle, and smoltcp panics on a stale one.
-        // SAFETY: clears `TCP_HANDLE[i]` under `tcp_lock` so `stack_poll`'s mirror
-        // update cannot resolve the handle while the socket is being removed.
-        unsafe {
-            tcp_lock();
-            TCP_HANDLE[i] = None;
-            tcp_unlock();
-        }
-        let _ = stack::with_iface_sockets(|_iface, socks| {
-            let _ = socks.remove(h);
-        });
     }
+    tcp_set_slot(i, -1);
     // SAFETY: resets slot `i` of the fixed-size `tcp_sockets` table under
     // `tcp_lock`; `i` comes from the bounds check at the top of the function.
     unsafe {
@@ -431,19 +436,7 @@ pub extern "C" fn tcp_shutdown_wr(sock: i32) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
-    // SAFETY: `TCP_HANDLE` is read under `tcp_lock`, and `sock` was bounds-checked
-    // above, so the read is in bounds and cannot race the poll thread.
-    let h = unsafe {
-        tcp_lock();
-        let h = TCP_HANDLE[sock as usize];
-        tcp_unlock();
-        h
-    };
-    let Some(h) = h else {
-        return -1;
-    };
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        let s = socks.get_mut::<tcp::Socket>(h);
+    let r = crate::tcp::with_tcp_socket(sock, |s| {
         s.close();
         0
     });
@@ -462,19 +455,7 @@ pub unsafe extern "C" fn tcp_recv(sock: i32, buf: *mut u8, max_len: u16) -> i32 
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS || buf.is_null() {
         return -1;
     }
-    // SAFETY: `TCP_HANDLE` is read under `tcp_lock`, and `sock` was bounds-checked
-    // above, so the read is in bounds and cannot race the poll thread.
-    let h = unsafe {
-        tcp_lock();
-        let h = TCP_HANDLE[sock as usize];
-        tcp_unlock();
-        h
-    };
-    let Some(h) = h else {
-        return -1;
-    };
-        let r = stack::with_iface_sockets(|_iface, socks| {
-        let s = socks.get_mut::<tcp::Socket>(h);
+    let r = crate::tcp::with_tcp_socket(sock, |s| {
         if !s.may_recv() {
             return 0;
         }

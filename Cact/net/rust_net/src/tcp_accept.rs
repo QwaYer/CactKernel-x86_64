@@ -6,11 +6,12 @@
 use smoltcp::socket::tcp;
 
 use crate::stack::{self};
-use crate::tcp::{alloc_tcp_smoltcp, tcp_lock, tcp_sockets, tcp_unlock, TCP_HANDLE};
+use crate::tcp::{alloc_tcp_smoltcp, tcp_lock, tcp_set_slot, tcp_slot_of, tcp_sockets, tcp_unlock, TCP_HANDLE};
 use crate::types::*;
 
 /// Hand off an established inbound connection from listen slot `listen_idx` to `child_idx`,
-/// then recreate the listening smoltcp socket on `listen_idx`.
+/// then recreate the listening smoltcp socket on `listen_idx`.  Both slots live on
+/// the interface the listener was pinned to.
 pub fn tcp_accept_transfer(listen_idx: i32, child_idx: i32) -> i32 {
     if listen_idx < 0
         || child_idx < 0
@@ -21,11 +22,17 @@ pub fn tcp_accept_transfer(listen_idx: i32, child_idx: i32) -> i32 {
     }
     let li = listen_idx as usize;
     let ci = child_idx as usize;
+    // The parent listener's interface slot; the child connection stays on it.
+    let slot = tcp_slot_of(li);
+    if slot < 0 {
+        return -1;
+    }
+    let slot = slot as usize;
     let (lh, lp) = {
-        // SAFETY: `with_iface_sockets` holds `STACK_LOCK` for the closure and
+        // SAFETY: `with_slot_socks` holds the slot's `STACK_LOCK` for the closure and
         // `tcp_lock` serializes `TCP_HANDLE` against the poll thread; both indices were
         // bounds-checked by the caller, so the handle read is in bounds.
-        let r = stack::with_iface_sockets(|_iface, socks| unsafe {
+        let r = stack::with_slot_socks(slot, |socks| unsafe {
             tcp_lock();
             let lh = TCP_HANDLE[li];
             tcp_unlock();
@@ -48,10 +55,10 @@ pub fn tcp_accept_transfer(listen_idx: i32, child_idx: i32) -> i32 {
             _ => return -1,
         }
     };
-    // The closure runs under `STACK_LOCK`; `tcp_lock` serializes the
+    // The closure runs under the slot's `STACK_LOCK`; `tcp_lock` serializes the
     // `TCP_HANDLE`/`tcp_sockets` updates against the poll thread, and `listen_idx`/
     // `child_idx` were bounds-checked at the top of the function.
-    stack::with_iface_sockets(|_iface, socks| {
+    let rc = stack::with_slot_socks(slot, |socks| {
         tcp_lock();
         {
             // SAFETY: `ci` is bounds-checked and `tcp_lock` is held, so this
@@ -120,5 +127,10 @@ pub fn tcp_accept_transfer(listen_idx: i32, child_idx: i32) -> i32 {
         }
         0
     })
-    .unwrap_or(-1)
+    .unwrap_or(-1);
+    if rc == 0 {
+        // The accepted child lives on the same interface as the listener.
+        tcp_set_slot(ci, slot as i32);
+    }
+    rc
 }

@@ -164,8 +164,11 @@ pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
     table[i].mac = mac;
     table[i].name = name;
 
-    // Publish the primary NIC (the lowest live slot) as the active interface, so
-    // registering a second NIC leaves the running datapath on the first one.
+    // Bind the NIC to its interface slot (building it on first use), then elect the
+    // primary (the lowest live slot) for the legacy getters.  Attaching a second NIC
+    // therefore leaves the first one's datapath untouched.
+    stack::stack_init();
+    stack::iface_attach(i, drv, mac.b);
     // SAFETY: `NIC_TABLE` is mutated only on this single-threaded path; this
     // shared borrow ends before the `active_nic`/`my_mac` stores below.
     let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
@@ -175,10 +178,6 @@ pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
     unsafe { active_nic = pdrv };
     // SAFETY: as above, for the kernel-lifetime `my_mac` static.
     unsafe { my_mac = pmac };
-    // The stack (and with it loopback) already exists from `net_init`;
-    // `stack_init` is a no-op then.  Attach the primary NIC's hardware address.
-    stack::stack_init();
-    stack::stack_set_nic_mac(pmac.b);
     ffi_kernel::klog_static(ffi_kernel::LOG_OK, b"net: NIC driver registered\0");
 }
 
@@ -193,22 +192,25 @@ pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
     // SAFETY: `active_nic` is read on the single-threaded teardown path; an
     // aligned pointer load cannot tear.
     let was_primary = unsafe { active_nic == drv };
+    let mut removed_slot: Option<usize> = None;
     // SAFETY: `NIC_TABLE` is mutated only here and in `register_netdev`, on the
     // single-threaded teardown path; the exclusive borrow ends below.
     let table = unsafe { &mut *core::ptr::addr_of_mut!(NIC_TABLE) };
-    let mut removed = false;
-    for e in table.iter_mut() {
+    for (i, e) in table.iter_mut().enumerate() {
         if e.used && e.drv == drv {
             *e = NicEntry::empty();
-            removed = true;
+            removed_slot = Some(i);
             break;
         }
     }
-    if !removed {
+    let Some(i) = removed_slot else {
         return;
-    }
-    // Re-elect the primary.  Only a change of primary disturbs the stack.
-    // SAFETY: as above — the shared borrow ends before the publishes below.
+    };
+    // Release the NIC from its interface slot.  Slot 0 keeps its interface so
+    // loopback and any live sockets survive a NIC unload.
+    stack::iface_detach(i);
+    // Re-elect the primary.  Only a change of primary updates the legacy getters.
+    // SAFETY: the shared borrow ends before the publishes below.
     let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
     let (pdrv, pmac) = primary_of(table);
     // SAFETY: `active_nic`/`my_mac` are kernel-lifetime statics written only on
@@ -220,14 +222,12 @@ pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
     // SAFETY: as above, for the kernel-lifetime `my_mac` static.
     unsafe { my_mac = pmac };
     if pdrv.is_null() {
-        // Loopback must survive a NIC unload, so rebuild the stack in its
-        // NIC-less (loopback-only) form instead of tearing it down and leaving it
-        // down.  Both calls run on the single-threaded driver teardown path.
+        // No NIC left: rebuild the stack loopback-only, so the departed interface's
+        // sockets and configuration do not linger (matches single-NIC behaviour).
+        // Both calls run on the single-threaded driver teardown path.
         // SAFETY: `stack_teardown`'s caller contract is exactly this path.
         unsafe { stack::stack_teardown() };
         stack::stack_init();
-    } else {
-        stack::stack_set_nic_mac(pmac.b);
     }
 }
 
@@ -238,6 +238,17 @@ pub extern "C" fn rust_net_nic_count() -> i32 {
     // every field is a scalar, so the shared borrow cannot tear.
     let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
     table.iter().filter(|e| e.used).count() as i32
+}
+
+/// Interface slot the `index`-th live NIC is bound to (0-based registry slot), or
+/// -1 when out of range.  This is the slot its L3 state (address, sockets) lives
+/// under in `stack`.
+#[no_mangle]
+pub extern "C" fn rust_net_nic_slot(index: u32) -> i32 {
+    match nic_slot_for_index(index) {
+        Some(s) => s as i32,
+        None => -1,
+    }
 }
 
 /// Copy the `index`-th registered NIC's MAC into `out[6]`.  Returns 0 on

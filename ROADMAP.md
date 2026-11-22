@@ -24,9 +24,18 @@ actually has, not a promise. What already works is described in
   through `cact80211_register` / `_rx`. It speaks both 3-address infrastructure
   and **4-address repeater/WDS** links, but has **no AP/softAP role and no
   802.11s mesh**, and WPA2-CCMP is the only cipher (no WPA3/SAE, no TKIP/GCMP).
-- **One NIC at a time, plus `lo`.** The stack holds a single smoltcp `Interface`
-  and a single `SocketSet` (a second NIC replaces the active one), and loopback
-  is `127.0.0.1/8` carried as a *second address* rather than a separate device.
+- **Multiple NICs, but routing is partial.** The NIC registry keeps several
+  cards (`NIC_TABLE`, up to `NET_NIC_MAX` = 4), each with its **own** smoltcp
+  `Interface`, `SocketSet` and PER-interface addressing (per-interface sets are
+  required because smoltcp dispatches every socket through the interface it is
+  polled with). **TCP** `connect()` routes by destination subnet (longest-prefix
+  match, then the slot with a default route, else slot 0). Still open:
+  **per-destination UDP** routing (UDP stays on the primary interface),
+  **per-interface DHCP** (the kernel has none — userspace sets the primary), no
+  route table beyond connected subnets + one default route, a **single shared
+  ARP table** (not scoped per interface), and **userspace** (`ip`/`netd`) still
+  configuring only the primary. Loopback is `127.0.0.1/8` carried as a *second
+  address* on every interface (per-slot PHY ring), not a separate device.
 
 ## Interrupts & drivers
 

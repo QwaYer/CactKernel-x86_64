@@ -140,7 +140,12 @@ fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
     let _ = s.bind(ep);
 }
 
-pub fn sync_udp_pcbs_from_smoltcp(socks: &mut SocketSet<'static>) {
+pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
+    // UDP sockets all live on slot 0 for now (per-destination UDP routing is a
+    // later stage); skip every other slot so a foreign set is never walked.
+    if slot != 0 {
+        return;
+    }
     for idx in 0..UDP_SOCK_MAX {
         // SAFETY: called from `stack_poll` under `STACK_LOCK`, the same lock
         // every other user of `udp_socks`/`UDP_HANDLE` takes, and `idx` is

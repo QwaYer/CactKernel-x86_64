@@ -80,18 +80,54 @@ pub(crate) static mut TCP_RX_BUFS: [[u8; TCP_RX_BUF_SIZE]; TCP_MAX_SOCKETS] = [[
 pub(crate) static mut TCP_TX_BUFS: [[u8; TCP_RX_BUF_SIZE]; TCP_MAX_SOCKETS] = [[0; TCP_RX_BUF_SIZE]; TCP_MAX_SOCKETS];
 pub(crate) static mut TCP_HANDLE: [Option<SocketHandle>; TCP_MAX_SOCKETS] = [None; TCP_MAX_SOCKETS];
 
+/// Interface slot each TCP socket lives on, or -1 before it has been placed.
+/// Rust-private (not part of the C `tcp_socket_t` mirror): the smoltcp socket
+/// backing slot `i` is in slot `TCP_SLOT[i]`'s `SocketSet`.  Guarded by `tcp_lock`
+/// and reset wholesale by `reset_tcp_smoltcp_state`.
+static mut TCP_SLOT: [i32; TCP_MAX_SOCKETS] = [-1; TCP_MAX_SOCKETS];
+
 pub(crate) static mut NEXT_EPHEMERAL: u16 = 49152;
 
 static TCP_LOCK: AtomicU32 = AtomicU32::new(0);
 
-/// Run `f` against the smoltcp TCP socket backing socket index `idx`, holding
-/// `tcp_lock` (interrupts disabled) for the whole access so the poll thread's
-/// `sync_tcp_pcbs_from_smoltcp` cannot race us on the socket state.
+/// Interface slot TCP socket `idx` lives on, as an `i32` (-1 if unplaced).  Read
+/// under `tcp_lock` so it cannot race a `connect`/`close` that moves the socket.
+pub(crate) fn tcp_slot_of(idx: usize) -> i32 {
+    if idx >= TCP_MAX_SOCKETS {
+        return -1;
+    }
+    tcp_lock();
+    // SAFETY: `idx` is bounds-checked above and `tcp_lock` is held, so this slot
+    // read is in bounds and serialized against every writer of `TCP_SLOT`.
+    let s = unsafe { TCP_SLOT[idx] };
+    tcp_unlock();
+    s
+}
+
+/// Pin TCP socket `idx` to interface slot `slot` (or -1 to unplace it).  Written
+/// under `tcp_lock`, as every access to `TCP_SLOT` is.
+pub(crate) fn tcp_set_slot(idx: usize, slot: i32) {
+    if idx >= TCP_MAX_SOCKETS {
+        return;
+    }
+    tcp_lock();
+    // SAFETY: `idx` is bounds-checked above and `tcp_lock` is held.
+    unsafe { TCP_SLOT[idx] = slot };
+    tcp_unlock();
+}
+
+/// Run `f` against the smoltcp TCP socket backing socket index `idx`, holding the
+/// stack lock of the interface slot the socket lives on (so the poll thread cannot
+/// race us on the socket) plus `tcp_lock` for the handle table.
 pub(crate) fn with_tcp_socket<R>(idx: i32, f: impl FnOnce(&mut smoltcp::socket::tcp::Socket) -> R) -> Option<R> {
     if idx < 0 || idx as usize >= TCP_MAX_SOCKETS {
         return None;
     }
-    crate::stack::with_iface_sockets(|_iface, socks| {
+    let slot = tcp_slot_of(idx as usize);
+    if slot < 0 {
+        return None;
+    }
+    crate::stack::with_slot_socks(slot as usize, |socks| {
         tcp_lock();
         // SAFETY: the index is bounds-checked above (`idx < TCP_MAX_SOCKETS`), so
         // indexing the copied `TCP_HANDLE` array is in bounds; every read/write
@@ -130,17 +166,23 @@ pub(crate) fn tcp_poll_status(idx: usize) -> Option<(bool, bool, bool)> {
         return None;
     }
     tcp_lock();
-    let (used, listen_parent) = {
-        // SAFETY: `tcp_sockets` is read under `tcp_lock` (interrupts off) — the
-        // same lock every writer takes — and `idx` is bounds-checked above, so
-        // the borrow is in bounds and cannot race another context; it is consumed
-        // by the two field copies.
+    let (used, listen_parent, slot) = {
+        // SAFETY: `tcp_sockets`/`TCP_SLOT` are read under `tcp_lock` (interrupts
+        // off) — the same lock every writer takes — and `idx` is bounds-checked
+        // above, so the borrows are in bounds and cannot race another context.
         let s = unsafe { &tcp_sockets[idx] };
-        (s.used, s.listen_parent)
+        let slot = unsafe { TCP_SLOT[idx] };
+        (s.used, s.listen_parent, slot)
     };
     tcp_unlock();
     if used == 0 {
         return None;
+    }
+    if slot < 0 {
+        // Created but not yet placed on an interface: behave like a CLOSED
+        // socket (no data, but eof), as a fresh socket did when its smoltcp
+        // socket was built eagerly.
+        return Some((false, false, true));
     }
     with_tcp_socket(idx as i32, |s| {
         let st = s.state();
@@ -172,6 +214,8 @@ pub(crate) unsafe fn reset_tcp_smoltcp_state() {
     // these statics for the duration of the call, so this write is the only
     // access in flight.
     unsafe { TCP_HANDLE = [None; TCP_MAX_SOCKETS] };
+    // SAFETY: as above.
+    unsafe { TCP_SLOT = [-1; TCP_MAX_SOCKETS] };
     // SAFETY: as above.
     unsafe { NEXT_EPHEMERAL = 49152 };
     // SAFETY: as above; `tcp_sockets` is the kernel-lifetime slot array and the
@@ -205,13 +249,19 @@ pub(crate) unsafe fn reset_tcp_smoltcp_state() {
     }
 }
 
-pub fn sync_tcp_pcbs_from_smoltcp(socks: &mut SocketSet<'static>) {
-    // This is called from `stack_poll`/`stack_teardown` while `STACK_LOCK` is
-    // held, which is the same lock every other path takes before touching
-    // `tcp_sockets`/`TCP_HANDLE`; `tcp_lock` additionally keeps the same accesses
-    // out of syscall context on this CPU.
+pub fn sync_tcp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
+    // This is called from `stack_poll`/`stack_teardown` while the slot's `STACK_LOCK`
+    // is held, which is the same lock every other path takes before touching
+    // `tcp_sockets`/`TCP_HANDLE`; `tcp_lock` additionally keeps the same accesses out
+    // of syscall context on this CPU.  Only the sockets pinned to `slot` are synced:
+    // the others live in other slots' sets.
     tcp_lock();
     for i in 0..TCP_MAX_SOCKETS {
+        // SAFETY: `TCP_SLOT` is read under `tcp_lock`, the same lock every writer
+        // takes, so the copied slot cannot race a concurrent placement.
+        if unsafe { TCP_SLOT[i] } != slot as i32 {
+            continue;
+        }
         // SAFETY: `tcp_sockets` is a kernel-lifetime static array, `i` is in
         // range, and `tcp_lock` is held, so this row borrow is exclusive for the
         // iteration; the calls below only touch the smoltcp socket set.
@@ -308,13 +358,19 @@ pub(crate) fn tcp_socket_peer(idx: usize) -> Option<(u32, u16)> {
 /// address is 0 when it was never named (bound by port only), which the caller
 /// fills in from the interface config.
 pub(crate) fn tcp_socket_local(idx: usize) -> Option<(u32, u16)> {
-    with_tcp_socket(idx as i32, |s| {
+    match with_tcp_socket(idx as i32, |s| {
         if let Some(ep) = s.local_endpoint() {
             let IpAddress::Ipv4(a) = ep.addr;
             return (ipv4_u32(a), ep.port);
         }
         (0, s.listen_endpoint().port)
-    })
+    }) {
+        Some(v) => Some(v),
+        // Created but not yet placed on an interface (never connect()ed or
+        // listen()ed): report the wildcard endpoint, exactly as a fresh CLOSED
+        // socket did before the socket is built lazily.
+        None => Some((0, 0)),
+    }
 }
 
 /// Give up slot `i` without a close handshake: unlink the smoltcp socket and
@@ -342,10 +398,14 @@ pub(crate) fn tcp_free_slot(i: usize) {
         h
     };
     if let Some(h) = h {
-        let _ = stack::with_iface_sockets(|_iface, socks| {
-            let _ = socks.remove(h);
-        });
+        let slot = tcp_slot_of(i);
+        if slot >= 0 {
+            let _ = stack::with_slot_socks(slot as usize, |socks| {
+                let _ = socks.remove(h);
+            });
+        }
     }
+    tcp_set_slot(i, -1);
     // SAFETY: the slot is cleared under `tcp_lock` like every other access to
     // `tcp_sockets`, and the smoltcp socket has already been unlinked above, so
     // the reset cannot race a reader of either structure.

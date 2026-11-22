@@ -516,12 +516,14 @@ The **entire L3+ stack is pure Rust** (`cact_net`): Ethernet demux, ARP, IPv4, I
 
 ### Interfaces & loopback
 
-There is deliberately **one** smoltcp `Interface` and **one** `SocketSet` (two interfaces sharing one set would each try to dispatch the other's sockets). `CACT_NETCTL_IFACE_COUNT` (`0x3409`) reports **0** (stack down) / **1** / **2**, and `CACT_NETCTL_IFACE_GET` (`0x340A`) returns a `cact_iface_info_t`:
+Each registered NIC gets its **own** smoltcp `Interface`, its **own** `SocketSet` and its own PHY rings — per-interface sets are mandatory because smoltcp dispatches *every* socket through the interface it is polled with, so two interfaces sharing one set would each try to dispatch the other's sockets. `register_netdev` no longer replaces the previous card: the NIC registry (`NIC_TABLE`, up to `NET_NIC_MAX` = 4 slots) keeps them all, the first (lowest slot) is the **primary**, and each slot's `Interface`/`SocketSet` is built when its NIC attaches. `CACT_NETCTL_IFACE_COUNT` (`0x3409`) reports the registered NICs plus `lo`, and `CACT_NETCTL_IFACE_GET` (`0x340A`) returns each one's name, MAC and **its own** address (`cact_iface_info_t`):
 
 - **no NIC** → `lo` alone (count 1, index 0);
-- **NIC + `lo`** → index 0 = the NIC, index 1 = `lo` (count 2). Only **one** NIC is active at a time (`register_netdev` replaces it).
+- **N NICs + `lo`** → indices `0..N-1` are the NICs (in registration order), the last index is `lo`.
 
-**Loopback** (`lo`, `127.0.0.1/8`) is not a second device: `127.0.0.1/8` is added as a *second address* on the interface (so 127/8 is on-link and smoltcp routes it locally), and the PHY diverts any emitted Ethernet frame that involves 127/8 (IPv4 src **or** dst = 127, or ARP sender/target = 127) into its own RX ring instead of the wire. It needs no NIC module, and it survives a NIC unload (the stack is rebuilt in its NIC-less form).
+Addressing is per interface (`NET_CFG[slot]`); the legacy `CACT_NETCTL_NETCFG` / `NETCFG_GET` / `IFNAME` ioctls keep addressing the primary. A TCP `connect()` picks the interface by **destination subnet** (longest-prefix match, then the slot that owns a default route, else slot 0) and builds the socket in that interface's set; `listen()` uses the primary. UDP sockets currently stay on the primary interface (per-destination UDP routing is a follow-up).
+
+**Loopback** (`lo`, `127.0.0.1/8`) is not a separate device: every interface carries `127.0.0.1/8` as a *second address* (so 127/8 is on-link and smoltcp routes it locally), and each slot's PHY diverts any emitted Ethernet frame that involves 127/8 (IPv4 src **or** dst = 127, or ARP sender/target = 127) into its own RX ring instead of the wire. It needs no NIC module, and it survives a NIC unload (the primary slot is rebuilt in its NIC-less form).
 
 ### ARP / neighbour table
 
@@ -553,7 +555,7 @@ Full socket API (the libc wrappers over **`CACT_SOCKCTL_*`**): `socket`, `bind`,
 | Layer | Responsibility |
 |-------|----------------|
 | **Ethernet / ARP / IPv4 / ICMP / TCP / UDP** | smoltcp (`cact_net`) |
-| **Interfaces** | One `Interface` + one `SocketSet`; `lo` = `127.0.0.1/8` as a second address (PHY loopback ring); the `arp.rs` shadow table mirrors smoltcp's private neighbour cache |
+| **Interfaces** | One `Interface` + one `SocketSet` **per NIC slot** (`IFACES`, up to `NET_NIC_MAX` cards; the first is the primary); TCP `connect()` routes by destination subnet; `lo` = `127.0.0.1/8` as a second address (per-slot PHY loopback ring); the `arp.rs` shadow table mirrors smoltcp's private neighbour cache |
 | **Wi-Fi** | `cact80211` engine: `wlan0` netdev + `/dev/wlan0` (`CACT_WLANCTL_*`), infrastructure **and repeater/WDS 4-address** links; drivers are dumb radios (RT3070), bound via `cact80211_register` / `_rx` |
 | **Sockets / VFS** | Up to **16** kernel socket nodes integrated with `read`/`write`/`close`; `.poll` reports real readiness (`POLLIN`/`POLLOUT`/`POLLHUP`), `fcntl(F_SETFL, O_NONBLOCK)` (and `SOCK_NONBLOCK`) makes `read`/`write` return `-EAGAIN` instead of blocking, `getsockname`/`getpeername` work, and a blocking `read`/`write`/`accept` yields `-EINTR` to a pending signal — so Ctrl+C reaches a task parked in a socket call |
 | **net_poll_task** | Dedicated kernel thread: sleeps on a semaphore, wakes on NIC RX, calls **`net_poll` → `stack_poll()`** |
@@ -576,7 +578,7 @@ RSA (PKCS#1/PSS) and ECDSA (P-256/P-384) signature verification. Skipping verifi
 has to be asked for explicitly with `CACT_HTTP_FLAG_INSECURE_TLS` (it logs a warning), for
 boards with no trustworthy clock. `cact_tls_connect` uses the same verified path.
 
-**Limits (non-exhaustive):** no **IPv6**; **IPv4 boots unnumbered** (no compile-time default, no in-kernel DHCP) and at most **one NIC + `lo`**; default NIC is **virtio-net** in QEMU; the **Wi-Fi engine is unverified on hardware** (QEMU has no radio); DNS resolver is **A-record only** (one retransmission, no server failover, no TCP fallback for truncated answers); HTTP responses are buffered with a 1 MiB cap; no gzip decompression; one pending inbound connection per listening socket (smoltcp has no SYN backlog); IPv4 fragments are not reassembled.
+**Limits (non-exhaustive):** no **IPv6**; **IPv4 boots unnumbered** (no compile-time default, no in-kernel DHCP) and at most **`NET_NIC_MAX` (4) NICs + `lo`** (only **TCP** is routed per interface so far — UDP stays on the primary, and per-interface DHCP/userspace config is a follow-up); default NIC is **virtio-net** in QEMU; the **Wi-Fi engine is unverified on hardware** (QEMU has no radio); DNS resolver is **A-record only** (one retransmission, no server failover, no TCP fallback for truncated answers); HTTP responses are buffered with a 1 MiB cap; no gzip decompression; one pending inbound connection per listening socket (smoltcp has no SYN backlog); IPv4 fragments are not reassembled.
 
 ---
 

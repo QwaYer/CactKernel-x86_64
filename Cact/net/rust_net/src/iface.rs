@@ -86,12 +86,8 @@ pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -
     0
 }
 
-/// Fill `info` with the `index`-th registered NIC.
-///
-/// Only the primary NIC (index 0) carries the active datapath's IPv4
-/// configuration.  A further NIC reports its real name and MAC but no address
-/// and no link: it is registered and visible, yet the stack does not route
-/// through it until per-NIC interfaces attach it.
+/// Fill `info` with the `index`-th registered NIC and its own interface slot's
+/// addressing.
 fn fill_nic(info: &mut CactIfaceInfo, index: u32) {
     // SAFETY: `info.name` is a live 16-byte buffer and `rust_net_nic_ifname`
     // copies at most `cap` bytes, stopping at the terminator; it only fails
@@ -99,13 +95,18 @@ fn fill_nic(info: &mut CactIfaceInfo, index: u32) {
     unsafe { runtime::rust_net_nic_ifname(index, info.name.as_mut_ptr(), info.name.len() as u32) };
     // SAFETY: as above, for the 6-byte MAC buffer.
     unsafe { runtime::rust_net_nic_mac(index, info.mac.as_mut_ptr()) };
-    if index == 0 {
-        info.ip_host = config::ip_host();
-        info.netmask_host = config::netmask_host();
-        info.gateway_host = config::gateway_host();
-        info.dns_host = config::dns_host();
-        info.link_up = 1;
+    // Report the interface slot's own addressing.  A NIC that has not been
+    // configured by userspace shows 0.0.0.0 (unnumbered) rather than the primary's
+    // address, so `ip addr` never paints a secondary NIC with the wrong address.
+    let slot = runtime::rust_net_nic_slot(index);
+    if slot >= 0 {
+        let s = slot as usize;
+        info.ip_host = config::ip_host_of(s);
+        info.netmask_host = config::netmask_host_of(s);
+        info.gateway_host = config::gateway_host_of(s);
+        info.dns_host = config::dns_host_of(s);
     }
+    info.link_up = 1;
     info.flags = 0;
 }
 
