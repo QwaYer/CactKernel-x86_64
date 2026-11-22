@@ -59,6 +59,19 @@ int rust_net_set_ipv6_config(const uint8_t* addr, uint32_t prefix,
 int rust_net_iface_set_cfg6(uint32_t idx, const uint8_t* addr, uint32_t prefix,
                             const uint8_t* gw, const uint8_t* dns);
 
+/* ── ICMPv6 echo (see cact_ping6_arg_t in ioctl_abi.h) ──────────────────── */
+/* addr points to 16 big-endian octets.  echo: 0 on success, -1 on failure. */
+int rust_net_ping_echo6(const uint8_t* addr, uint16_t id, uint16_t seq);
+/* Blocking v6 probe: RTT in microseconds, or <0 on timeout.  src_addr_out (16
+   bytes) and bytes_out may be NULL. */
+int rust_net_ping_wait6(const uint8_t* addr, uint16_t id, uint16_t seq, uint32_t timeout_ms,
+                        uint8_t* src_addr_out, uint32_t* bytes_out);
+
+/* ── DNS ────────────────────────────────────────────────────────────────── */
+/* Resolve a hostname to an IPv6 address (AAAA); out_addr receives 16 big-endian
+   octets.  0 on success, -1 on failure, -4 if interrupted. */
+int rust_net_dns_resolve_aaaa(const char* name, uint8_t* out_addr);
+
 /* ── ARP / IPv4 neighbor table (see cact_arp_entry_t in ioctl_abi.h) ── */
 struct cact_arp_entry; /* defined in ioctl_abi.h */
 /* Number of live neighbors (entries not yet aged out). */

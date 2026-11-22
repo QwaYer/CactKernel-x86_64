@@ -16,7 +16,15 @@ use crate::types::Semaphore;
 
 const DNS_PORT: u16 = 53;
 const QTYPE_A: u16 = 1;
+const QTYPE_AAAA: u16 = 28;
 const QCLASS_IN: u16 = 1;
+
+/// A DNS answer address in the family that was asked for.
+#[derive(Clone, Copy)]
+pub(crate) enum DnsAnswer {
+    A(u32),
+    Aaaa([u8; 16]),
+}
 const DNS_TIMEOUT_TICKS: u32 = 300;
 /// Resend the query if no answer arrived within this long (one retry per lookup).
 const DNS_RETRY_TICKS: u32 = 100;
@@ -113,7 +121,7 @@ pub(crate) fn parse_ipv4_literal(host: &[u8]) -> Option<u32> {
 
 /// Resolve `host` (already known not to be an IPv4 literal) to a host-order
 /// IPv4 address using the configured DNS server. Returns None on failure.
-pub(crate) fn resolve_host(host: &[u8]) -> Option<u32> {
+fn resolve_host(host: &[u8], qtype: u16) -> Option<DnsAnswer> {
     let dns = crate::config::dns_host();
     if dns == 0 {
         return None;
@@ -125,7 +133,7 @@ pub(crate) fn resolve_host(host: &[u8]) -> Option<u32> {
         return None;
     };
     let mut buf = [0u8; 512];
-    resolve_once(name_str, dns, &mut buf)
+    resolve_once(name_str, dns, &mut buf, qtype)
 }
 
 /// Resolve a hostname or IPv4 literal to a host-order IPv4 address.
@@ -133,7 +141,20 @@ pub(crate) fn resolve_a(host: &[u8]) -> Option<u32> {
     if let Some(ip) = parse_ipv4_literal(host) {
         return Some(ip);
     }
-    resolve_host(host)
+    match resolve_host(host, QTYPE_A)? {
+        DnsAnswer::A(ip) => Some(ip),
+        DnsAnswer::Aaaa(_) => None,
+    }
+}
+
+/// Resolve `host` to an IPv6 address (AAAA).  DNS itself runs over IPv4, so the
+/// IPv4 stack must be up and a resolver configured — same prerequisites as
+/// `resolve_host`.
+pub(crate) fn resolve_aaaa(host: &[u8]) -> Option<[u8; 16]> {
+    match resolve_host(host, QTYPE_AAAA)? {
+        DnsAnswer::Aaaa(a) => Some(a),
+        DnsAnswer::A(_) => None,
+    }
 }
 
 fn read_u16_be(pkt: &[u8], i: usize) -> Option<u16> {
@@ -212,7 +233,7 @@ fn pick_ephemeral_port() -> u16 {
     0xc000u16 | (t as u16 & 0x3fff)
 }
 
-fn parse_dns_a_response(pkt: &[u8], expect_id: u16) -> Option<u32> {
+fn parse_dns_response(pkt: &[u8], expect_id: u16, qtype: u16) -> Option<DnsAnswer> {
     if pkt.len() < 12 {
         return None;
     }
@@ -247,15 +268,27 @@ fn parse_dns_a_response(pkt: &[u8], expect_id: u16) -> Option<u32> {
         pos = pos.checked_add(4)?;
         let rdlen = read_u16_be(pkt, pos)? as usize;
         pos += 2;
-        if typ == QTYPE_A && class == QCLASS_IN && rdlen == 4 {
-            return read_u32_be(pkt, pos);
+        if class == QCLASS_IN {
+            if qtype == QTYPE_A && typ == QTYPE_A && rdlen == 4 {
+                return read_u32_be(pkt, pos).map(DnsAnswer::A);
+            }
+            if qtype == QTYPE_AAAA && typ == QTYPE_AAAA && rdlen == 16 {
+                let mut a = [0u8; 16];
+                a.copy_from_slice(pkt.get(pos..pos + 16)?);
+                return Some(DnsAnswer::Aaaa(a));
+            }
         }
         pos = pos.checked_add(rdlen)?;
     }
     None
 }
 
-fn try_recv_dns_reply(socks: &mut SocketSet<'static>, dns_host: u32, id: u16) -> Option<u32> {
+fn try_recv_dns_reply(
+    socks: &mut SocketSet<'static>,
+    dns_host: u32,
+    id: u16,
+    qtype: u16,
+) -> Option<DnsAnswer> {
     // SAFETY: as in `flush_dns_recv`, `DNS_HANDLE` is only mutated under the stack
     // lock; the tear-free `Option` read yields a live handle or `None`.
     let h = unsafe { DNS_HANDLE }?;
@@ -272,7 +305,7 @@ fn try_recv_dns_reply(socks: &mut SocketSet<'static>, dns_host: u32, id: u16) ->
     if meta.endpoint.port != DNS_PORT {
         return None;
     }
-    parse_dns_a_response(data, id)
+    parse_dns_response(data, id, qtype)
 }
 
 /// Send `query` from the shared DNS socket, binding an ephemeral port the first
@@ -303,7 +336,7 @@ fn send_query(query: &[u8], dns_ip: Ipv4Addr, flush: bool) -> bool {
     .unwrap_or(false)
 }
 
-fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8]) -> Option<u32> {
+fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8], qtype: u16) -> Option<DnsAnswer> {
     let dns_ip = Ipv4Addr::from_bits(dns_host);
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
@@ -323,7 +356,7 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8]) -> Option<u32> 
     w += 2;
     let qn_end = encode_qname(&mut query_buf[w..], name)?;
     w += qn_end;
-    query_buf.get_mut(w..w + 2)?.copy_from_slice(&QTYPE_A.to_be_bytes());
+    query_buf.get_mut(w..w + 2)?.copy_from_slice(&qtype.to_be_bytes());
     w += 2;
     query_buf.get_mut(w..w + 2)?.copy_from_slice(&QCLASS_IN.to_be_bytes());
     w += 2;
@@ -358,11 +391,12 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8]) -> Option<u32> 
         // counter; it takes no pointers and is callable from task context.
         let now = unsafe { ffi_kernel::timer_ticks_get() };
         if now >= next_wake {
-            if let Some(ip) =
-                stack::with_iface_sockets(|_iface, socks| try_recv_dns_reply(socks, dns_host, id))
-                    .flatten()
+            if let Some(ans) = stack::with_iface_sockets(|_iface, socks| {
+                try_recv_dns_reply(socks, dns_host, id, qtype)
+            })
+            .flatten()
             {
-                return Some(ip);
+                return Some(ans);
             }
             next_wake = now.saturating_add(POLL_SLICE_TICKS);
         }
@@ -378,15 +412,65 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8]) -> Option<u32> 
     None
 }
 
-/// Resolve a hostname or IPv4 literal to a host-order IPv4 address, writing the
-/// result to `out_ip_host`.  Returns 0 on success, -1 on failure.
+/// Borrow a NUL-terminated C name as a byte slice, rejecting one longer than the
+/// 253-byte DNS limit.
 ///
 /// # Safety
 ///
-/// `name` must be a NUL-terminated C string readable up to and including its
-/// terminator, and `out_ip_host` must point to a writable, properly aligned
-/// `u32`.  Either may be null, in which case the call returns -1 without
-/// touching memory.
+/// `name` must be a NUL-terminated string readable up to and including its
+/// terminator.
+unsafe fn c_name_bytes<'a>(name: *const c_char) -> Option<&'a [u8]> {
+    let mut len = 0usize;
+    loop {
+        if len > 253 {
+            return None;
+        }
+        // SAFETY: the caller contract makes `name` NUL-terminated, so `len <= 253`
+        // keeps `add` within its first 254 bytes.
+        let p = unsafe { name.add(len) };
+        // SAFETY: `p` is the address checked just above; a conforming
+        // NUL-terminated string has a byte at each of those offsets.
+        if unsafe { *p } == 0 {
+            break;
+        }
+        len += 1;
+    }
+    // SAFETY: `name` is NUL-terminated per the caller contract and `len` is the
+    // byte count just scanned (<= 253), so exactly those initialised bytes are
+    // readable.
+    Some(unsafe { core::slice::from_raw_parts(name.cast::<u8>(), len) })
+}
+
+/// Take the shared resolver semaphore, returning 0 once held or -4 when a
+/// pending signal interrupts the wait (so Ctrl+C can stop a lookup).  The wait
+/// is a poll-and-sleep rather than `down()`, because `down()` parks the task in
+/// a way no signal wakes — the resolver would then be unkillable for the
+/// duration of the (up to 3 s) lookup held by the other task.
+fn dns_lock() -> c_int {
+    loop {
+        if crate::socket::signal_pending() {
+            return -4; // EINTR
+        }
+        // SAFETY: `DNS_SEMA` is a kernel-lifetime `Semaphore` initialised by
+        // `init_socket`; `sema_try_down` is its matching non-blocking kernel
+        // service and takes no other lock.
+        if unsafe { ffi_kernel::sema_try_down(core::ptr::addr_of_mut!(DNS_SEMA)) } == 0 {
+            return 0;
+        }
+        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
+        // count; it takes no pointers and is callable from task context.
+        unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+    }
+}
+
+/// # Safety
+/// `DNS_SEMA` is live whenever a lookup ran; this is the matching release.
+unsafe fn dns_unlock() {
+    // SAFETY: the caller holds a token taken by `dns_lock`, and `DNS_SEMA` is a
+    // kernel-lifetime semaphore.
+    unsafe { ffi_kernel::up(core::ptr::addr_of_mut!(DNS_SEMA)) };
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32) -> c_int {
     if name.is_null() || out_ip_host.is_null() {
@@ -398,50 +482,18 @@ pub unsafe extern "C" fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host
     if !unsafe { stack::STACK_READY } {
         return -1;
     }
-    let mut len = 0usize;
-    loop {
-        if len > 253 {
-            return -1;
-        }
-        // SAFETY: the caller contract (see # Safety) makes `name` a
-        // NUL-terminated string that is non-null (checked above); `len <= 253`
-        // here, so `add` stays within that string's first 254 bytes.
-        let p = unsafe { name.add(len) };
-        // SAFETY: `p` is the address checked just above; a conforming
-        // NUL-terminated string has a byte at each of those offsets.
-        if unsafe { *p } == 0 {
-            break;
-        }
-        len += 1;
-    }
-    // SAFETY: `name` is a NUL-terminated string per the caller contract and `len`
-    // is the byte count just scanned (<= 253), so exactly those initialised bytes
-    // are readable.
-    let host = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), len) };
-    // The resolver owns one shared socket, so only one query may be in flight:
-    // a second task waits here instead of stealing the first one's reply.  The
-    // wait is a poll-and-sleep rather than `down()`, because `down()` parks the
-    // task in a way no signal wakes — a resolver would then be unkillable for
-    // the duration of the (up to 3 s) lookup held by the other task.
-    loop {
-        if crate::socket::signal_pending() {
-            return -4; // EINTR
-        }
-        // SAFETY: `DNS_SEMA` is a kernel-lifetime `Semaphore` initialised by
-        // `init_socket`; `sema_try_down` is its matching non-blocking kernel
-        // service and takes no other lock.
-        if unsafe { ffi_kernel::sema_try_down(core::ptr::addr_of_mut!(DNS_SEMA)) } == 0 {
-            break;
-        }
-        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
-        // count; it takes no pointers and is callable from task context.
-        unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+    // SAFETY: `name` is non-null (checked above) and, per the caller contract,
+    // NUL-terminated.
+    let Some(host) = (unsafe { c_name_bytes(name) }) else {
+        return -1;
+    };
+    let r = dns_lock();
+    if r != 0 {
+        return r;
     }
     let resolved = resolve_a(host);
-    // SAFETY: as above — `DNS_SEMA` is a live kernel-lifetime semaphore and this
-    // is the matching release for the token taken just above (whether or not the
-    // lookup was interrupted).
-    unsafe { ffi_kernel::up(core::ptr::addr_of_mut!(DNS_SEMA)) };
+    // SAFETY: `dns_lock` returned 0, so this is the matching release.
+    unsafe { dns_unlock() };
     if crate::socket::signal_pending() {
         return -4; // EINTR
     }
@@ -450,6 +502,54 @@ pub unsafe extern "C" fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host
             // SAFETY: the caller contract (see # Safety) makes `out_ip_host` a writable,
             // aligned `u32`; the null check at the top of the function excluded null.
             unsafe { *out_ip_host = ip };
+            0
+        }
+        None => -1,
+    }
+}
+
+/// Resolve a hostname to an IPv6 address (AAAA), writing the sixteen big-endian
+/// octets to `out_addr`.  Returns 0 on success, -1 on failure, -4 if interrupted.
+///
+/// # Safety
+///
+/// `name` must be a NUL-terminated C string readable up to and including its
+/// terminator, and `out_addr` must point to 16 writable bytes.  Either may be
+/// null, in which case the call returns -1 without touching memory.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_dns_resolve_aaaa(
+    name: *const c_char,
+    out_addr: *mut u8,
+) -> c_int {
+    if name.is_null() || out_addr.is_null() {
+        return -1;
+    }
+    // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and
+    // cleared by `stack_teardown`; a byte load cannot tear, and reading it as
+    // false fails the call closed.
+    if !unsafe { stack::STACK_READY } {
+        return -1;
+    }
+    // SAFETY: `name` is non-null (checked above) and, per the caller contract,
+    // NUL-terminated.
+    let Some(host) = (unsafe { c_name_bytes(name) }) else {
+        return -1;
+    };
+    let r = dns_lock();
+    if r != 0 {
+        return r;
+    }
+    let resolved = resolve_aaaa(host);
+    // SAFETY: `dns_lock` returned 0, so this is the matching release.
+    unsafe { dns_unlock() };
+    if crate::socket::signal_pending() {
+        return -4; // EINTR
+    }
+    match resolved {
+        Some(addr) => {
+            // SAFETY: the caller contract (see # Safety) makes `out_addr` a
+            // 16-byte writable buffer and `addr` is a distinct local array.
+            unsafe { core::ptr::copy_nonoverlapping(addr.as_ptr(), out_addr, 16) };
             0
         }
         None => -1,

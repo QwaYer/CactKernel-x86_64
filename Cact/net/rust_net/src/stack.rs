@@ -28,7 +28,7 @@ use crate::config;
 use crate::ffi_kernel;
 use crate::runtime;
 use crate::skb;
-use crate::types::{NetDriver, Skb};
+use crate::types::{NetDriver, SockAddr, Skb};
 
 /// Size of one frame buffer: a 1500-MTU Ethernet frame is 1514 bytes (14-byte
 /// header + 1500 payload), so 1536 leaves room for VLAN tags.
@@ -1087,9 +1087,13 @@ where
     with_slot(0, f)
 }
 
-/// Fire-and-forget ICMPv4 echo request for the interface that would carry `dst`.
-pub fn icmp_echo_request_host(dst_ip_host: u32, id: u16, seq: u16) -> bool {
-    let slot = crate::config::route_slot(dst_ip_host);
+/// Fire-and-forget ICMPv4/IPv6 echo request for the interface that would carry
+/// `dst`.  The family is decided by `dst`.
+fn icmp_echo_request(dst: SockAddr, id: u16, seq: u16) -> bool {
+    let slot = match dst {
+        SockAddr::V4(v) => crate::config::route_slot(v),
+        SockAddr::V6(a) => crate::config::route_slot_v6(a),
+    };
     let _stack_guard = StackGuard::new();
     // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` read under
     // `STACK_LOCK`; a byte load reads either 0 or 1.
@@ -1141,35 +1145,72 @@ pub fn icmp_echo_request_host(dst_ip_host: u32, id: u16, seq: u16) -> bool {
         }
         s.icmp_ident_bound = id;
     }
-    let dst = IpAddress::Ipv4(ipv4_from_host(dst_ip_host));
+    let ip_dst = dst.to_ip();
     use smoltcp::phy::ChecksumCapabilities;
-    use smoltcp::wire::{Icmpv4Packet, Icmpv4Repr};
     /* 56 bytes of data make the ICMP message 64 bytes, matching the default
      * Linux `ping` payload so the reply sizes read the same. */
     const PAYLOAD: &[u8] = b"CactOS ping! 0123456789012345678901234567890123456789012";
-    let repr = Icmpv4Repr::EchoRequest {
-        ident: id,
-        seq_no: seq,
-        data: PAYLOAD,
-    };
-    let total = repr.buffer_len();
-    let buf = match sock.send(total, dst) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let mut pkt = Icmpv4Packet::new_unchecked(buf);
-    let cap = ChecksumCapabilities::default();
-    repr.emit(&mut pkt, &cap);
+    match dst {
+        SockAddr::V4(_) => {
+            use smoltcp::wire::{Icmpv4Packet, Icmpv4Repr};
+            let repr = Icmpv4Repr::EchoRequest {
+                ident: id,
+                seq_no: seq,
+                data: PAYLOAD,
+            };
+            let total = repr.buffer_len();
+            let buf = match sock.send(total, ip_dst) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            let mut pkt = Icmpv4Packet::new_unchecked(buf);
+            repr.emit(&mut pkt, &ChecksumCapabilities::default());
+        }
+        SockAddr::V6(a) => {
+            use smoltcp::wire::{Icmpv6Packet, Icmpv6Repr, Ipv6Address};
+            let repr = Icmpv6Repr::EchoRequest {
+                ident: id,
+                seq_no: seq,
+                data: PAYLOAD,
+            };
+            let total = repr.buffer_len();
+            let buf = match sock.send(total, ip_dst) {
+                Ok(b) => b,
+                Err(_) => return false,
+            };
+            let mut pkt = Icmpv6Packet::new_unchecked(buf);
+            // The ICMPv6 checksum covers the IPv6 pseudo-header; the socket
+            // re-emits the frame with the interface's real source address (and
+            // recomputes it there), so this best-effort value is not what goes
+            // on the wire.
+            repr.emit(
+                &Ipv6Address::LOCALHOST,
+                &Ipv6Address::from(a),
+                &mut pkt,
+                &ChecksumCapabilities::default(),
+            );
+        }
+    }
     true
+}
+
+/// Fire-and-forget ICMPv4 echo request for the interface that would carry `dst`.
+pub fn icmp_echo_request_host(dst_ip_host: u32, id: u16, seq: u16) -> bool {
+    icmp_echo_request(SockAddr::V4(dst_ip_host), id, seq)
+}
+
+/// Fire-and-forget ICMPv6 echo request (destination as sixteen big-endian octets).
+pub fn icmp_echo_request6_host(addr: [u8; 16], id: u16, seq: u16) -> bool {
+    icmp_echo_request(SockAddr::V6(addr), id, seq)
 }
 
 /// Dequeue the echo reply matching `(id, seq)` from the kernel ICMP socket of the
 /// interface that would carry `src_hint` (the probe's destination).
 ///
 /// The socket is bound to `Ident(id)`, so smoltcp already filters by identifier; the
-/// sequence check is what tells one probe from the next.  Returns `(source address in
-/// host order, ICMP message length)`.
-pub fn icmp_try_recv_reply(id: u16, seq: u16) -> Option<(u32, usize)> {
+/// sequence check is what tells one probe from the next.  Returns `(source address,
+/// ICMP message length)`; the address is the responder's, in either family.
+pub fn icmp_try_recv_reply(id: u16, seq: u16) -> Option<(IpAddress, usize)> {
     let _stack_guard = StackGuard::new();
     // Search every built slot: the reply may arrive on the interface the request
     // was routed to, which the caller does not pass back to us.
@@ -1192,24 +1233,38 @@ pub fn icmp_try_recv_reply(id: u16, seq: u16) -> Option<(u32, usize)> {
             let Ok((payload, addr)) = sock.recv() else {
                 break;
             };
-            let Ok(pkt) = smoltcp::wire::Icmpv4Packet::new_checked(payload) else {
-                continue;
-            };
             let caps = smoltcp::phy::ChecksumCapabilities::ignored();
-            let Ok(repr) = smoltcp::wire::Icmpv4Repr::parse(&pkt, &caps) else {
-                continue;
-            };
-            if let smoltcp::wire::Icmpv4Repr::EchoReply { ident, seq_no, .. } = repr {
-                if ident == id && seq_no == seq {
-                    // Only IPv4 is compiled in, so the `_` arm is unreachable today;
-                    // it stays so that enabling proto-ipv6 later does not silently
-                    // report a v6 source as 0.0.0.0.
-                    #[allow(unreachable_patterns)]
-                    let src = match addr {
-                        IpAddress::Ipv4(v4) => v4.to_bits(),
-                        _ => 0,
+            // The one kernel ICMP socket feeds both families; try ICMPv4 first,
+            // then ICMPv6.  `addr` picks which family this datagram is.
+            match addr {
+                IpAddress::Ipv4(_) => {
+                    let Ok(pkt) = smoltcp::wire::Icmpv4Packet::new_checked(payload) else {
+                        continue;
                     };
-                    return Some((src, payload.len()));
+                    let Ok(smoltcp::wire::Icmpv4Repr::EchoReply { ident, seq_no, .. }) =
+                        smoltcp::wire::Icmpv4Repr::parse(&pkt, &caps)
+                    else {
+                        continue;
+                    };
+                    if ident == id && seq_no == seq {
+                        return Some((addr, payload.len()));
+                    }
+                }
+                IpAddress::Ipv6(v6) => {
+                    let Ok(pkt) = smoltcp::wire::Icmpv6Packet::new_checked(payload) else {
+                        continue;
+                    };
+                    // The ICMPv6 checksum covers the pseudo-header; the socket
+                    // already verified it on ingress, so parse with ignored caps
+                    // (the src/dst are then not consulted).
+                    let Ok(smoltcp::wire::Icmpv6Repr::EchoReply { ident, seq_no, .. }) =
+                        smoltcp::wire::Icmpv6Repr::parse(&v6, &v6, &pkt, &caps)
+                    else {
+                        continue;
+                    };
+                    if ident == id && seq_no == seq {
+                        return Some((addr, payload.len()));
+                    }
                 }
             }
         }

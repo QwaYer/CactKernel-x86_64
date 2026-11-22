@@ -96,3 +96,50 @@ pub unsafe extern "C" fn rust_net_ping_wait(
     // `is_null` checks, and it blocks no longer than `timeout_ms`.
     unsafe { ping::ping_wait_host(dst_ip_host, id, seq, timeout_ms, src_ip_out, bytes_out) }
 }
+
+/// Send one ICMPv6 echo request to `addr` (sixteen big-endian octets).  0 on
+/// success.
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes that stay live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16) -> c_int {
+    if addr.is_null() {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    ping::send_echo_request6_host(a6, id, seq)
+}
+
+/// Send one ICMPv6 echo request and block until the matching reply arrives.
+/// Returns the round-trip time in microseconds, or -1 on timeout.
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes.  `src_addr_out` (16 bytes) and
+/// `bytes_out` may be null (that result is then dropped) but, if non-null, must
+/// be writable and stay live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_ping_wait6(
+    addr: *const u8,
+    id: u16,
+    seq: u16,
+    timeout_ms: u32,
+    src_addr_out: *mut u8,
+    bytes_out: *mut u32,
+) -> c_int {
+    if addr.is_null() {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    // SAFETY: the output pointers are forwarded under this function's contract;
+    // `ping_wait6_host` stores through them only after its own null checks.
+    unsafe { ping::ping_wait6_host(a6, id, seq, timeout_ms, src_addr_out, bytes_out) }
+}

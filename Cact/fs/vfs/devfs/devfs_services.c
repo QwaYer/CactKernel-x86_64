@@ -388,6 +388,25 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
         return rtt;
     }
 
+    case CACT_NETCTL_PING6: {
+        cact_ping6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_ping_echo6(a.dst, (uint16_t)a.id, (uint16_t)a.seq);
+    }
+
+    case CACT_NETCTL_PING_WAIT6: {
+        cact_ping6_wait_arg_t a;
+        int rtt;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        rtt = rust_net_ping_wait6(a.dst, (uint16_t)a.id, (uint16_t)a.seq,
+                                  a.timeout_ms, a.src_out, &a.bytes_out);
+        a.rtt_us_out = (rtt < 0) ? 0u : (uint32_t)rtt;
+        if (copy_to_user(arg, &a, sizeof(a)) != 0) return -EFAULT;
+        return rtt;
+    }
+
     case CACT_NETCTL_DNS_RESOLVE: {
         cact_dns_arg_t a;
         if (!arg) return -EINVAL;
@@ -395,6 +414,15 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
         if (!validate_user_str(a.name)) return -EFAULT;
         if (!validate_user_ptr(a.out_ip, sizeof(uint32_t))) return -EFAULT;
         return rust_net_dns_resolve_a(a.name, a.out_ip);
+    }
+
+    case CACT_NETCTL_DNS_RESOLVE_AAAA: {
+        cact_dns6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (!validate_user_str(a.name)) return -EFAULT;
+        if (!validate_user_ptr(a.out_addr, 16)) return -EFAULT;
+        return rust_net_dns_resolve_aaaa(a.name, a.out_addr);
     }
 
     case CACT_NETCTL_NETCFG: {

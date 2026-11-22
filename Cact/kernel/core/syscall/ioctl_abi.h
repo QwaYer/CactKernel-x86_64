@@ -493,6 +493,9 @@ typedef struct cact_recvfrom6_arg {
 #define CACT_NETCTL_IFACE_SETCFG 0x340D  // arg=cact_iface_setcfg_arg_t* (root): set one interface's IPv4
 #define CACT_NETCTL_NETCFG6      0x340E  // arg=cact_netcfg6_arg_t* (root): set the primary interface's IPv6
 #define CACT_NETCTL_IFACE_SETCFG6 0x340F // arg=cact_iface_setcfg6_arg_t* (root): set one interface's IPv6
+#define CACT_NETCTL_PING6        0x3410  // arg=cact_ping6_arg_t*: ICMPv6 echo request
+#define CACT_NETCTL_PING_WAIT6   0x3411  // arg=cact_ping6_wait_arg_t*; returns RTT us or <0
+#define CACT_NETCTL_DNS_RESOLVE_AAAA 0x3412 // arg=cact_dns6_arg_t*: resolve a hostname to IPv6
 
 // Interface name as the driver registered it ("eth0", "wlan0").  A separate
 // ioctl rather than a field in cact_netcfg_get_t so that binaries built against
@@ -516,6 +519,24 @@ typedef struct cact_ping_wait_arg {
     uint32_t bytes_out;
 } cact_ping_wait_arg_t;
 typedef struct cact_dns_arg { char *name; uint32_t *out_ip; } cact_dns_arg_t;
+
+// AAAA counterpart of cact_dns_arg_t: `out_addr` receives sixteen big-endian
+// octets.  DNS itself still runs over IPv4, so the IPv4 link must be configured.
+typedef struct cact_dns6_arg { char *name; uint8_t *out_addr; } cact_dns6_arg_t;
+
+// ICMPv6 echo, the dual-stack counterpart of cact_ping_arg_t /
+// cact_ping_wait_arg_t.  The destination is sixteen big-endian octets; the id,
+// seq and timeout have the same meaning as for IPv4.
+typedef struct cact_ping6_arg { uint8_t dst[16]; uint32_t id; uint32_t seq; } cact_ping6_arg_t;
+typedef struct cact_ping6_wait_arg {
+    uint8_t  dst[16];
+    uint32_t id;
+    uint32_t seq;
+    uint32_t timeout_ms;
+    uint32_t rtt_us_out;   // out
+    uint8_t  src_out[16];  // out: responder address
+    uint32_t bytes_out;    // out: ICMPv6 message length
+} cact_ping6_wait_arg_t;
 
 // Link configuration set by the network manager.  ip_host/mask 0 removes the
 // interface address, gateway_host/dns_host 0 removes route / resolver server.

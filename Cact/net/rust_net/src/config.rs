@@ -342,6 +342,12 @@ pub fn set_ipv6_config_slot(
     if slot >= NET_NIC_MAX {
         return -1;
     }
+    // A multicast address can never be an interface address: smoltcp's
+    // `check_ip_addrs` panics on one, and that panic would take the whole kernel
+    // down when the resync below runs.  Refuse it instead (ff00::/8).
+    if addr[0] == 0xff {
+        return -1;
+    }
     {
         // SAFETY: `NET_CFG6` has no other writer here (the getters only read it)
         // and the borrow ends before the `resync` call below.
