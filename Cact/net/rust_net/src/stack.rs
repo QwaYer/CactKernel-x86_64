@@ -922,6 +922,17 @@ where
     with_slot(slot, |_iface, socks| f(socks))
 }
 
+/// Run `f` holding `STACK_LOCK` without touching any slot — for the UDP metadata
+/// tables, which are guarded by the same lock but do not need a slot's socket set.
+/// Must not be called with `STACK_LOCK` already held (it is not recursive).
+pub(crate) fn with_stack_lock<R, F>(f: F) -> R
+where
+    F: FnOnce() -> R,
+{
+    let _stack_guard = StackGuard::new();
+    f()
+}
+
 /// Backwards-compatible accessor for the primary slot (index 0).
 pub(crate) fn with_iface_sockets<R, F>(f: F) -> Option<R>
 where

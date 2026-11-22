@@ -29,13 +29,15 @@ actually has, not a promise. What already works is described in
   `Interface`, `SocketSet` and PER-interface addressing (per-interface sets are
   required because smoltcp dispatches every socket through the interface it is
   polled with). **TCP** `connect()` routes by destination subnet (longest-prefix
-  match, then the slot with a default route, else slot 0). Still open:
-  **per-destination UDP** routing (UDP stays on the primary interface),
-  **per-interface DHCP** (the kernel has none — userspace sets the primary), no
-  route table beyond connected subnets + one default route, a **single shared
-  ARP table** (not scoped per interface), and **userspace** (`ip`/`netd`) still
-  configuring only the primary. Loopback is `127.0.0.1/8` carried as a *second
-  address* on every interface (per-slot PHY ring), not a separate device.
+  match, then the slot with a default route, else slot 0); **UDP**
+  `connect()`/`sendto()` place the socket on an interface too (by a `bind()`ed
+  local address, else by the destination route) and it then stays there. Still
+  open: **per-interface DHCP** (the kernel has none — userspace sets addresses
+  via `CACT_NETCTL_IFACE_SETCFG`), no route table beyond connected subnets + one
+  default route, a **single shared ARP table** (not scoped per interface), and
+  **userspace** (`ip`/`netd`) still configuring only the primary. Loopback is
+  `127.0.0.1/8` carried as a *second address* on every interface (per-slot PHY
+  ring), not a separate device.
 
 ## Interrupts & drivers
 

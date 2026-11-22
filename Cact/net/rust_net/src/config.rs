@@ -173,6 +173,22 @@ pub extern "C" fn rust_net_get_ip_host() -> u32 {
     ip_host()
 }
 
+/// Interface slot whose configured address is exactly `ip_host`, or `None`.
+///
+/// Used to pin a socket that `bind()`ed to a specific local address onto the
+/// interface that owns it.
+pub fn slot_owning_ip(ip_host: u32) -> Option<usize> {
+    if ip_host == 0 {
+        return None;
+    }
+    for slot in 0..NET_NIC_MAX {
+        if ip_host_of(slot) == ip_host {
+            return Some(slot);
+        }
+    }
+    None
+}
+
 /// Interface slot that should carry traffic to `dst_ip` (host order).
 ///
 /// Longest-prefix match over the configured slots; failing that, the first slot

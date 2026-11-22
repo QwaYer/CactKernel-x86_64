@@ -2,6 +2,13 @@
 // Copyright (C) 2026 CactOS Project
 
 //! UDP sockets implemented on top of smoltcp.
+//!
+//! A UDP socket is built lazily: `udp_sock_alloc` only reserves the C slot, and
+//! the smoltcp socket is created (in one interface slot's `SocketSet`) the first
+//! time the socket is used — `connect()`/`send()` route by destination, or a
+//! `bind()`ed local address pins the interface.  A socket is placed once and then
+//! stays on that interface (like Linux's per-route socket binding); one socket
+//! does not float between interfaces.
 
 use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::udp;
@@ -30,6 +37,10 @@ static mut UDP_TX_META: [[udp::PacketMetadata; 4]; UDP_SOCK_MAX] =
 static mut UDP_TX_PAY: [[u8; 2048]; UDP_SOCK_MAX] = [[0; 2048]; UDP_SOCK_MAX];
 static mut UDP_HANDLE: [Option<SocketHandle>; UDP_SOCK_MAX] = [None; UDP_SOCK_MAX];
 
+/// Interface slot each UDP socket is placed on, or -1 before it is placed.
+/// Rust-private (not part of the C `udp_sock_t` mirror); guarded by `STACK_LOCK`.
+static mut UDP_SLOT: [i32; UDP_SOCK_MAX] = [-1; UDP_SOCK_MAX];
+
 /// Next local port to hand to a socket that was never bind()ed.
 static mut NEXT_EPHEMERAL: u16 = 49152;
 
@@ -37,6 +48,66 @@ static mut NEXT_EPHEMERAL: u16 = 49152;
 /// Kept out of `UdpSock`/`Ksock` on purpose: those are C-visible mirrors, and
 /// the peer is private to this crate.
 static mut UDP_PEER: [(u32, u16); UDP_SOCK_MAX] = [(0, 0); UDP_SOCK_MAX];
+
+/// Interface slot UDP socket `idx` is placed on, or -1 if not placed yet.
+pub(crate) fn udp_slot_of(idx: usize) -> i32 {
+    if idx >= UDP_SOCK_MAX {
+        return -1;
+    }
+    // SAFETY: `UDP_SLOT` is a kernel-lifetime `static mut` guarded by `STACK_LOCK`,
+    // which `with_stack_lock` holds; `idx` is bounds-checked above.
+    stack::with_stack_lock(|| unsafe { UDP_SLOT[idx] })
+}
+
+/// Interface slot that should carry UDP socket `idx`'s traffic to `dst_ip`.
+///
+/// A local address pinned by `bind()` wins (its owner interface), otherwise the
+/// destination is routed (`route_slot`).
+fn pick_slot(idx: usize, dst_ip: u32) -> usize {
+    // SAFETY: `udp_socks` is guarded by `STACK_LOCK`, held by `with_stack_lock`;
+    // `idx` is in range (callers bounds-check it).
+    let bound = stack::with_stack_lock(|| unsafe { udp_socks[idx].local_ip });
+    if bound != 0 {
+        if let Some(slot) = crate::config::slot_owning_ip(bound) {
+            return slot;
+        }
+    }
+    crate::config::route_slot(dst_ip)
+}
+
+/// Place UDP socket `idx` on interface `slot`, building its smoltcp socket there.
+/// Idempotent: a socket already placed stays wherever it is.  Returns true when it
+/// is placed on `slot`.
+fn ensure_placed(idx: usize, slot: usize) -> bool {
+    let r = stack::with_slot_socks(slot, |socks| {
+        // SAFETY: `with_slot_socks` holds `STACK_LOCK`, which guards `UDP_SLOT`/
+        // `UDP_HANDLE`, and `idx` is in range.
+        let cur = unsafe { UDP_SLOT[idx] };
+        if cur >= 0 {
+            return cur == slot as i32;
+        }
+        // SAFETY: `UDP_RX_META[idx]` is a kernel-lifetime packet-metadata static
+        // owned by this socket, handed to smoltcp only through this one socket,
+        // under the stack lock.
+        let rx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_RX_META))[idx])[..] };
+        // SAFETY: as above, for `UDP_RX_PAY`.
+        let rx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_RX_PAY))[idx])[..] };
+        let rx = udp::PacketBuffer::new(rx_meta, rx_pay);
+        // SAFETY: as above, for `UDP_TX_META`.
+        let tx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_TX_META))[idx])[..] };
+        // SAFETY: as above, for `UDP_TX_PAY`.
+        let tx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_TX_PAY))[idx])[..] };
+        let tx = udp::PacketBuffer::new(tx_meta, tx_pay);
+        let u = udp::Socket::new(rx, tx);
+        let h = socks.add(u);
+        // SAFETY: written under the stack lock, as every access to these tables is.
+        unsafe { UDP_HANDLE[idx] = Some(h) };
+        // SAFETY: as above.
+        unsafe { UDP_SLOT[idx] = slot as i32 };
+        true
+    });
+    r.unwrap_or(false)
+}
 
 /// Pick a local port not already held by another UDP socket.
 /// # Safety
@@ -79,10 +150,9 @@ pub(crate) unsafe fn reset_udp_smoltcp_state() {
     // SAFETY: the caller contract (see # Safety) excludes every other user of
     // these statics for the duration of the call, so the writes below are the
     // only ones in flight.
-    // SAFETY: the caller contract (see # Safety) excludes every other user of
-    // these statics for the duration of the call, so this write is the only one
-    // in flight.
     unsafe { UDP_HANDLE = [None; UDP_SOCK_MAX] };
+    // SAFETY: as above.
+    unsafe { UDP_SLOT = [-1; UDP_SOCK_MAX] };
     // SAFETY: as above.
     unsafe { NEXT_EPHEMERAL = 49152 };
     // SAFETY: as above.
@@ -141,17 +211,17 @@ fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
 }
 
 pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
-    // UDP sockets all live on slot 0 for now (per-destination UDP routing is a
-    // later stage); skip every other slot so a foreign set is never walked.
-    if slot != 0 {
-        return;
-    }
+    // Called from `stack_poll` under `STACK_LOCK`; only the sockets placed on
+    // `slot` are synced (the others live in other slots' sets or are unplaced).
     for idx in 0..UDP_SOCK_MAX {
-        // SAFETY: called from `stack_poll` under `STACK_LOCK`, the same lock
-        // every other user of `udp_socks`/`UDP_HANDLE` takes, and `idx` is
-        // bounded by `UDP_SOCK_MAX`, so this slot read is in bounds and
-        // uncontented.
+        // SAFETY: called under `STACK_LOCK`, the same lock every other user of
+        // `udp_socks`/`UDP_SLOT`/`UDP_HANDLE` takes, and `idx` is bounded by
+        // `UDP_SOCK_MAX`, so these reads are in bounds and uncontented.
         if unsafe { udp_socks[idx].used } == 0 {
+            continue;
+        }
+        // SAFETY: as above, for the slot table.
+        if unsafe { UDP_SLOT[idx] } != slot as i32 {
             continue;
         }
         ensure_udp_bound(idx, socks);
@@ -173,49 +243,34 @@ pub extern "C" fn udp_sock_alloc() -> i32 {
     if !unsafe { stack::STACK_READY } {
         return -1;
     }
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        // `with_iface_sockets` runs this closure under `STACK_LOCK`, the lock
-        // every other path takes before touching `udp_socks`/`UDP_HANDLE`, and
-        // `i` is a loop index bounded by `UDP_SOCK_MAX`.
-        {
-            for i in 0..UDP_SOCK_MAX {
-                // SAFETY: `i` is in bounds, so this slot read is in bounds and
-                // uncontented under the stack lock.
-                if unsafe { udp_socks[i].used } != 0 {
-                    continue;
-                }
-                // SAFETY: `i` is in bounds; `UDP_RX_META` is a kernel-lifetime
-                // packet-metadata static handed to smoltcp only through this
-                // socket, under the stack lock.
-                let rx_meta = unsafe { &mut UDP_RX_META[i][..] };
-                // SAFETY: as above, for `UDP_RX_PAY`.
-                let rx_pay = unsafe { &mut UDP_RX_PAY[i][..] };
-                let rx = udp::PacketBuffer::new(rx_meta, rx_pay);
-                // SAFETY: as above, for `UDP_TX_META`.
-                let tx_meta = unsafe { &mut UDP_TX_META[i][..] };
-                // SAFETY: as above, for `UDP_TX_PAY`.
-                let tx_pay = unsafe { &mut UDP_TX_PAY[i][..] };
-                let tx = udp::PacketBuffer::new(tx_meta, tx_pay);
-                let u = udp::Socket::new(rx, tx);
-                let h = socks.add(u);
-                // SAFETY: `UDP_HANDLE` is written under the stack lock, as every
-                // access is.
-                unsafe { UDP_HANDLE[i] = Some(h) };
-                // SAFETY: as above, for the slot's fields.
-                unsafe {
-                    let slot = &mut udp_socks[i];
-                    slot.used = 1;
-                    slot.local_port = 0;
-                    slot.local_ip = 0;
-                    slot.rx_ready = 0;
-                    slot.rx_len = 0;
-                }
-                return i as i32;
+    // The smoltcp socket is not built here: the interface is not known until the
+    // socket is bound/connected/sent on.  Reserve the C slot and the metadata.
+    stack::with_stack_lock(|| {
+        for i in 0..UDP_SOCK_MAX {
+            // SAFETY: `i` is in bounds, so this slot read is in bounds and
+            // uncontented under the stack lock.
+            if unsafe { udp_socks[i].used } != 0 {
+                continue;
             }
-            -1
+            // SAFETY: `i` is in bounds and the stack lock is held.
+            unsafe {
+                let slot = &mut udp_socks[i];
+                slot.used = 1;
+                slot.local_port = 0;
+                slot.local_ip = 0;
+                slot.rx_ready = 0;
+                slot.rx_len = 0;
+            }
+            // SAFETY: as above, for the metadata tables.
+            unsafe { UDP_HANDLE[i] = None };
+            // SAFETY: as above.
+            unsafe { UDP_SLOT[i] = -1 };
+            // SAFETY: as above.
+            unsafe { UDP_PEER[i] = (0, 0) };
+            return i as i32;
         }
-    });
-    r.unwrap_or(-1)
+        -1
+    })
 }
 
 #[no_mangle]
@@ -224,44 +279,47 @@ pub extern "C" fn udp_sock_free(idx: i32) {
         return;
     }
     let i = idx as usize;
-    // SAFETY: `i` is bounds-checked above, so the `UDP_HANDLE[i]`,
-    // `udp_socks[i]` and `UDP_PEER[i]` accesses are all in bounds.  The handle
-    // is removed from the table *before* the smoltcp socket is unlinked, and a
-    // slot is only ever freed by the task that owns its file description, so
-    // there is no concurrent mutation of this row.
-    // SAFETY: `i` is bounds-checked above, so the `UDP_HANDLE[i]` read is in
-    // bounds; a slot is only ever freed by the task that owns its file
-    // description, so there is no concurrent mutation of this row.
-    let old = unsafe { UDP_HANDLE[i] };
-    // SAFETY: as above — the handle is cleared before the smoltcp socket is
-    // unlinked.
-    unsafe { UDP_HANDLE[i] = None };
-    if let Some(h) = old {
-        let _ = stack::with_iface_sockets(|_iface, socks| {
-            let _ = socks.remove(h);
-        });
+    // SAFETY: `i` is bounds-checked above; the reads are guarded by `STACK_LOCK`
+    // (`with_stack_lock`), as every access to these tables is.
+    let (slot, handle) = stack::with_stack_lock(|| unsafe { (UDP_SLOT[i], UDP_HANDLE[i]) });
+    if let Some(h) = handle {
+        if slot >= 0 {
+            let _ = stack::with_slot_socks(slot as usize, |socks| {
+                let _ = socks.remove(h);
+            });
+        }
     }
-    // SAFETY: as above, for the slot's `used` flag.
-    unsafe { udp_socks[i].used = 0 };
-    // SAFETY: as above, for the private peer table.
-    unsafe { UDP_PEER[i] = (0, 0) };
+    // SAFETY: `i` is bounds-checked above and the stack lock is held; a slot is
+    // only ever freed by the task that owns its file description, so there is no
+    // concurrent mutation of this row.
+    stack::with_stack_lock(|| unsafe {
+        UDP_HANDLE[i] = None;
+        UDP_SLOT[i] = -1;
+        UDP_PEER[i] = (0, 0);
+        udp_socks[i].used = 0;
+    });
 }
 
-/// `connect()` on a datagram socket.  UDP is connectionless, so this only
-/// records the peer (validated here); `write()` afterwards sends one datagram
-/// to it, and reads are still accepted from anyone.
+/// `connect()` on a datagram socket.  UDP is connectionless, so this only records
+/// the peer (validated here) and pins the socket to the interface that will carry
+/// it; `write()` afterwards sends one datagram to the peer, and reads are still
+/// accepted from anyone.
 #[no_mangle]
 pub extern "C" fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX || dst_ip == 0 || dst_port == 0 {
         return -1;
     }
-    // SAFETY: `idx` is bounds-checked above, so this slot read is in bounds; the
-    // slot is only touched from socket paths running under the stack lock.
-    if unsafe { udp_socks[idx as usize].used } == 0 {
+    let i = idx as usize;
+    // SAFETY: `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
+    if stack::with_stack_lock(|| unsafe { udp_socks[i].used }) == 0 {
         return -1;
     }
-    // SAFETY: as above, for the private peer table write.
-    unsafe { UDP_PEER[idx as usize] = (dst_ip, dst_port) };
+    let slot = pick_slot(i, dst_ip);
+    if !ensure_placed(i, slot) {
+        return -1;
+    }
+    // SAFETY: `i` is bounds-checked above; the write is guarded by `STACK_LOCK`.
+    stack::with_stack_lock(|| unsafe { UDP_PEER[i] = (dst_ip, dst_port) });
     0
 }
 
@@ -281,7 +339,12 @@ pub(crate) fn udp_can_send(idx: usize) -> bool {
     if idx >= UDP_SOCK_MAX {
         return false;
     }
-    let r = stack::with_iface_sockets(|_iface, socks| {
+    let slot = udp_slot_of(idx);
+    if slot < 0 {
+        // Unplaced (never used): an unbound socket is not writable, as before.
+        return false;
+    }
+    let r = stack::with_slot_socks(slot as usize, |socks| {
         // SAFETY: `idx < UDP_SOCK_MAX` is checked above, so `UDP_HANDLE[idx]` is
         // in bounds; the handle is an `Option<SocketHandle>` (Copy), so the read
         // cannot tear, and the socket is resolved through this closure's own
@@ -340,8 +403,13 @@ pub(crate) unsafe fn udp_recv_buf(
         return -1;
     }
     let i = idx as usize;
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        // `with_iface_sockets` holds `STACK_LOCK` for the whole closure, so no
+    let slot = udp_slot_of(i);
+    if slot < 0 {
+        // Unplaced: nothing has been sent on it, so nothing can be queued.
+        return EAGAIN;
+    }
+    let r = stack::with_slot_socks(slot as usize, |socks| {
+        // `with_slot_socks` holds `STACK_LOCK` for the whole closure, so no
         // other path can touch `udp_socks`/`UDP_HANDLE`/this socket, and `i` is
         // bounds-checked above.
         {
@@ -429,8 +497,14 @@ pub unsafe extern "C" fn udp_sock_send(
         return -1;
     }
     let i = idx as usize;
-    let r = stack::with_iface_sockets(|_iface, socks| {
-        // `with_iface_sockets` holds `STACK_LOCK` for the whole closure, so the
+    // Place the socket on the interface that will carry this datagram (idempotent:
+    // an already-placed socket keeps its interface).
+    let slot = pick_slot(i, dst_ip);
+    if !ensure_placed(i, slot) {
+        return -1;
+    }
+    let r = stack::with_slot_socks(slot, |socks| {
+        // `with_slot_socks` holds `STACK_LOCK` for the whole closure, so the
         // `udp_socks`/`UDP_HANDLE` accesses and `pick_ephemeral` are serialized
         // against every other UDP path, and `i` is bounds-checked above.
         {
@@ -482,7 +556,7 @@ pub unsafe extern "C" fn udp_sock_send(
             //    received").
             if crate::stack::is_loopback_ipv4_host(dst_ip) {
                 meta.local_address = Some(IpAddress::Ipv4(core::net::Ipv4Addr::new(127, 0, 0, 1)));
-            } else if dst_ip == u32::MAX && crate::config::ip_host() == 0 {
+            } else if dst_ip == u32::MAX && crate::stack::slot_unconfigured(slot) {
                 meta.local_address = Some(IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED));
             }
             match s.send_slice(slice, meta) {
@@ -505,7 +579,12 @@ pub(crate) fn udp_poll_status(idx: usize) -> (bool, bool) {
     if idx >= UDP_SOCK_MAX {
         return (false, true);
     }
-    let r = stack::with_iface_sockets(|_iface, socks| {
+    let slot = udp_slot_of(idx);
+    if slot < 0 {
+        // Unplaced (never used): not readable, and not an error.
+        return (false, false);
+    }
+    let r = stack::with_slot_socks(slot as usize, |socks| {
         // SAFETY: `idx < UDP_SOCK_MAX` is checked above, so this slot read is in
         // bounds; it is plain Copy data whose read cannot tear, and the socket is
         // reached through this closure's own `SocketSet` under `STACK_LOCK`.
