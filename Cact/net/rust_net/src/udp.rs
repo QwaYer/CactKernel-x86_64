@@ -15,7 +15,7 @@ use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpListenEndpoint};
 
 use crate::stack::{self};
-use crate::types::{UdpSock, UDP_SOCK_MAX};
+use crate::types::{SockAddr, UdpSock, UDP_SOCK_MAX};
 
 #[no_mangle]
 pub static mut udp_socks: [UdpSock; UDP_SOCK_MAX] = [UdpSock {
@@ -49,6 +49,14 @@ static mut NEXT_EPHEMERAL: u16 = 49152;
 /// the peer is private to this crate.
 static mut UDP_PEER: [(u32, u16); UDP_SOCK_MAX] = [(0, 0); UDP_SOCK_MAX];
 
+/// IPv6 peer recorded by `udp_sock_connect6`; (all-zero, 0) = unconnected.
+/// Kept beside `UDP_PEER` so the IPv4 path is untouched.
+static mut UDP_PEER6: [([u8; 16], u16); UDP_SOCK_MAX] = [([0u8; 16], 0); UDP_SOCK_MAX];
+
+/// IPv6 local address pinned by `bind()` on a v6 socket; all-zero = unspecified
+/// (any).  The IPv4 bind address stays in the C mirror `udp_socks[].local_ip`.
+static mut UDP_LOCAL6: [[u8; 16]; UDP_SOCK_MAX] = [[0u8; 16]; UDP_SOCK_MAX];
+
 /// Interface slot UDP socket `idx` is placed on, or -1 if not placed yet.
 pub(crate) fn udp_slot_of(idx: usize) -> i32 {
     if idx >= UDP_SOCK_MAX {
@@ -60,19 +68,33 @@ pub(crate) fn udp_slot_of(idx: usize) -> i32 {
 }
 
 /// Interface slot that should carry UDP socket `idx`'s traffic to `dst_ip`.
+fn pick_slot(idx: usize, dst_ip: u32) -> usize {
+    pick_slot_addr(idx, SockAddr::V4(dst_ip))
+}
+
+/// Interface slot that should carry UDP socket `idx`'s traffic to `dst`.
 ///
 /// A local address pinned by `bind()` wins (its owner interface), otherwise the
-/// destination is routed (`route_slot`).
-fn pick_slot(idx: usize, dst_ip: u32) -> usize {
-    // SAFETY: `udp_socks` is guarded by `STACK_LOCK`, held by `with_stack_lock`;
-    // `idx` is in range (callers bounds-check it).
-    let bound = stack::with_stack_lock(|| unsafe { udp_socks[idx].local_ip });
-    if bound != 0 {
-        if let Some(slot) = crate::config::slot_owning_ip(bound) {
+/// destination is routed (v4 `route_slot` / v6 `route_slot_v6`).  The pinned v6
+/// bind address is checked first because a socket is created for one family.
+fn pick_slot_addr(idx: usize, dst: SockAddr) -> usize {
+    // SAFETY: `udp_socks`/`UDP_LOCAL6` are guarded by `STACK_LOCK`, held by
+    // `with_stack_lock`; `idx` is in range (callers bounds-check it).
+    let (b4, b6) = stack::with_stack_lock(|| unsafe { (udp_socks[idx].local_ip, UDP_LOCAL6[idx]) });
+    if b6 != [0u8; 16] {
+        if let Some(slot) = crate::config::slot_owning_ipv6(b6) {
             return slot;
         }
     }
-    crate::config::route_slot(dst_ip)
+    if b4 != 0 {
+        if let Some(slot) = crate::config::slot_owning_ip(b4) {
+            return slot;
+        }
+    }
+    match dst {
+        SockAddr::V4(v) => crate::config::route_slot(v),
+        SockAddr::V6(a) => crate::config::route_slot_v6(a),
+    }
 }
 
 /// Place UDP socket `idx` on interface `slot`, building its smoltcp socket there.
@@ -157,6 +179,10 @@ pub(crate) unsafe fn reset_udp_smoltcp_state() {
     unsafe { NEXT_EPHEMERAL = 49152 };
     // SAFETY: as above.
     unsafe { UDP_PEER = [(0, 0); UDP_SOCK_MAX] };
+    // SAFETY: as above.
+    unsafe { UDP_PEER6 = [([0u8; 16], 0); UDP_SOCK_MAX] };
+    // SAFETY: as above.
+    unsafe { UDP_LOCAL6 = [[0u8; 16]; UDP_SOCK_MAX] };
     // SAFETY: as above; the borrow ends when this function returns.
     let udp = unsafe { &mut *core::ptr::addr_of_mut!(udp_socks) };
     {
@@ -193,20 +219,19 @@ fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
     if s.is_open() {
         return;
     }
-    // A bind() may name a local address as well as a port (host order, 0 =
-    // INADDR_ANY).  Honour it: without the address the socket answers on
-    // whatever address the packet arrived on, which is not what bind(2)
-    // promises.
-    // SAFETY: as above, for the slot's local-address field.
-    let local = unsafe { udp_socks[idx].local_ip };
-    let ep = IpListenEndpoint {
-        addr: if local != 0 {
-            Some(IpAddress::Ipv4(crate::stack::ipv4_from_host(local)))
-        } else {
-            None
-        },
-        port,
+    // A bind() may name a local address as well as a port (0 = INADDR_ANY).  The
+    // v6 address is checked first: a socket is created for one family, so only
+    // one of the two is ever set.
+    // SAFETY: as above, for the slot's local-address fields.
+    let (local4, local6) = unsafe { (udp_socks[idx].local_ip, UDP_LOCAL6[idx]) };
+    let addr = if local6 != [0u8; 16] {
+        Some(IpAddress::Ipv6(core::net::Ipv6Addr::from(local6)))
+    } else if local4 != 0 {
+        Some(IpAddress::Ipv4(crate::stack::ipv4_from_host(local4)))
+    } else {
+        None
     };
+    let ep = IpListenEndpoint { addr, port };
     let _ = s.bind(ep);
 }
 
@@ -267,6 +292,10 @@ pub extern "C" fn udp_sock_alloc() -> i32 {
             unsafe { UDP_SLOT[i] = -1 };
             // SAFETY: as above.
             unsafe { UDP_PEER[i] = (0, 0) };
+            // SAFETY: as above.
+            unsafe { UDP_PEER6[i] = ([0u8; 16], 0) };
+            // SAFETY: as above.
+            unsafe { UDP_LOCAL6[i] = [0u8; 16] };
             return i as i32;
         }
         -1
@@ -296,8 +325,69 @@ pub extern "C" fn udp_sock_free(idx: i32) {
         UDP_HANDLE[i] = None;
         UDP_SLOT[i] = -1;
         UDP_PEER[i] = (0, 0);
+        UDP_PEER6[i] = ([0u8; 16], 0);
+        UDP_LOCAL6[i] = [0u8; 16];
         udp_socks[i].used = 0;
     });
+}
+
+/// Local endpoint of a datagram socket as `(address, port)`.  The address is the
+/// family's wildcard when the socket was bound by port only (or not at all).
+pub(crate) fn udp_sock_local(idx: i32, family: u16) -> (SockAddr, u16) {
+    if idx < 0 || idx as usize >= UDP_SOCK_MAX {
+        return (SockAddr::any(family), 0);
+    }
+    // SAFETY: `idx` is bounds-checked above; the reads are guarded by
+    // `STACK_LOCK`, as every access to these tables is.
+    let (port, l4, l6) = stack::with_stack_lock(|| unsafe {
+        (
+            udp_socks[idx as usize].local_port,
+            udp_socks[idx as usize].local_ip,
+            UDP_LOCAL6[idx as usize],
+        )
+    });
+    let addr = if l6 != [0u8; 16] {
+        SockAddr::V6(l6)
+    } else if l4 != 0 {
+        SockAddr::V4(l4)
+    } else {
+        SockAddr::any(family)
+    };
+    (addr, port)
+}
+
+/// `bind()` for a v6 datagram socket: record the local port and the sixteen-octet
+/// address, refusing a port held by another socket unless `reuse`.  The v4
+/// counterpart lives in `socket::ksock_bind` (it writes the C mirror's
+/// `local_ip`); this one writes the Rust-private `UDP_LOCAL6`.
+pub(crate) fn udp_sock_bind6(idx: usize, port: u16, addr: [u8; 16], reuse: bool) -> i32 {
+    const EADDRINUSE: i32 = 98;
+    if idx >= UDP_SOCK_MAX {
+        return -1;
+    }
+    let r = stack::with_stack_lock(|| {
+        // SAFETY: `STACK_LOCK` is held for the whole closure, so the scan and the
+        // store are serialized against every other UDP path; `idx` is
+        // bounds-checked above.
+        unsafe {
+            if port != 0 && !reuse {
+                for j in 0..UDP_SOCK_MAX {
+                    if j != idx
+                        && udp_socks[j].used != 0
+                        && udp_socks[j].local_port == port
+                    {
+                        return EADDRINUSE;
+                    }
+                }
+            }
+            udp_socks[idx].local_port = port;
+            // A v6 socket carries no v4 bind address.
+            udp_socks[idx].local_ip = 0;
+            UDP_LOCAL6[idx] = addr;
+            0
+        }
+    });
+    r
 }
 
 /// `connect()` on a datagram socket.  UDP is connectionless, so this only records
@@ -323,6 +413,38 @@ pub extern "C" fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 
     0
 }
 
+/// `connect()` on a v6 datagram socket; mirrors [`udp_sock_connect`] with a
+/// sixteen-octet peer (big-endian octets of the address).
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes that stay live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn udp_sock_connect6(idx: i32, addr: *const u8, dst_port: u16) -> i32 {
+    if idx < 0 || idx as usize >= UDP_SOCK_MAX || addr.is_null() || dst_port == 0 {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    if a6 == [0u8; 16] {
+        return -1;
+    }
+    let i = idx as usize;
+    // SAFETY: `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
+    if stack::with_stack_lock(|| unsafe { udp_socks[i].used }) == 0 {
+        return -1;
+    }
+    let slot = pick_slot_addr(i, SockAddr::V6(a6));
+    if !ensure_placed(i, slot) {
+        return -1;
+    }
+    // SAFETY: `i` is bounds-checked above; the write is guarded by `STACK_LOCK`.
+    stack::with_stack_lock(|| unsafe { UDP_PEER6[i] = (a6, dst_port) });
+    0
+}
+
 /// Peer recorded by [`udp_sock_connect`], or (0, 0) when unconnected.
 pub(crate) fn udp_sock_peer(idx: i32) -> (u32, u16) {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX {
@@ -331,6 +453,21 @@ pub(crate) fn udp_sock_peer(idx: i32) -> (u32, u16) {
     // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER` read is in
     // bounds; the element is a plain `(u32, u16)` so the read cannot tear.
     unsafe { UDP_PEER[idx as usize] }
+}
+
+/// IPv6 peer recorded by [`udp_sock_connect6`], or `None` when unconnected.
+pub(crate) fn udp_sock_peer6(idx: i32) -> Option<([u8; 16], u16)> {
+    if idx < 0 || idx as usize >= UDP_SOCK_MAX {
+        return None;
+    }
+    // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER6` read is in
+    // bounds; the element is a plain `([u8;16], u16)` so the read cannot tear.
+    let (a, p) = unsafe { UDP_PEER6[idx as usize] };
+    if a == [0u8; 16] || p == 0 {
+        None
+    } else {
+        Some((a, p))
+    }
 }
 
 /// True when a datagram would find room in this socket's TX buffer right now —
@@ -483,27 +620,21 @@ pub unsafe extern "C" fn udp_sock_recv(
     }
 }
 
-/// Send one datagram.
+/// Send one datagram to `dst`.  Shared body of the v4 `udp_sock_send` and v6
+/// `udp_sock_send6`.
 ///
 /// # Safety
 ///
 /// `data` may be null (the call then returns -1), but if non-null it must point
 /// to `len` readable bytes that stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_send(
-    idx: i32,
-    dst_ip: u32,
-    dst_port: u16,
-    data: *const u8,
-    len: u16,
-) -> i32 {
+fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, len: u16) -> i32 {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX || data.is_null() {
         return -1;
     }
     let i = idx as usize;
     // Place the socket on the interface that will carry this datagram (idempotent:
     // an already-placed socket keeps its interface).
-    let slot = pick_slot(i, dst_ip);
+    let slot = pick_slot_addr(i, dst);
     if !ensure_placed(i, slot) {
         return -1;
     }
@@ -541,27 +672,38 @@ pub unsafe extern "C" fn udp_sock_send(
             // SAFETY: the caller contract (see # Safety) makes `data` a `len`-byte
             // readable buffer, which is what `from_raw_parts` asserts.
             let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
-            let dst_a = core::net::Ipv4Addr::from_bits(dst_ip);
             // A datagram bigger than the socket's payload capacity can never be
             // queued, so that is a hard error rather than "retry later".
             if len as usize > s.payload_send_capacity() {
                 return -1;
             }
-            let mut meta = udp::UdpMetadata::from((dst_a, dst_port));
-            // Pin the IPv4 source explicitly where smoltcp's default (the first
+            let mut meta = udp::UdpMetadata::from((dst.to_ip(), dst_port));
+            // Pin the source explicitly where smoltcp's default (the first
             // interface address) would be wrong:
             //  * a 127/8 peer must be sourced from 127.0.0.1 (the interface also
             //    carries the configured NIC address, which is what smoltcp would
-            //    otherwise pick);
+            //    otherwise pick); `::1` likewise for the IPv6 loopback;
             //  * a DHCP client broadcasts its DISCOVER before it has an address,
             //    and with no configured address smoltcp still picks the always
             //    present 127.0.0.1 instead of 0.0.0.0 — which the network would
             //    drop, silently, while `sendto` reports success ("no offer
             //    received").
-            if crate::stack::is_loopback_ipv4_host(dst_ip) {
-                meta.local_address = Some(IpAddress::Ipv4(core::net::Ipv4Addr::new(127, 0, 0, 1)));
-            } else if dst_ip == u32::MAX && crate::stack::slot_unconfigured(slot) {
-                meta.local_address = Some(IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED));
+            match dst {
+                SockAddr::V4(v) => {
+                    if crate::stack::is_loopback_ipv4_host(v) {
+                        meta.local_address =
+                            Some(IpAddress::Ipv4(core::net::Ipv4Addr::new(127, 0, 0, 1)));
+                    } else if v == u32::MAX && crate::stack::slot_unconfigured(slot) {
+                        meta.local_address =
+                            Some(IpAddress::Ipv4(core::net::Ipv4Addr::UNSPECIFIED));
+                    }
+                }
+                SockAddr::V6(a) => {
+                    if a == crate::config::IPV6_LOOPBACK {
+                        meta.local_address =
+                            Some(IpAddress::Ipv6(core::net::Ipv6Addr::LOCALHOST));
+                    }
+                }
             }
             match s.send_slice(slice, meta) {
                 Ok(()) => len as i32,
@@ -571,6 +713,116 @@ pub unsafe extern "C" fn udp_sock_send(
                 Err(udp::SendError::BufferFull) => 0,
                 Err(_) => -1,
             }
+        }
+    });
+    r.unwrap_or(-1)
+}
+
+/// Send one datagram to an IPv4 destination (the `CACT_SOCKCTL_SENDTO` path).
+///
+/// # Safety
+///
+/// As `udp_sock_send_addr`: `data` must point to `len` readable bytes, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn udp_sock_send(
+    idx: i32,
+    dst_ip: u32,
+    dst_port: u16,
+    data: *const u8,
+    len: u16,
+) -> i32 {
+    // SAFETY: the caller contract (see # Safety) is forwarded verbatim to
+    // `udp_sock_send_addr`.
+    udp_sock_send_addr(idx, SockAddr::V4(dst_ip), dst_port, data, len)
+}
+
+/// Send one datagram to an IPv6 destination.
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes; `data` must point to `len` readable
+/// bytes, or be null.
+#[no_mangle]
+pub unsafe extern "C" fn udp_sock_send6(
+    idx: i32,
+    addr: *const u8,
+    dst_port: u16,
+    data: *const u8,
+    len: u16,
+) -> i32 {
+    if addr.is_null() {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    // SAFETY: `data`/`len` are forwarded under this function's own contract.
+    udp_sock_send_addr(idx, SockAddr::V6(a6), dst_port, data, len)
+}
+
+/// v6 counterpart of the C-ABI `udp_sock_recv`: dequeue one datagram and report
+/// the source as sixteen octets.  Returns the byte count, 0 when nothing is
+/// queued, or -1 on a hard error.
+///
+/// # Safety
+///
+/// `buf` may be null (then -1), otherwise it must point to `max_len` writable
+/// bytes.  `src_addr_out` may be null, otherwise it must point to 16 writable
+/// bytes.  `src_port_out` may be null, otherwise a writable, aligned `u16`.
+#[no_mangle]
+pub unsafe extern "C" fn udp_sock_recv6(
+    idx: i32,
+    buf: *mut u8,
+    max_len: u16,
+    src_addr_out: *mut u8,
+    src_port_out: *mut u16,
+) -> i32 {
+    if idx < 0 || idx as usize >= UDP_SOCK_MAX || buf.is_null() {
+        return -1;
+    }
+    let i = idx as usize;
+    let slot = udp_slot_of(i);
+    if slot < 0 {
+        // Unplaced: nothing has been sent on it, so nothing can be queued.
+        return 0;
+    }
+    let r = stack::with_slot_socks(slot as usize, |socks| {
+        {
+            ensure_udp_bound(i, socks);
+            // SAFETY: `UDP_HANDLE[i]` is read under the stack lock this closure
+            // holds, and `i` is in bounds.
+            let Some(h) = (unsafe { UDP_HANDLE[i] }) else {
+                return -1;
+            };
+            let s = socks.get_mut::<udp::Socket>(h);
+            let Ok((data, meta)) = s.recv() else {
+                return 0;
+            };
+            let to_copy = core::cmp::min(data.len(), max_len as usize);
+            // SAFETY: the caller contract makes `buf` a `max_len`-byte buffer and
+            // `to_copy` is clamped to it; `data` is the received payload.
+            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy) };
+            if !src_addr_out.is_null() {
+                let octets = match meta.endpoint.addr {
+                    IpAddress::Ipv6(a) => a.octets(),
+                    // A v6 socket does not receive v4 datagrams; leave the address
+                    // all-zero rather than fabricate one.
+                    IpAddress::Ipv4(_) => [0u8; 16],
+                };
+                // SAFETY: the caller contract makes `src_addr_out`, when non-null,
+                // a 16-byte writable buffer; the null check above excluded null.
+                unsafe { core::ptr::copy_nonoverlapping(octets.as_ptr(), src_addr_out, 16) };
+            }
+            if !src_port_out.is_null() {
+                // SAFETY: the caller contract makes `src_port_out`, when non-null,
+                // a writable, aligned `u16`.
+                unsafe { *src_port_out = meta.endpoint.port };
+            }
+            // SAFETY: the slot's readiness flag is only written under the stack
+            // lock this closure holds.
+            unsafe { udp_socks[i].rx_ready = if s.can_recv() { 1 } else { 0 } };
+            to_copy as i32
         }
     });
     r.unwrap_or(-1)

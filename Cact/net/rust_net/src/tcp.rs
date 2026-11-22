@@ -27,6 +27,40 @@ fn addr_v4_bits(a: IpAddress) -> u32 {
     }
 }
 
+/// IPv6 local address pinned by `bind()` on a v6 socket (big-endian octets);
+/// all-zero = unspecified.  Kept beside the C mirror's v4 `local_ip`.  Guarded
+/// by `tcp_lock`.
+static mut TCP_LOCAL6: [[u8; 16]; TCP_MAX_SOCKETS] = [[0u8; 16]; TCP_MAX_SOCKETS];
+
+/// The v6 address `bind()`-pinned on TCP slot `idx` (all-zero = unspecified).
+pub(crate) fn tcp_local6_of(idx: usize) -> [u8; 16] {
+    if idx >= TCP_MAX_SOCKETS {
+        return [0u8; 16];
+    }
+    // SAFETY: `TCP_LOCAL6` is guarded by `tcp_lock`, which this call takes; `idx`
+    // is bounds-checked above, so the read is in bounds and serialized.
+    unsafe {
+        tcp_lock();
+        let v = TCP_LOCAL6[idx];
+        tcp_unlock();
+        v
+    }
+}
+
+/// Pin TCP slot `idx`'s v6 local address (`bind()`); guarded by `tcp_lock`.
+pub(crate) fn tcp_set_local6(idx: usize, addr: [u8; 16]) {
+    if idx >= TCP_MAX_SOCKETS {
+        return;
+    }
+    // SAFETY: `TCP_LOCAL6` is guarded by `tcp_lock`, taken here; `idx` is
+    // bounds-checked above.
+    unsafe {
+        tcp_lock();
+        TCP_LOCAL6[idx] = addr;
+        tcp_unlock();
+    }
+}
+
 pub(crate) fn tcp_lock() {
     let flags: u64;
     // SAFETY: this runs on the current CPU.  `pushfq`/`pop` capture RFLAGS into
@@ -344,36 +378,31 @@ pub(crate) fn alloc_tcp_smoltcp(
     Some(socks.add(s))
 }
 
-/// Remote endpoint of slot `idx` as `(network-order IPv4, port)`, straight from
-/// smoltcp.
+/// Remote endpoint of slot `idx` as `(address, port)`, straight from smoltcp.
 ///
 /// The cached C mirror in `tcp_sockets` is only refreshed by `net_poll_task`, so
 /// a connection that was accepted a moment ago still reads 0 there — which made
 /// `accept()` report a peer port of 0.
-pub(crate) fn tcp_socket_peer(idx: usize) -> Option<(u32, u16)> {
-    with_tcp_socket(idx as i32, |s| match s.remote_endpoint() {
-        Some(ep) => (addr_v4_bits(ep.addr), ep.port),
-        None => (0, 0),
+pub(crate) fn tcp_socket_peer(idx: usize) -> Option<(IpAddress, u16)> {
+    with_tcp_socket(idx as i32, |s| {
+        s.remote_endpoint().map(|ep| (ep.addr, ep.port))
     })
+    .flatten()
 }
 
-/// Local endpoint of slot `idx` as `(network-order IPv4, port)`: the connected
-/// endpoint, or the listen endpoint while the socket is still a listener.  The
-/// address is 0 when it was never named (bound by port only), which the caller
-/// fills in from the interface config.
-pub(crate) fn tcp_socket_local(idx: usize) -> Option<(u32, u16)> {
-    match with_tcp_socket(idx as i32, |s| {
+/// Local endpoint of slot `idx` as `(address, port)`: `None` for the address
+/// when the socket knows only a port (a listener, or a bind-by-port), and `None`
+/// port when the socket is not placed.  The caller supplies the family to turn
+/// an unknown address into the wildcard.
+pub(crate) fn tcp_socket_local(idx: usize) -> (Option<IpAddress>, u16) {
+    with_tcp_socket(idx as i32, |s| {
         if let Some(ep) = s.local_endpoint() {
-            return (addr_v4_bits(ep.addr), ep.port);
+            (Some(ep.addr), ep.port)
+        } else {
+            (None, s.listen_endpoint().port)
         }
-        (0, s.listen_endpoint().port)
-    }) {
-        Some(v) => Some(v),
-        // Created but not yet placed on an interface (never connect()ed or
-        // listen()ed): report the wildcard endpoint, exactly as a fresh CLOSED
-        // socket did before the socket is built lazily.
-        None => Some((0, 0)),
-    }
+    })
+    .unwrap_or((None, 0))
 }
 
 /// Give up slot `i` without a close handshake: unlink the smoltcp socket and

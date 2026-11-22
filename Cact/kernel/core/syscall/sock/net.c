@@ -276,6 +276,125 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
         return ret;
     }
 
+    /* ── AF_INET6 data path ────────────────────────────────────────────────
+     * Same shape as the AF_INET cases above; the address is sixteen big-endian
+     * octets and the port stays network order on the ABI boundary, as for IPv4. */
+    case CACT_SOCKCTL_BIND6: {
+        cact_sockaddr6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return ksock_bind6(node, ntohs(a.addr.port), a.addr.addr, ks->so_reuseaddr);
+    }
+
+    case CACT_SOCKCTL_CONNECT6: {
+        cact_sockaddr6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (ks->kind == KS_TCP) {
+            int r = tcp_connect6(ks->proto_idx, a.addr.addr, ntohs(a.addr.port));
+            if (r < 0 && r != -EINTR) ks->so_error = -r;
+            return r;
+        }
+        if (ks->kind == KS_UDP)
+            return udp_sock_connect6(ks->proto_idx, a.addr.addr, ntohs(a.addr.port));
+        return -1;
+    }
+
+    case CACT_SOCKCTL_ACCEPT6: {
+        cact_accept6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (!current_task) return -1;
+
+        uint8_t peer[16];
+        uint16_t pport = 0;
+        memset(peer, 0, sizeof(peer));
+        vfs_node_t *conn = ksock_tcp_accept6(node, peer, &pport);
+        /* Same blocking wait as the AF_INET ACCEPT: do not make every v6 server
+         * spin on "no connection yet". */
+        if (!conn && !ks->nonblock) {
+            uint32_t deadline = timer_ticks_get() + ACCEPT_WAIT_TICKS;
+            while (!conn) {
+                if (task_signal_pending_current()) return -EINTR;
+                if ((int32_t)(timer_ticks_get() - deadline) >= 0) break;
+                sched_sleep_ticks(1);
+                conn = ksock_tcp_accept6(node, peer, &pport);
+            }
+        }
+        if (!conn) return -1;
+
+        memcpy(a.peer.addr, peer, sizeof(a.peer.addr));
+        a.peer.port = pport; /* network order, straight from ksock_tcp_accept6 */
+        a.addrlen   = sizeof(cact_sockaddr_in6_t);
+        if (copy_to_user(arg, &a, sizeof(a)) != 0) {
+            close_vfs(conn);
+            return -EFAULT;
+        }
+        return alloc_fd(conn);
+    }
+
+    case CACT_SOCKCTL_GETSOCKNAME6:
+    case CACT_SOCKCTL_GETPEERNAME6: {
+        cact_sockname6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (a.addrlen < sizeof(cact_sockaddr_in6_t)) return -EINVAL;
+
+        uint16_t port = 0;
+        int r = ksock_sockname6(node, cmd == CACT_SOCKCTL_GETPEERNAME6,
+                                a.addr.addr, &port);
+        if (r != 0) return r;
+
+        a.addr.port = port; /* network order */
+        a.addrlen   = sizeof(cact_sockaddr_in6_t);
+        if (copy_to_user(arg, &a, sizeof(a)) != 0) return -EFAULT;
+        return 0;
+    }
+
+    case CACT_SOCKCTL_SENDTO6: {
+        cact_sendto6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (!validate_user_ptr(a.buf, a.len)) return -EFAULT;
+        if (a.len > UINT16_MAX) return -1;
+
+        if (ks->kind == KS_TCP)
+            return tcp_send(ks->proto_idx, (uint8_t *)a.buf, (uint16_t)a.len);
+        if (ks->kind == KS_UDP) {
+            int r = udp_sock_send6(ks->proto_idx, a.dst.addr, ntohs(a.dst.port),
+                                   (const uint8_t *)a.buf, (uint16_t)a.len);
+            return r == 0 ? -EAGAIN : r;
+        }
+        return -1;
+    }
+
+    case CACT_SOCKCTL_RECVFROM6: {
+        cact_recvfrom6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (!validate_user_ptr(a.buf, a.len)) return -EFAULT;
+        if (a.len > UINT16_MAX) return -1;
+
+        int ret = -1;
+        if (ks->kind == KS_TCP) {
+            ret = tcp_recv(ks->proto_idx, (uint8_t *)a.buf, (uint16_t)a.len);
+            if (ret > 0) {
+                uint16_t pport = 0;
+                if (ksock_sockname6(node, 1, a.src.addr, &pport) == 0)
+                    a.src.port = pport; /* network order */
+            }
+        } else if (ks->kind == KS_UDP) {
+            uint16_t pport = 0;
+            ret = udp_sock_recv6(ks->proto_idx, (uint8_t *)a.buf, (uint16_t)a.len,
+                                 a.src.addr, &pport);
+            /* udp_sock_recv6 reports a host-order port, like its v4 counterpart. */
+            if (ret > 0) a.src.port = htons(pport);
+        }
+        if (ret < 0) return ret;
+        if (copy_to_user(arg, &a, sizeof(a)) != 0) return -EFAULT;
+        return ret;
+    }
+
     default:
         return -EINVAL;
     }

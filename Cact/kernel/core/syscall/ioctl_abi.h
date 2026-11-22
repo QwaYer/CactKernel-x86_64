@@ -351,6 +351,16 @@ typedef struct cact_shmctl_arg { uint32_t shmid; uint32_t cmd; void *buf; } cact
 #define CACT_SOCKCTL_RECVMSG    0x330D  // payload + SCM_RIGHTS: arg=cact_recvmsg_arg_t*
 #define CACT_SOCKCTL_GETSOCKNAME 0x330E // arg=cact_sockname_arg_t*; local addr out
 #define CACT_SOCKCTL_GETPEERNAME 0x330F // arg=cact_sockname_arg_t*; peer addr out
+// AF_INET6 counterparts of the address-carrying ioctls above.  Kept separate
+// (rather than a family tag on the AF_INET struct) so the IPv4 ABI stays
+// byte-identical for callers built against it.
+#define CACT_SOCKCTL_BIND6        0x3310 // arg=cact_sockaddr6_arg_t*
+#define CACT_SOCKCTL_CONNECT6     0x3311 // arg=cact_sockaddr6_arg_t*
+#define CACT_SOCKCTL_ACCEPT6      0x3312 // arg=cact_accept6_arg_t*; returns new fd
+#define CACT_SOCKCTL_SENDTO6      0x3313 // arg=cact_sendto6_arg_t*
+#define CACT_SOCKCTL_RECVFROM6    0x3314 // arg=cact_recvfrom6_arg_t*
+#define CACT_SOCKCTL_GETSOCKNAME6 0x3315 // arg=cact_sockname6_arg_t*; local addr out
+#define CACT_SOCKCTL_GETPEERNAME6 0x3316 // arg=cact_sockname6_arg_t*; peer addr out
 // AF_UNIX reuses CACT_SOCKCTL_LISTEN / ACCEPT / SHUTDOWN; the data path is
 // plain read()/write(), as for AF_INET sockets.  sendmsg/recvmsg ioctls add
 // SCM_RIGHTS fd passing on AF_UNIX stream sockets (payload stays a byte
@@ -428,6 +438,41 @@ typedef struct cact_recvfrom_arg {
     void *buf;
     uint32_t len;
 } cact_recvfrom_arg_t;
+
+// ── AF_INET6 sockaddr forms ────────────────────────────────────────────────
+// The address is the sixteen big-endian octets; the port is network order, as
+// in cact_sockaddr_in_t.  Each has the same shape as its AF_INET counterpart.
+typedef struct cact_sockaddr_in6 {
+    uint8_t  addr[16];           // IPv6 big-endian
+    uint32_t port;               // network order
+} cact_sockaddr_in6_t;
+
+typedef struct cact_sockaddr6_arg {
+    uint32_t fd;
+    cact_sockaddr_in6_t addr;
+} cact_sockaddr6_arg_t;
+
+typedef struct cact_accept6_arg {
+    cact_sockaddr_in6_t peer;    // out
+    uint32_t addrlen;            // in/out
+} cact_accept6_arg_t;
+
+typedef struct cact_sockname6_arg {
+    cact_sockaddr_in6_t addr;    // out
+    uint32_t addrlen;            // in/out
+} cact_sockname6_arg_t;
+
+typedef struct cact_sendto6_arg {
+    cact_sockaddr_in6_t dst;     // only for UDP
+    void *buf;
+    uint32_t len;
+} cact_sendto6_arg_t;
+
+typedef struct cact_recvfrom6_arg {
+    cact_sockaddr_in6_t src;     // out (only for UDP)
+    void *buf;
+    uint32_t len;
+} cact_recvfrom6_arg_t;
 
 
 // ===========================================================================

@@ -100,6 +100,9 @@ int  tcp_socket(void);
 /* Active open */
 int  tcp_connect(int sock, uint32_t dst_ip, uint16_t dst_port);
 
+/* AF_INET6 active open: destination as 16 big-endian octets. */
+int  tcp_connect6(int sock, const uint8_t *dst_addr, uint16_t dst_port);
+
 /* Passive open (server) */
 int  tcp_listen(int sock, uint16_t local_port);
 

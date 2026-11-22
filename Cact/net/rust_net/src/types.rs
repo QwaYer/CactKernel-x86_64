@@ -18,6 +18,7 @@ pub const VFS_POLLERR: u32 = 0x008;
 pub const VFS_POLLHUP: u32 = 0x010;
 pub const VFS_POLLNVAL: u32 = 0x020;
 pub const AF_INET: u16 = 2;
+pub const AF_INET6: u16 = 10;
 
 pub const KS_NONE: u32 = 0;
 pub const KS_TCP: u32 = 1;
@@ -189,6 +190,11 @@ pub struct Ksock {
     /// last so the C struct (`ksock_t` in `Cact/net/socket/socket.h`) and this
     /// mirror stay in step; `ksock_set_nonblock` is the only writer.
     pub nonblock: u8,
+    /// Address family the socket was created with (`AF_INET`/`AF_INET6`), so the
+    /// address-carrying ioctls know how to read/write the sockaddr.  Lives in
+    /// the struct's existing trailing padding, so the C mirror's size is
+    /// unchanged.
+    pub family: u8,
 }
 
 #[repr(C)]
@@ -267,6 +273,9 @@ const _: () = assert!(core::mem::offset_of!(Ksock, kind) == 4);
 const _: () = assert!(core::mem::offset_of!(Ksock, proto_idx) == 8);
 const _: () = assert!(core::mem::offset_of!(Ksock, so_error) == 20);
 const _: () = assert!(core::mem::offset_of!(Ksock, nonblock) == 24);
+// `family` fits in the padding after `nonblock`, so the C mirror's size is
+// unchanged (both sides must agree).
+const _: () = assert!(core::mem::offset_of!(Ksock, family) == 25);
 
 const _: () = assert!(core::mem::size_of::<TcpSocket>() == 4168);
 const _: () = assert!(core::mem::offset_of!(TcpSocket, state) == 4);
@@ -298,6 +307,58 @@ pub struct SockAddrIn {
     pub sin_port: u16,
     pub sin_addr: u32,
     pub sin_zero: [u8; 8],
+}
+
+/// A socket endpoint address in either family, as the socket layer stores it
+/// internally.  `V4` holds a host-order address (what the rest of the v4 code
+/// uses); `V6` the sixteen big-endian octets `core::net::Ipv6Addr` expects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum SockAddr {
+    V4(u32),
+    V6([u8; 16]),
+}
+
+impl SockAddr {
+    /// The all-zero address of this family (INADDR_ANY / `::`).
+    pub fn any(family: u16) -> Self {
+        if family == AF_INET6 {
+            SockAddr::V6([0u8; 16])
+        } else {
+            SockAddr::V4(0)
+        }
+    }
+
+    /// The address family (`AF_INET`/`AF_INET6`).
+    pub fn family(&self) -> u16 {
+        match self {
+            SockAddr::V4(_) => AF_INET,
+            SockAddr::V6(_) => AF_INET6,
+        }
+    }
+
+    /// True for the unspecified address (`0.0.0.0` / `::`).
+    pub fn is_unspecified(&self) -> bool {
+        match self {
+            SockAddr::V4(v) => *v == 0,
+            SockAddr::V6(a) => *a == [0u8; 16],
+        }
+    }
+
+    /// The smoltcp address form.
+    pub fn to_ip(self) -> smoltcp::wire::IpAddress {
+        match self {
+            SockAddr::V4(v) => smoltcp::wire::IpAddress::Ipv4(core::net::Ipv4Addr::from_bits(v)),
+            SockAddr::V6(a) => smoltcp::wire::IpAddress::Ipv6(core::net::Ipv6Addr::from(a)),
+        }
+    }
+
+    /// From a smoltcp address back to this socket-layer form.
+    pub fn from_ip(a: smoltcp::wire::IpAddress) -> Self {
+        match a {
+            smoltcp::wire::IpAddress::Ipv4(v4) => SockAddr::V4(v4.to_bits()),
+            smoltcp::wire::IpAddress::Ipv6(v6) => SockAddr::V6(v6.octets()),
+        }
+    }
 }
 
 pub const TCP_CLOSED: u32 = 0;

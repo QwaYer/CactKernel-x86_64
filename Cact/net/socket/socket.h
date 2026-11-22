@@ -10,6 +10,7 @@
 /* ── Address families ─────────────────────────────────────────────────────── */
 #define AF_UNIX     1   /* local (Unix-domain) sockets */
 #define AF_INET     2
+#define AF_INET6   10
 
 /* ── Socket types ─────────────────────────────────────────────────────────── */
 #define SOCK_STREAM  1   /* TCP */
@@ -100,6 +101,11 @@ typedef struct ksock {
     /* O_NONBLOCK as set by fcntl(F_SETFL) on the socket fd.  Must stay last:
        the Rust mirror (cact_net Ksock) asserts the offset/size of this field. */
     uint8_t nonblock;
+
+    /* Address family the socket was created with (AF_INET / AF_INET6), so the
+       address-carrying ioctls know how to read/write the sockaddr.  Sits in the
+       padding after `nonblock`, so the struct size is unchanged. */
+    uint8_t family;
 } ksock_t;
 
 /* ── Public API ───────────────────────────────────────────────────────────── */
@@ -139,5 +145,16 @@ int ksock_bind(vfs_node_t *node, uint16_t port, uint32_t ip_host, int reuseaddr)
    socket that never bound). */
 int ksock_getsockname(vfs_node_t *node, struct sockaddr_in *out);
 int ksock_getpeername(vfs_node_t *node, struct sockaddr_in *out);
+
+/* ── AF_INET6 counterparts ────────────────────────────────────────────────── */
+/* v6 bind: local address as 16 big-endian octets.  Same return contract as
+   ksock_bind. */
+int ksock_bind6(vfs_node_t *node, uint16_t port, const uint8_t addr[16], int reuseaddr);
+/* v6 getsockname/getpeername: address (16 octets) and port (network order) out.
+   Returns 0, or -1 when the socket is not v6 / has no such address. */
+int ksock_sockname6(vfs_node_t *node, int peer, uint8_t out_addr[16], uint16_t *out_port);
+/* v6 accept: like ksock_tcp_accept, filling a 16-octet peer address. */
+vfs_node_t *ksock_tcp_accept6(vfs_node_t *listen_node, uint8_t out_addr[16],
+                              uint16_t *out_port);
 
 #endif /* KSOCKET_H */

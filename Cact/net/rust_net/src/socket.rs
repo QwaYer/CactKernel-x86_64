@@ -79,6 +79,7 @@ pub static mut ksock_table: [Ksock; KSOCK_MAX] = [Ksock {
     tcp_nodelay: 0,
     so_error: 0,
     nonblock: 0,
+    family: 0,
 }; KSOCK_MAX];
 
 extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut c_char) -> c_int {
@@ -214,12 +215,12 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
         if ks.is_null() {
             return -1;
         }
-        let (shutdown_wr, idx, nonblock, kind) = {
+        let (shutdown_wr, idx, nonblock, kind, family) = {
             // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is
             // consumed by the field copies below and is dead before the first
             // call that could recycle or mutate the row, so it cannot alias.
             let k = unsafe { &*ks };
-            (k.shutdown_wr, k.proto_idx, k.nonblock != 0, k.kind)
+            (k.shutdown_wr, k.proto_idx, k.nonblock != 0, k.kind, k.family)
         };
         if shutdown_wr != 0 {
             return -1;
@@ -260,12 +261,43 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
         }
         if kind == KS_UDP {
             // One datagram per write(), so the socket needs a peer — POSIX
-            // would answer EDESTADDRREQ for an unconnected datagram socket.
-            let (ip, port) = udp::udp_sock_peer(idx);
-            if ip == 0 || port == 0 || size > u16::MAX as u32 {
+            // would answer EDESTADDRREQ for an unconnected datagram socket.  The
+            // peer is family-specific: a v6 socket stores it in `UDP_PEER6`.
+            if size > u16::MAX as u32 {
                 return -1;
             }
             let deadline = now_ticks().saturating_add(UDP_WRITE_STALL_TICKS);
+            if family as u16 == AF_INET6 {
+                let Some((a6, port)) = udp::udp_sock_peer6(idx) else {
+                    return -1;
+                };
+                loop {
+                    // SAFETY: `idx` is a valid smoltcp UDP slot and `buf` points
+                    // to at least `size` readable bytes; `a6`/`port` are the peer
+                    // returned by `udp_sock_peer6`.
+                    let n =
+                        unsafe { udp::udp_sock_send6(idx, a6.as_ptr(), port, buf.cast::<u8>(), size as u16) };
+                    if n != 0 {
+                        return n;
+                    }
+                    if nonblock {
+                        return -EAGAIN;
+                    }
+                    if signal_pending() {
+                        return -EINTR;
+                    }
+                    if now_ticks() >= deadline {
+                        return -ETIMEDOUT;
+                    }
+                    // SAFETY: `sched_sleep_ticks` is a kernel service that
+                    // suspends the calling task for the requested number of ticks.
+                    unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                }
+            }
+            let (ip, port) = udp::udp_sock_peer(idx);
+            if ip == 0 || port == 0 {
+                return -1;
+            }
             loop {
                 // SAFETY: `idx` is a valid smoltcp UDP slot index for the
                 // operation and `buf` points to at least `size` readable bytes;
@@ -586,6 +618,83 @@ pub extern "C" fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reusea
     -1
 }
 
+/// `bind()` for an AF_INET6 socket: the v6 counterpart of [`ksock_bind`], taking
+/// the sixteen big-endian octets of the local address.
+///
+/// Returns 0, `-EADDRINUSE`, or -1 on a non-socket / invalid slot / null addr.
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes that stay live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn ksock_bind6(
+    node: *mut VfsNode,
+    port: u16,
+    addr: *const u8,
+    reuseaddr: c_int,
+) -> c_int {
+    const EADDRINUSE: c_int = 98;
+    if addr.is_null() {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
+    // a live `Ksock`.
+    let ks = unsafe { ksock_from_node(node) };
+    if ks.is_null() {
+        return -1;
+    }
+    // SAFETY: `ks` is this node's live `Ksock`; the field copies consume the
+    // shared borrow and end it before any table access below.
+    let (kind, idx, reuse) = unsafe {
+        let k = &*ks;
+        (k.kind, k.proto_idx, k.so_reuseaddr != 0 || reuseaddr != 0)
+    };
+    if kind == KS_TCP {
+        if idx < 0 || idx as usize >= TCP_MAX_SOCKETS {
+            return -1;
+        }
+        let i = idx as usize;
+        // SAFETY: `tcp_lock` serializes the TCP slot table against the poll
+        // thread's `sync_tcp_pcbs_from_smoltcp`, and `i` is bounds-checked above.
+        unsafe {
+            tcp::tcp_lock();
+            if port != 0 && !reuse {
+                let mut taken = false;
+                for j in 0..TCP_MAX_SOCKETS {
+                    if j != i
+                        && tcp::tcp_sockets[j].used != 0
+                        && tcp::tcp_sockets[j].local_port == port
+                    {
+                        taken = true;
+                        break;
+                    }
+                }
+                if taken {
+                    tcp::tcp_unlock();
+                    return -EADDRINUSE;
+                }
+            }
+            tcp::tcp_sockets[i].local_port = port;
+            // A v6 socket carries no v4 bind address.
+            tcp::tcp_sockets[i].local_ip = 0;
+            tcp::tcp_unlock();
+        }
+        tcp::tcp_set_local6(i, a6);
+        return 0;
+    }
+    if kind == KS_UDP {
+        if idx < 0 || idx as usize >= UDP_SOCK_MAX {
+            return -1;
+        }
+        return udp::udp_sock_bind6(idx as usize, port, a6, reuse);
+    }
+    -1
+}
+
 /// Local address of a socket (`getsockname`).  Returns 0, or -1 when it has
 /// none yet.
 #[no_mangle]
@@ -600,84 +709,135 @@ pub extern "C" fn ksock_getpeername(node: *mut VfsNode, out: *mut SockAddrIn) ->
     sock_name(node, out, true)
 }
 
-/// Shared body of the two calls above, filling a `struct sockaddr_in`
+/// The local (or peer) endpoint of `node` as `(SockAddr, port)`, or `None` when
+/// the socket has none yet (unconnected peer, unplaced slot).  The family is
+/// taken from the socket, so an unknown address becomes that family's wildcard.
+fn sock_endpoint(node: *mut VfsNode, peer: bool) -> Option<(SockAddr, u16)> {
+    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
+    // a live `Ksock`.
+    let ks = unsafe { ksock_from_node(node) };
+    if ks.is_null() {
+        return None;
+    }
+    let (idx, kind, family) = {
+        // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is consumed
+        // by the field copies and is dead before the endpoint queries below.
+        let k = unsafe { &*ks };
+        (k.proto_idx, k.kind, k.family as u16)
+    };
+    if kind == KS_TCP {
+        if idx < 0 || idx as usize >= TCP_MAX_SOCKETS {
+            return None;
+        }
+        if peer {
+            // Straight from smoltcp: the cached mirror is only refreshed by the
+            // poll task, so it lags behind a just-accepted socket.
+            let (a, p) = tcp::tcp_socket_peer(idx as usize)?;
+            if p == 0 {
+                // Not connected — POSIX answers ENOTCONN here.
+                return None;
+            }
+            Some((SockAddr::from_ip(a), p))
+        } else {
+            let (a, p) = tcp::tcp_socket_local(idx as usize);
+            let addr = match a {
+                Some(ip) => SockAddr::from_ip(ip),
+                None => SockAddr::any(family),
+            };
+            Some((addr, p))
+        }
+    } else if kind == KS_UDP {
+        if idx < 0 || idx as usize >= UDP_SOCK_MAX {
+            return None;
+        }
+        if peer {
+            if family == AF_INET6 {
+                let (a, p) = udp::udp_sock_peer6(idx)?;
+                Some((SockAddr::V6(a), p))
+            } else {
+                // Datagram sockets keep their peer in a Rust-private table, so
+                // there is no C-visible copy to read.
+                let (ip, p) = udp::udp_sock_peer(idx);
+                if ip == 0 || p == 0 {
+                    return None;
+                }
+                Some((SockAddr::V4(ip), p))
+            }
+        } else {
+            Some(udp::udp_sock_local(idx, family))
+        }
+    } else {
+        None
+    }
+}
+
+/// Shared body of the two v4 calls above, filling a `struct sockaddr_in`
 /// (`SockAddrIn`, byte-for-byte the C layout).
 fn sock_name(node: *mut VfsNode, out: *mut SockAddrIn, peer: bool) -> c_int {
     if out.is_null() {
         return -1;
     }
-    {
-        // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null
-        // (checked) or a live `Ksock`.
-        let ks = unsafe { ksock_from_node(node) };
-        if ks.is_null() {
-            return -1;
-        }
-        let (idx, kind) = {
-            // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is
-            // consumed by the field copies below and is dead before any of the
-            // endpoint queries, which cannot touch the row.
-            let k = unsafe { &*ks };
-            (k.proto_idx, k.kind)
-        };
-        let (mut ip, port) = if kind == KS_TCP {
-            if idx < 0 || idx as usize >= TCP_MAX_SOCKETS {
-                return -1;
-            }
-            // Straight from smoltcp: the cached mirror is only refreshed by the
-            // poll task, so it lags behind a just-connected or just-accepted
-            // socket (and reported a peer of 0 for a fresh accept()).
-            let ep = if peer {
-                tcp::tcp_socket_peer(idx as usize)
+    let Some((addr, port)) = sock_endpoint(node, peer) else {
+        return -1;
+    };
+    // A concrete v4 address for the sockaddr_in: the wildcard when nothing is
+    // bound, otherwise the interface address the socket holds.  A v6 socket has
+    // no v4 form and reports 0.0.0.0 here (its view is `ksock_sockname6`).
+    let v4 = match addr {
+        SockAddr::V4(v) => {
+            if port == 0 {
+                0
+            } else if v == 0 {
+                crate::config::ip_host()
             } else {
-                tcp::tcp_socket_local(idx as usize)
-            };
-            match ep {
-                Some(v) => v,
-                None => return -1,
+                v
             }
-        } else if kind == KS_UDP {
-            if idx < 0 || idx as usize >= UDP_SOCK_MAX {
-                return -1;
-            }
-            if peer {
-                // Datagram sockets keep their peer in a Rust-private table, so
-                // there is no C-visible copy to read.
-                udp::udp_sock_peer(idx)
-            } else {
-                // SAFETY: `idx` is bounds-checked above, so this indexes the
-                // kernel-lifetime `udp_socks` static in bounds; the borrow is
-                // consumed by the two field reads on the next line.
-                let s = unsafe { &udp::udp_socks[idx as usize] };
-                (s.local_ip, s.local_port)
-            }
-        } else {
-            return -1;
-        };
-        if peer && (ip == 0 || port == 0) {
-            // Not connected — POSIX answers ENOTCONN here.
-            return -1;
         }
-        if port == 0 {
-            // Bound to nothing yet: report the wildcard address, as POSIX does.
-            ip = 0;
-        } else if ip == 0 {
-            // Bound to a port only: report the address the interface currently
-            // holds, in host order — the `to_be()` below puts it on the wire the
-            // same way the C paths' htonl() does.
-            ip = crate::config::ip_host();
-        }
-        // SAFETY: the caller contract of `ksock_getsockname`/`ksock_getpeername`
-        // makes `out` (checked non-null above) a writable `SockAddrIn` that
-        // stays live for the call, so the borrow below is valid and exclusive.
-        let out = unsafe { &mut *out };
-        out.sin_family = AF_INET;
-        out.sin_port = port.to_be();
-        // The endpoint helpers hand back host-order numbers; a sockaddr_in wants
-        // network order (what htonl() produces in the C paths).
-        out.sin_addr = ip.to_be();
-        out.sin_zero = [0; 8];
+        SockAddr::V6(_) => 0,
+    };
+    // SAFETY: the caller contract of `ksock_getsockname`/`ksock_getpeername`
+    // makes `out` (checked non-null above) a writable `SockAddrIn` that stays
+    // live for the call, so the borrow is valid and exclusive.
+    let out = unsafe { &mut *out };
+    out.sin_family = AF_INET;
+    out.sin_port = port.to_be();
+    // The endpoint helpers hand back host-order numbers; a sockaddr_in wants
+    // network order (what htonl() produces in the C paths).
+    out.sin_addr = v4.to_be();
+    out.sin_zero = [0; 8];
+    0
+}
+
+/// v6 counterpart of `ksock_getsockname`/`ksock_getpeername`: write the local
+/// (or peer) address as sixteen big-endian octets and the port in network order.
+/// Returns 0, or -1 when the socket has no such address yet.
+///
+/// # Safety
+///
+/// `out_addr` must point to 16 writable bytes and `out_port` to a writable,
+/// aligned `u16`; both stay live for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn ksock_sockname6(
+    node: *mut VfsNode,
+    peer: c_int,
+    out_addr: *mut u8,
+    out_port: *mut u16,
+) -> c_int {
+    if out_addr.is_null() || out_port.is_null() {
+        return -1;
     }
+    let Some((addr, port)) = sock_endpoint(node, peer != 0) else {
+        return -1;
+    };
+    let a6 = match addr {
+        SockAddr::V6(a) => a,
+        SockAddr::V4(_) => [0u8; 16],
+    };
+    // SAFETY: the caller contract makes `out_addr` a 16-byte writable buffer and
+    // `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16) };
+    // SAFETY: the caller contract makes `out_port` a writable, aligned `u16`.
+    unsafe { *out_port = port.to_be() };
     0
 }
 
@@ -703,6 +863,7 @@ fn ksock_alloc() -> *mut Ksock {
                     tcp_nodelay: 0,
                     so_error: 0,
                     nonblock: 0,
+                    family: 0,
                 };
                 return s as *mut Ksock;
             }
@@ -763,7 +924,10 @@ unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
 
 #[no_mangle]
 pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) -> *mut VfsNode {
-    if domain as u16 != AF_INET {
+    let fam = domain as u16;
+    // AF_UNIX is served by the kernel-C unix_sock module before this is reached;
+    // AF_INET and AF_INET6 both land here as IP sockets.
+    if fam != AF_INET && fam != AF_INET6 {
         return core::ptr::null_mut();
     }
     // SAFETY: `ksock_alloc` returns null (checked below) or an exclusively owned
@@ -777,6 +941,7 @@ pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) ->
     // before `make_socket_node` takes ownership of the pointer, and the calls in
     // between (`tcp_socket`/`udp_sock_alloc`) cannot reach the row.
     let k = unsafe { &mut *ks };
+    k.family = fam as u8;
     if type_ == 1 {
         let idx = tcp::tcp_socket();
         if idx < 0 {
@@ -814,17 +979,20 @@ pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) ->
     node
 }
 
+/// Accept a pending TCP connection on a LISTEN socket.  Returns the new node
+/// (whose ownership the caller takes) together with the peer's endpoint and
+/// port; `(null, _, _)` when there is nothing to accept.
+///
 /// # Safety
 ///
-/// `listen_node` must be null or a live VFS socket node; `peer_out` must be
-/// null or point to a writable `SockAddrIn` that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_tcp_accept(listen_node: *mut VfsNode, peer_out: *mut SockAddrIn) -> *mut VfsNode {
+/// `listen_node` must be null or a live VFS socket node.
+unsafe fn tcp_accept_inner(listen_node: *mut VfsNode) -> (*mut VfsNode, SockAddr, u16) {
+    const FAIL: (*mut VfsNode, SockAddr, u16) = (core::ptr::null_mut(), SockAddr::V4(0), 0);
     // SAFETY: `ksock_from_node` type-checks `listen_node`, so `lks` is null
     // (checked) or a live `Ksock`.
     let lks = unsafe { ksock_from_node(listen_node) };
     if lks.is_null() {
-        return core::ptr::null_mut();
+        return FAIL;
     }
     let (lks_kind, listen_idx) = {
         // SAFETY: `lks` is this node's live `Ksock`; the shared borrow is
@@ -834,7 +1002,7 @@ pub unsafe extern "C" fn ksock_tcp_accept(listen_node: *mut VfsNode, peer_out: *
         (l.kind, l.proto_idx as usize)
     };
     if lks_kind != KS_TCP || listen_idx >= TCP_MAX_SOCKETS {
-        return core::ptr::null_mut();
+        return FAIL;
     }
     let ready = {
         // SAFETY: `listen_idx` is bounds-checked above; the borrow is consumed
@@ -843,43 +1011,39 @@ pub unsafe extern "C" fn ksock_tcp_accept(listen_node: *mut VfsNode, peer_out: *
         ls.used != 0 && ls.accept_ready != 0
     };
     if !ready {
-        return core::ptr::null_mut();
+        return FAIL;
     }
     // SAFETY: `tcp_sockets` is a kernel-lifetime static array and `i` comes from
     // a range bounded by `TCP_MAX_SOCKETS`, so the scan stays inside it.
     let child_idx = (0..TCP_MAX_SOCKETS).find(|i| unsafe { tcp::tcp_sockets[*i].used == 0 });
     let Some(ci) = child_idx else {
-        return core::ptr::null_mut();
+        return FAIL;
     };
     if tcp::tcp_accept_transfer(listen_idx as i32, ci as i32) != 0 {
-        return core::ptr::null_mut();
+        return FAIL;
     }
-    // The child slot's C mirror is not filled until the poll task syncs it,
-    // so ask smoltcp — otherwise accept() reported a peer port of 0.
-    let (rip, rport) = tcp::tcp_socket_peer(ci).unwrap_or((0, 0));
-    if !peer_out.is_null() {
-        // SAFETY: the caller contract (see # Safety) makes `peer_out` a writable
-        // `SockAddrIn`; the null check above excluded null.
-        let out = unsafe { &mut *peer_out };
-        out.sin_family = AF_INET;
-        out.sin_port = rport.to_be();
-        // Host-order number from smoltcp -> network order for the sockaddr.
-        out.sin_addr = rip.to_be();
-        out.sin_zero = [0; 8];
-    }
+    // The child slot's C mirror is not filled until the poll task syncs it, so
+    // ask smoltcp — otherwise accept() reported a peer port of 0.
+    let (peer_addr, rport) = match tcp::tcp_socket_peer(ci) {
+        Some((a, p)) => (SockAddr::from_ip(a), p),
+        None => (SockAddr::V4(0), 0),
+    };
     // The connection is already moved into the child slot, so every failure from
     // here has to hand it back — otherwise the TCP slot (and its two 4 KiB
     // buffers) leaks with no fd able to reach it.
     let ks = ksock_alloc();
     if ks.is_null() {
         tcp::tcp_free_slot(ci);
-        return core::ptr::null_mut();
+        return (core::ptr::null_mut(), peer_addr, rport);
     }
     // SAFETY: `ks` is this call's exclusively-owned fresh row, handed to
     // `make_socket_node` below; the borrow ends before that call.
     let k = unsafe { &mut *ks };
     k.kind = KS_TCP;
     k.proto_idx = ci as i32;
+    // The accepted child inherits the listener's address family.
+    // SAFETY: `lks` is the live listener row; the read is a plain `u8`.
+    k.family = unsafe { (*lks).family };
     // SAFETY: the row is live and exclusively owned by this call, which is the
     // contract `make_socket_node` requires.
     let node = unsafe { make_socket_node(ks) };
@@ -887,6 +1051,71 @@ pub unsafe extern "C" fn ksock_tcp_accept(listen_node: *mut VfsNode, peer_out: *
         // SAFETY: `make_socket_node` failed without taking ownership of the row.
         unsafe { (*ks).used = 0 };
         tcp::tcp_free_slot(ci);
+    }
+    (node, peer_addr, rport)
+}
+
+/// # Safety
+///
+/// `listen_node` must be null or a live VFS socket node; `peer_out` must be
+/// null or point to a writable `SockAddrIn` that stays live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn ksock_tcp_accept(
+    listen_node: *mut VfsNode,
+    peer_out: *mut SockAddrIn,
+) -> *mut VfsNode {
+    // SAFETY: `listen_node`'s contract (see # Safety) is forwarded to the inner
+    // routine.
+    let (node, addr, rport) = unsafe { tcp_accept_inner(listen_node) };
+    if !peer_out.is_null() {
+        let v4 = match addr {
+            SockAddr::V4(v) => v,
+            // A v4 accept of a v6 peer has no v4 form; report 0.0.0.0 (the v6
+            // view is `ksock_tcp_accept6`).
+            SockAddr::V6(_) => 0,
+        };
+        // SAFETY: the caller contract (see # Safety) makes `peer_out` a writable
+        // `SockAddrIn`; the null check above excluded null.
+        let out = unsafe { &mut *peer_out };
+        out.sin_family = AF_INET;
+        out.sin_port = rport.to_be();
+        // Host-order number from smoltcp -> network order for the sockaddr.
+        out.sin_addr = v4.to_be();
+        out.sin_zero = [0; 8];
+    }
+    node
+}
+
+/// v6 counterpart of [`ksock_tcp_accept`]: writes the peer address as sixteen
+/// big-endian octets and the port in network order.  Returns the new node (or
+/// null), exactly as `ksock_tcp_accept`.
+///
+/// # Safety
+///
+/// `listen_node` must be null or a live VFS socket node; `out_addr` (when
+/// non-null) must point to 16 writable bytes and `out_port` to a writable,
+/// aligned `u16`, both live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn ksock_tcp_accept6(
+    listen_node: *mut VfsNode,
+    out_addr: *mut u8,
+    out_port: *mut u16,
+) -> *mut VfsNode {
+    // SAFETY: `listen_node`'s contract (see # Safety) is forwarded to the inner
+    // routine.
+    let (node, addr, rport) = unsafe { tcp_accept_inner(listen_node) };
+    if !out_addr.is_null() {
+        let a6 = match addr {
+            SockAddr::V6(a) => a,
+            SockAddr::V4(_) => [0u8; 16],
+        };
+        // SAFETY: the caller contract makes `out_addr` a 16-byte writable buffer
+        // and `a6` is a distinct local array.
+        unsafe { core::ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16) };
+    }
+    if !out_port.is_null() {
+        // SAFETY: the caller contract makes `out_port` a writable, aligned `u16`.
+        unsafe { *out_port = rport.to_be() };
     }
     node
 }

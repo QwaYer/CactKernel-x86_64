@@ -82,6 +82,8 @@ pub extern "C" fn tcp_socket() -> i32 {
     }
     // Not yet pinned to an interface; `connect`/`listen` does that.
     tcp_set_slot(idx as usize, -1);
+    // Drop any v6 bind address a previous socket left on this slot.
+    crate::tcp::tcp_set_local6(idx as usize, [0u8; 16]);
     idx
 }
 
@@ -136,12 +138,36 @@ fn wait_connected(sock: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
+    tcp_connect_addr(sock, SockAddr::V4(dst_ip), dst_port)
+}
+
+/// Sixteen-octet IPv6 variant of [`tcp_connect`] (big-endian octets).
+///
+/// # Safety
+///
+/// `addr` must point to 16 readable bytes that stay live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn tcp_connect6(sock: i32, addr: *const u8, dst_port: u16) -> i32 {
+    if addr.is_null() {
+        return -1;
+    }
+    let mut a6 = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // readable buffer and `a6` is a distinct local array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    tcp_connect_addr(sock, SockAddr::V6(a6), dst_port)
+}
+
+fn tcp_connect_addr(sock: i32, dst: SockAddr, dst_port: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
     let i = sock as usize;
     // Pick the interface by destination subnet and create the socket there.
-    let slot = crate::config::route_slot(dst_ip);
+    let slot = match dst {
+        SockAddr::V4(v) => crate::config::route_slot(v),
+        SockAddr::V6(a) => crate::config::route_slot_v6(a),
+    };
     if place_tcp(i, slot) != 0 {
         return -1;
     }
@@ -213,19 +239,34 @@ pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
             return -1;
         }
         let cx = iface.context();
-        let dst = IpAddress::Ipv4(Ipv4Addr::from_bits(dst_ip));
-        // For a 127/8 peer, pin the local address to 127.0.0.1.  smoltcp would
-        // otherwise pick the interface's *first* address (the configured NIC
-        // address), stamping a loopback connection with the box's real address.
-        let local = if stack::is_loopback_ipv4_host(dst_ip) {
-            IpListenEndpoint {
-                addr: Some(IpAddress::Ipv4(Ipv4Addr::new(127, 0, 0, 1))),
-                port: local_port,
+        let dst_ip = dst.to_ip();
+        // For a loopback peer, pin the local address to the loopback address:
+        // smoltcp would otherwise pick the interface's first address (the
+        // configured NIC address), stamping a loopback connection with the box's
+        // real address.  Otherwise a v6 bind address, if one was set, pins the
+        // source; with none, smoltcp chooses by RFC 6724.
+        let pinned = match dst {
+            SockAddr::V4(v) if stack::is_loopback_ipv4_host(v) => {
+                Some(IpAddress::Ipv4(Ipv4Addr::new(127, 0, 0, 1)))
             }
-        } else {
-            IpListenEndpoint::from(local_port)
+            SockAddr::V6(a) if a == crate::config::IPV6_LOOPBACK => {
+                Some(IpAddress::Ipv6(core::net::Ipv6Addr::LOCALHOST))
+            }
+            SockAddr::V6(_) => {
+                let l6 = crate::tcp::tcp_local6_of(i);
+                if l6 != [0u8; 16] {
+                    Some(IpAddress::Ipv6(core::net::Ipv6Addr::from(l6)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
         };
-        if s.connect(cx, (dst, dst_port), local).is_err() {
+        let local = IpListenEndpoint {
+            addr: pinned,
+            port: local_port,
+        };
+        if s.connect(cx, (dst_ip, dst_port), local).is_err() {
             return -1;
         }
         0
@@ -428,6 +469,7 @@ pub extern "C" fn tcp_close(sock: i32) -> i32 {
         };
         tcp_unlock();
     }
+    crate::tcp::tcp_set_local6(i, [0u8; 16]);
     0
 }
 

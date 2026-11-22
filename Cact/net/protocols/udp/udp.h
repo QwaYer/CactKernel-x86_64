@@ -55,4 +55,14 @@ int udp_sock_send(int idx, uint32_t dst_ip, uint16_t dst_port,
    non-zero) so write() can send single datagrams to it.  Returns 0 or -1. */
 int udp_sock_connect(int idx, uint32_t dst_ip, uint16_t dst_port);
 
+/* ── AF_INET6 counterparts (address = 16 big-endian octets) ───────────────── */
+/* v6 recv: source address/port out via pointers (either may be NULL). */
+int udp_sock_recv6(int idx, uint8_t *buf, uint16_t max_len,
+                   uint8_t *src_addr_out, uint16_t *src_port_out);
+/* v6 send: one datagram to a 16-octet destination. */
+int udp_sock_send6(int idx, const uint8_t *dst_addr, uint16_t dst_port,
+                   const uint8_t *data, uint16_t len);
+/* v6 connect(): record the 16-octet peer. */
+int udp_sock_connect6(int idx, const uint8_t *dst_addr, uint16_t dst_port);
+
 #endif
