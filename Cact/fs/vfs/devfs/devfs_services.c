@@ -457,6 +457,16 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
         return copy_to_user(arg, &a, sizeof(a));
     }
 
+    case CACT_NETCTL_IFACE_SETCFG: {
+        int r = _root_only();
+        if (r) return r;
+        cact_iface_setcfg_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_iface_set_cfg(a.index, a.ip_host, a.netmask_host,
+                                      a.gateway_host, a.dns_host);
+    }
+
     default:
         return -EINVAL;
     }

@@ -445,6 +445,7 @@ typedef struct cact_recvfrom_arg {
 #define CACT_NETCTL_IFACE_GET    0x340A  // arg=cact_iface_get_arg_t*; in index, out interface info
 #define CACT_NETCTL_ARP_COUNT    0x340B  // no arg; returns the number of live ARP entries
 #define CACT_NETCTL_ARP_GET      0x340C  // arg=cact_arp_get_arg_t*; in index, out ARP entry
+#define CACT_NETCTL_IFACE_SETCFG 0x340D  // arg=cact_iface_setcfg_arg_t* (root): set one interface's IPv4
 
 // Interface name as the driver registered it ("eth0", "wlan0").  A separate
 // ioctl rather than a field in cact_netcfg_get_t so that binaries built against
@@ -509,6 +510,18 @@ typedef struct cact_iface_get_arg {
     uint32_t index;                 // in
     cact_iface_info_t info;         // out
 } cact_iface_get_arg_t;
+
+// Configure one interface's IPv4 (CACT_NETCTL_IFACE_SETCFG, root only).  `index`
+// is the same as CACT_NETCTL_IFACE_GET (0-based, NICs first, `lo` last); `lo` is
+// not configurable.  Zeros clear the address / default route / resolver, exactly
+// as the legacy CACT_NETCTL_NETCFG does for the primary interface.
+typedef struct cact_iface_setcfg_arg {
+    uint32_t index;                 // in
+    uint32_t ip_host;
+    uint32_t netmask_host;
+    uint32_t gateway_host;
+    uint32_t dns_host;
+} cact_iface_setcfg_arg_t;
 
 // ARP / IPv4 neighbor table (CACT_NETCTL_ARP_COUNT / CACT_NETCTL_ARP_GET).  The
 // table is learned from the ARP traffic the kernel sees; entries age out after

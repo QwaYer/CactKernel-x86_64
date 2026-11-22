@@ -86,6 +86,24 @@ pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -
     0
 }
 
+/// Configure interface `index`'s IPv4 (`CACT_NETCTL_IFACE_SETCFG`, root only).
+/// Returns 0 on success, or -1 (`ENODEV`) when `index` is beyond the last NIC —
+/// which also covers `lo`, the final index, since it owns no address of its own.
+#[no_mangle]
+pub extern "C" fn rust_net_iface_set_cfg(
+    index: u32,
+    ip_h: u32,
+    mask_h: u32,
+    gw_h: u32,
+    dns_h: u32,
+) -> i32 {
+    let slot = runtime::rust_net_nic_slot(index);
+    if slot < 0 {
+        return -1;
+    }
+    crate::config::set_ipv4_config_slot(slot as usize, ip_h, mask_h, gw_h, dns_h)
+}
+
 /// Fill `info` with the `index`-th registered NIC and its own interface slot's
 /// addressing.
 fn fill_nic(info: &mut CactIfaceInfo, index: u32) {

@@ -35,12 +35,17 @@ int rust_net_get_ifname(char* out, uint32_t cap);
 
 /* ── Per-interface enumeration (see cact_iface_info_t in ioctl_abi.h) ── */
 struct cact_iface_info; /* defined in ioctl_abi.h */
-/* Number of interfaces present: the NIC plus loopback, or 0 when the stack is
-   not up (no NIC registered). */
+/* Number of interfaces present: every registered NIC plus loopback, or 0 when
+   the stack is not up (no NIC registered). */
 int rust_net_iface_count(void);
-/* Fill *out with interface idx (0 = NIC, 1 = "lo"); 0 on success, -1 when the
-   stack is down, idx is out of range, or out is NULL. */
+/* Fill *out with interface idx (indices 0..N-1 are the NICs in registration
+   order, the last index is "lo"); 0 on success, -1 when the stack is down, idx
+   is out of range, or out is NULL. */
 int rust_net_iface_get(uint32_t idx, struct cact_iface_info* out);
+/* Set interface idx's IPv4 configuration (root only); zeros clear the address /
+   default route / resolver.  0 on success, -1 when idx is out of range or names
+   the loopback interface. */
+int rust_net_iface_set_cfg(uint32_t idx, uint32_t ip_h, uint32_t mask_h, uint32_t gw_h, uint32_t dns_h);
 
 /* ── ARP / IPv4 neighbor table (see cact_arp_entry_t in ioctl_abi.h) ── */
 struct cact_arp_entry; /* defined in ioctl_abi.h */

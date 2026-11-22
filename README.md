@@ -521,7 +521,7 @@ Each registered NIC gets its **own** smoltcp `Interface`, its **own** `SocketSet
 - **no NIC** → `lo` alone (count 1, index 0);
 - **N NICs + `lo`** → indices `0..N-1` are the NICs (in registration order), the last index is `lo`.
 
-Addressing is per interface (`NET_CFG[slot]`); the legacy `CACT_NETCTL_NETCFG` / `NETCFG_GET` / `IFNAME` ioctls keep addressing the primary. A TCP `connect()` picks the interface by **destination subnet** (longest-prefix match, then the slot that owns a default route, else slot 0) and builds the socket in that interface's set; `listen()` uses the primary. UDP sockets currently stay on the primary interface (per-destination UDP routing is a follow-up).
+Addressing is per interface (`NET_CFG[slot]`). Userspace sets any NIC's address through `CACT_NETCTL_IFACE_SETCFG` (`0x340D`, root only: index + ip/mask/gateway/dns, zeros clear), while the legacy `CACT_NETCTL_NETCFG` / `NETCFG_GET` / `IFNAME` ioctls keep addressing (and reading) the primary. A TCP `connect()` picks the interface by **destination subnet** (longest-prefix match, then the slot that owns a default route, else slot 0) and builds the socket in that interface's set; `listen()` uses the primary. UDP sockets currently stay on the primary interface (per-destination UDP routing is a follow-up).
 
 **Loopback** (`lo`, `127.0.0.1/8`) is not a separate device: every interface carries `127.0.0.1/8` as a *second address* (so 127/8 is on-link and smoltcp routes it locally), and each slot's PHY diverts any emitted Ethernet frame that involves 127/8 (IPv4 src **or** dst = 127, or ARP sender/target = 127) into its own RX ring instead of the wire. It needs no NIC module, and it survives a NIC unload (the primary slot is rebuilt in its NIC-less form).
 
