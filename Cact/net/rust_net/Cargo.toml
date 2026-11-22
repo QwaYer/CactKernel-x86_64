@@ -26,6 +26,7 @@ smoltcp = { version = "0.12", default-features = false, features = [
     "socket-tcp",
     "socket-udp",
     "socket-icmp",
+    "socket-raw",
     # Per-interface caps: IPv4 (NIC + 127/8) and IPv6 (global + link-local) share
     # one address list, and the IPv6 multicast/multicast-neighbour machinery needs
     # room beyond smoltcp's defaults (2 addrs, 4 groups, 2 routes, 8 neighbours).

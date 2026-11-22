@@ -906,6 +906,8 @@ pub unsafe fn stack_teardown() {
     unsafe { crate::tcp::reset_tcp_smoltcp_state() };
     // SAFETY: as above, for the UDP tables.
     unsafe { crate::udp::reset_udp_smoltcp_state() };
+    // SAFETY: as above — stack teardown, `STACK_READY` already cleared.
+    unsafe { crate::raw::reset_raw_smoltcp_state() };
 }
 
 /// Poll every slot: first drain each NIC's RX (calling its `poll()` while tagging
@@ -960,6 +962,7 @@ pub fn stack_poll() {
             iface.poll(now, &mut dev, socks);
             crate::tcp::sync_tcp_pcbs_from_smoltcp(slot, socks);
             crate::udp::sync_udp_pcbs_from_smoltcp(slot, socks);
+            crate::raw::sync_raw_from_smoltcp(slot, socks);
         }
     }
 }

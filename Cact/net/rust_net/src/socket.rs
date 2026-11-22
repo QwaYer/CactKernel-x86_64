@@ -15,6 +15,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::ffi_kernel;
 use crate::tcp;
+use crate::raw;
 use crate::types::*;
 use crate::udp;
 
@@ -195,6 +196,43 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
             }
         }
+        if kind == KS_RAW {
+            // A raw ICMPv6 socket blocking-receives one message; 0 means
+            // "nothing queued yet" (an ICMPv6 message is never zero bytes), -1 a
+            // hard error.
+            let deadline = now_ticks().saturating_add(UDP_READ_WAIT_TICKS);
+            loop {
+                // SAFETY: `idx` comes from this node's `Ksock` and is a valid
+                // raw slot index, and `data` points to at least `size` writable
+                // bytes; the null source pointer selects the "no source output"
+                // overload.
+                let n = unsafe {
+                    raw::raw_sock_recv6(idx, data.cast::<u8>(), size as u16, core::ptr::null_mut())
+                };
+                if n > 0 {
+                    return n;
+                }
+                if n < 0 {
+                    return -1;
+                }
+                if nonblock {
+                    return -EAGAIN;
+                }
+                if signal_pending() {
+                    return -EINTR;
+                }
+                // SAFETY: `ks` is still this node's live `Ksock`.
+                if unsafe { (*ks).shutdown_rd } != 0 {
+                    return -1;
+                }
+                if now_ticks() >= deadline {
+                    return 0;
+                }
+                // SAFETY: `sched_sleep_ticks` suspends the calling task for the
+                // requested number of ticks.
+                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+            }
+        }
     }
     -1
 }
@@ -223,6 +261,11 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
             (k.shutdown_wr, k.proto_idx, k.nonblock != 0, k.kind, k.family)
         };
         if shutdown_wr != 0 {
+            return -1;
+        }
+        if kind == KS_RAW {
+            // A raw socket has no connected peer; write() is refused, use
+            // sendto() to name the destination.
             return -1;
         }
         if kind == KS_TCP {
@@ -431,6 +474,18 @@ extern "C" fn socket_poll_op(node: *mut VfsNode, events: u32) -> c_int {
                 if udp::udp_can_send(idx as usize) {
                     revents |= VFS_POLLOUT;
                 }
+            }
+        } else if kind == KS_RAW {
+            // A raw socket is readable when an ICMPv6 message is queued; it is
+            // always writable (smoltcp reports a full TX buffer as 0 at send).
+            if idx < 0 || idx as usize >= raw::RAW_SOCK_MAX {
+                return VFS_POLLERR as c_int;
+            }
+            if events & VFS_POLLIN != 0 && raw::raw_sock_ready(idx) != 0 {
+                revents |= VFS_POLLIN;
+            }
+            if events & VFS_POLLOUT != 0 {
+                revents |= VFS_POLLOUT;
             }
         } else {
             return VFS_POLLERR as c_int;
@@ -692,6 +747,13 @@ pub unsafe extern "C" fn ksock_bind6(
         }
         return udp::udp_sock_bind6(idx as usize, port, a6, reuse);
     }
+    if kind == KS_RAW {
+        if idx < 0 || idx as usize >= raw::RAW_SOCK_MAX {
+            return -1;
+        }
+        // A raw ICMPv6 socket binds an address only; the port is ignored.
+        return raw::raw_sock_bind6(idx as usize, a6);
+    }
     -1
 }
 
@@ -923,7 +985,7 @@ unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
 }
 
 #[no_mangle]
-pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) -> *mut VfsNode {
+pub extern "C" fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNode {
     let fam = domain as u16;
     // AF_UNIX is served by the kernel-C unix_sock module before this is reached;
     // AF_INET and AF_INET6 both land here as IP sockets.
@@ -958,6 +1020,20 @@ pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) ->
         }
         k.kind = KS_UDP;
         k.proto_idx = idx;
+    } else if type_ == 3 {
+        // SOCK_RAW: only ICMPv6 (protocol 58) over IPv6 is exposed, which is
+        // what a userspace SLAAC/NDP client needs.
+        if fam != AF_INET6 || protocol != 58 {
+            k.used = 0;
+            return core::ptr::null_mut();
+        }
+        let idx = raw::raw_sock_alloc();
+        if idx < 0 {
+            k.used = 0;
+            return core::ptr::null_mut();
+        }
+        k.kind = KS_RAW;
+        k.proto_idx = idx;
     } else {
         k.used = 0;
         return core::ptr::null_mut();
@@ -971,6 +1047,8 @@ pub extern "C" fn ksock_create(domain: c_int, type_: c_int, _protocol: c_int) ->
         let k = unsafe { &mut *ks };
         if k.kind == KS_TCP {
             let _ = tcp::tcp_close(k.proto_idx);
+        } else if k.kind == KS_RAW {
+            raw::raw_sock_free(k.proto_idx);
         } else {
             udp::udp_sock_free(k.proto_idx);
         }

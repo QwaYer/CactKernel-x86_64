@@ -365,6 +365,13 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
                                    (const uint8_t *)a.buf, (uint16_t)a.len);
             return r == 0 ? -EAGAIN : r;
         }
+        if (ks->kind == KS_RAW) {
+            /* A raw ICMPv6 socket: `buf` is the ICMPv6 message, the kernel builds
+             * the IPv6 header + checksum.  The port is meaningless for raw. */
+            int r = raw_sock_send6(ks->proto_idx, a.dst.addr,
+                                   (const uint8_t *)a.buf, (uint16_t)a.len);
+            return r == 0 ? -EAGAIN : r;
+        }
         return -1;
     }
 
@@ -389,6 +396,11 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
                                  a.src.addr, &pport);
             /* udp_sock_recv6 reports a host-order port, like its v4 counterpart. */
             if (ret > 0) a.src.port = htons(pport);
+        } else if (ks->kind == KS_RAW) {
+            /* The ICMPv6 message with the IPv6 header stripped; no port. */
+            ret = raw_sock_recv6(ks->proto_idx, (uint8_t *)a.buf, (uint16_t)a.len,
+                                 a.src.addr);
+            if (ret > 0) a.src.port = 0;
         }
         if (ret < 0) return ret;
         if (copy_to_user(arg, &a, sizeof(a)) != 0) return -EFAULT;

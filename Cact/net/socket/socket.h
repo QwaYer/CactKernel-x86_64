@@ -81,6 +81,7 @@ typedef enum {
     KS_NONE = 0,
     KS_TCP,
     KS_UDP,
+    KS_RAW,
 } ksock_kind_t;
 
 typedef struct ksock {

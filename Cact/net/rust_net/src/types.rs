@@ -23,6 +23,7 @@ pub const AF_INET6: u16 = 10;
 pub const KS_NONE: u32 = 0;
 pub const KS_TCP: u32 = 1;
 pub const KS_UDP: u32 = 2;
+pub const KS_RAW: u32 = 3;
 
 pub const SHUT_RD: c_int = 0;
 pub const SHUT_WR: c_int = 1;

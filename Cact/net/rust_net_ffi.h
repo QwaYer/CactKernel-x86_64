@@ -72,6 +72,18 @@ int rust_net_ping_wait6(const uint8_t* addr, uint16_t id, uint16_t seq, uint32_t
    octets.  0 on success, -1 on failure, -4 if interrupted. */
 int rust_net_dns_resolve_aaaa(const char* name, uint8_t* out_addr);
 
+/* ── Raw ICMPv6 socket (SOCK_RAW/AF_INET6, for a userspace SLAAC client) ──
+   The buffer is the ICMPv6 message itself (the IPv6 header is added/stripped by
+   the kernel).  See cact_net raw.rs. */
+int raw_sock_alloc(void);
+void raw_sock_free(int idx);
+int raw_sock_bind6(int idx, const uint8_t* addr);
+/* Dequeue one ICMPv6 message and report its source (16 octets); 0 = none. */
+int raw_sock_recv6(int idx, uint8_t* buf, uint16_t max_len, uint8_t* src_addr_out);
+/* Send one ICMPv6 message to dst (16 octets); the kernel builds the IPv6 header
+   and the checksum.  Returns the message length, 0 = TX full, -1 = error. */
+int raw_sock_send6(int idx, const uint8_t* dst_addr, const uint8_t* data, uint16_t len);
+
 /* ── ARP / IPv4 neighbor table (see cact_arp_entry_t in ioctl_abi.h) ── */
 struct cact_arp_entry; /* defined in ioctl_abi.h */
 /* Number of live neighbors (entries not yet aged out). */

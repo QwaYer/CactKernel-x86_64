@@ -44,6 +44,7 @@ pub mod ffi_kernel;
 pub mod http;
 pub mod iface;
 pub mod ping;
+pub mod raw;
 pub mod runtime;
 pub mod socket;
 pub mod stack;
