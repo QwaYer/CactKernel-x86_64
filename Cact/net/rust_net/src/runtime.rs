@@ -9,6 +9,72 @@ use crate::ffi_kernel;
 use crate::stack;
 use crate::types::{MacAddr, NetDriver, Semaphore, Skb};
 
+/// Maximum number of simultaneously registered NICs.
+///
+/// The registry is a fixed table because it lives in the kernel's static memory:
+/// registration is the single-threaded driver bring-up path and never allocates.
+pub const NET_NIC_MAX: usize = 4;
+
+/// One registered NIC: the driver descriptor the kernel was handed, plus the MAC
+/// and name snapshotted from it at registration.
+///
+/// The table order is the interface order.  The lowest live slot is the
+/// *primary* NIC — the one [`active_nic`] points at and which carries the active
+/// L3 datapath.  Further NICs are registered and visible to userspace but stay
+/// idle until per-NIC routing attaches them.
+#[derive(Clone, Copy)]
+pub struct NicEntry {
+    pub used: bool,
+    pub drv: *mut NetDriver,
+    pub mac: MacAddr,
+    pub name: *const core::ffi::c_char,
+}
+
+impl NicEntry {
+    const fn empty() -> Self {
+        Self {
+            used: false,
+            drv: core::ptr::null_mut(),
+            mac: MacAddr { b: [0; 6] },
+            name: core::ptr::null(),
+        }
+    }
+}
+
+/// Registry of registered NICs.  Mutated only on the single-threaded
+/// registration/teardown path (`register_netdev` / `unregister_netdev`) and read
+/// from the enumeration syscall paths; every field is a scalar or a pointer, so
+/// an aligned load cannot tear.
+static mut NIC_TABLE: [NicEntry; NET_NIC_MAX] = [NicEntry::empty(); NET_NIC_MAX];
+
+/// Primary NIC = the lowest-index live registry entry, as `(descriptor, MAC)`;
+/// `(null, zeroed)` when no NIC is registered.
+fn primary_of(table: &[NicEntry; NET_NIC_MAX]) -> (*mut NetDriver, MacAddr) {
+    match table.iter().find(|e| e.used) {
+        Some(e) => (e.drv, e.mac),
+        None => (core::ptr::null_mut(), MacAddr { b: [0; 6] }),
+    }
+}
+
+/// Registry slot of the `index`-th *live* NIC (0-based, in registry order), or
+/// `None` when `index` is past the last one.  Gaps left by a teardown are
+/// skipped, so interface indices stay dense across register/unregister.
+fn nic_slot_for_index(index: u32) -> Option<usize> {
+    // SAFETY: `NIC_TABLE` is a kernel-lifetime static read from a syscall path;
+    // every field is a scalar, so the shared borrow cannot tear.
+    let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
+    let mut k = 0u32;
+    for (i, e) in table.iter().enumerate() {
+        if e.used {
+            if k == index {
+                return Some(i);
+            }
+            k += 1;
+        }
+    }
+    None
+}
+
 #[no_mangle]
 pub static mut active_nic: *mut NetDriver = core::ptr::null_mut();
 #[no_mangle]
@@ -64,53 +130,181 @@ pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
         return;
     }
     // SAFETY: the caller contract (see # Safety) makes `drv` a valid pointer to
-    // a live `NetDriver` whose fields are initialised; this borrow ends before
-    // the calls below, so nothing mutates it while it is live.
+    // a live `NetDriver` whose fields are initialised; this shared borrow ends
+    // before any publish below, so nothing mutates it while it is live.
     let d = unsafe { &*drv };
-    let get_mac = d.get_mac;
     let mac = d.mac;
-    // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer written
-    // only here and in `unregister_netdev`, on the single-threaded
-    // driver-registration path.
-    unsafe { active_nic = drv };
-    if let Some(get_mac) = get_mac {
-        // SAFETY: `get_mac` is the driver's own MAC accessor and `my_mac` is a
-        // kernel-lifetime 6-byte static, so the pointer it writes into is live
-        // and correctly sized.
-        get_mac(core::ptr::addr_of_mut!(my_mac));
+    let name = d.name;
+
+    // SAFETY: `NIC_TABLE` is the kernel-lifetime registry, mutated only here and
+    // in `unregister_netdev`, both on the single-threaded registration path; the
+    // exclusive borrow ends once the slot is filled below.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(NIC_TABLE) };
+    // Re-registering the same descriptor refreshes its slot; otherwise take the
+    // first free one, so order is stable and never has a hole.
+    let mut target: Option<usize> = None;
+    for (i, e) in table.iter_mut().enumerate() {
+        if e.used && e.drv == drv {
+            target = Some(i);
+            break;
+        }
+        if !e.used && target.is_none() {
+            target = Some(i);
+        }
     }
-    // SAFETY: `my_mac` is a kernel-lifetime static written only here and in
-    // `unregister_netdev`, on the same single-threaded path.
-    unsafe { my_mac = mac };
+    let Some(i) = target else {
+        ffi_kernel::klog_static(
+            ffi_kernel::LOG_WARN,
+            b"net: NIC registry full, NIC dropped\0",
+        );
+        return;
+    };
+    table[i].used = true;
+    table[i].drv = drv;
+    table[i].mac = mac;
+    table[i].name = name;
+
+    // Publish the primary NIC (the lowest live slot) as the active interface, so
+    // registering a second NIC leaves the running datapath on the first one.
+    // SAFETY: `NIC_TABLE` is mutated only on this single-threaded path; this
+    // shared borrow ends before the `active_nic`/`my_mac` stores below.
+    let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
+    let (pdrv, pmac) = primary_of(table);
+    // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer written
+    // only here and in `unregister_netdev`, on this same single-threaded path.
+    unsafe { active_nic = pdrv };
+    // SAFETY: as above, for the kernel-lifetime `my_mac` static.
+    unsafe { my_mac = pmac };
     // The stack (and with it loopback) already exists from `net_init`;
-    // `stack_init` is a no-op then.  Attach this NIC's hardware address to it.
+    // `stack_init` is a no-op then.  Attach the primary NIC's hardware address.
     stack::stack_init();
-    stack::stack_set_nic_mac(mac.b);
+    stack::stack_set_nic_mac(pmac.b);
     ffi_kernel::klog_static(ffi_kernel::LOG_OK, b"net: NIC driver registered\0");
 }
 
-/// Clear `active_nic` only if it still points at `drv` (symmetric to registration).
+/// Remove a NIC from the registry (symmetric to registration).  Unloading a
+/// secondary NIC leaves the active datapath untouched; unloading the primary
+/// promotes the next live NIC, or drops the stack back to loopback-only.
 #[no_mangle]
 pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
     if drv.is_null() {
         return;
     }
-    // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer read on the
-    // driver's teardown path, where no other CPU is using the interface; an
+    // SAFETY: `active_nic` is read on the single-threaded teardown path; an
     // aligned pointer load cannot tear.
-    let registered = unsafe { active_nic == drv };
-    if registered {
-        // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer written
-        // only here and in `register_netdev`, on the same single-threaded path.
-        unsafe { active_nic = core::ptr::null_mut() };
-        // SAFETY: as above, for the kernel-lifetime `my_mac` static.
-        unsafe { my_mac = MacAddr { b: [0; 6] } };
+    let was_primary = unsafe { active_nic == drv };
+    // SAFETY: `NIC_TABLE` is mutated only here and in `register_netdev`, on the
+    // single-threaded teardown path; the exclusive borrow ends below.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(NIC_TABLE) };
+    let mut removed = false;
+    for e in table.iter_mut() {
+        if e.used && e.drv == drv {
+            *e = NicEntry::empty();
+            removed = true;
+            break;
+        }
+    }
+    if !removed {
+        return;
+    }
+    // Re-elect the primary.  Only a change of primary disturbs the stack.
+    // SAFETY: as above — the shared borrow ends before the publishes below.
+    let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
+    let (pdrv, pmac) = primary_of(table);
+    // SAFETY: `active_nic`/`my_mac` are kernel-lifetime statics written only on
+    // this path and in `register_netdev`.
+    unsafe { active_nic = pdrv };
+    if !was_primary {
+        return;
+    }
+    // SAFETY: as above, for the kernel-lifetime `my_mac` static.
+    unsafe { my_mac = pmac };
+    if pdrv.is_null() {
         // Loopback must survive a NIC unload, so rebuild the stack in its
         // NIC-less (loopback-only) form instead of tearing it down and leaving it
         // down.  Both calls run on the single-threaded driver teardown path.
         // SAFETY: `stack_teardown`'s caller contract is exactly this path.
         unsafe { stack::stack_teardown() };
         stack::stack_init();
+    } else {
+        stack::stack_set_nic_mac(pmac.b);
+    }
+}
+
+/// Number of registered NICs (live entries in the registry).
+#[no_mangle]
+pub extern "C" fn rust_net_nic_count() -> i32 {
+    // SAFETY: `NIC_TABLE` is a kernel-lifetime static read from a syscall path;
+    // every field is a scalar, so the shared borrow cannot tear.
+    let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
+    table.iter().filter(|e| e.used).count() as i32
+}
+
+/// Copy the `index`-th registered NIC's MAC into `out[6]`.  Returns 0 on
+/// success, -1 when `index` is out of range or `out` is NULL.
+///
+/// # Safety
+///
+/// `out` may be null (the call then returns -1), but if non-null it must point
+/// to at least 6 writable bytes that stay live for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_nic_mac(index: u32, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return -1;
+    }
+    let Some(slot) = nic_slot_for_index(index) else {
+        return -1;
+    };
+    // SAFETY: `NIC_TABLE` is a kernel-lifetime static; `slot` came from
+    // `nic_slot_for_index` and is therefore in bounds.
+    let mac = unsafe { (*core::ptr::addr_of!(NIC_TABLE))[slot].mac };
+    // SAFETY: `out` is the caller's 6-byte writable buffer (the null check above
+    // excluded null) and `mac.b` is a 6-byte array, so the ranges cannot overlap.
+    unsafe { core::ptr::copy_nonoverlapping(mac.b.as_ptr(), out, 6) };
+    0
+}
+
+/// Copy the `index`-th registered NIC's interface name into `out` as a
+/// NUL-terminated string (at most `cap` bytes).  Returns the number of bytes
+/// before the terminator, or -1 when `index` is out of range, `out` is NULL, or
+/// `cap` is 0.
+///
+/// # Safety
+///
+/// `out` may be null (the call then returns -1); if non-null it must point to
+/// at least `cap` writable bytes that stay live for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_nic_ifname(index: u32, out: *mut u8, cap: u32) -> i32 {
+    if out.is_null() || cap == 0 {
+        return -1;
+    }
+    let Some(slot) = nic_slot_for_index(index) else {
+        return -1;
+    };
+    // SAFETY: `NIC_TABLE` is a kernel-lifetime static; `slot` came from
+    // `nic_slot_for_index` and is therefore in bounds.
+    let name = unsafe { (*core::ptr::addr_of!(NIC_TABLE))[slot].name };
+    if name.is_null() {
+        return -1;
+    }
+    let cap = cap as usize;
+    // SAFETY: every in-tree driver points `name` at a `'static` NUL-terminated
+    // literal, so byte `n` is in bounds while `n + 1 < cap`; `out` is the
+    // caller's `cap`-byte writable buffer (the null / zero-size checks above
+    // excluded the degenerate cases).  The loop stops at the terminator or at
+    // `cap - 1`, whichever comes first, so it never writes past `out[cap - 1]`.
+    unsafe {
+        let mut n = 0usize;
+        while n + 1 < cap {
+            let c = *name.add(n) as u8;
+            *out.add(n) = c;
+            if c == 0 {
+                return n as i32;
+            }
+            n += 1;
+        }
+        *out.add(cap - 1) = 0;
+        (cap - 1) as i32
     }
 }
 

@@ -30,9 +30,10 @@ pub struct CactIfaceInfo {
     pub flags: u32,
 }
 
-/// Number of interfaces currently present: the NIC (when registered) plus
-/// loopback, or 0 when the stack is not up.  With no NIC the interface is
-/// loopback-only, so `lo` is index 0 and is alone.
+/// Number of interfaces currently present: every registered NIC, then loopback,
+/// or 0 when the stack is not up.  With no NIC the list is loopback-only, so `lo`
+/// is index 0 and is alone; each NIC takes a leading index and `lo` stays last
+/// (so a single NIC keeps the `[nic, lo]` view userspace already knows).
 #[no_mangle]
 pub extern "C" fn rust_net_iface_count() -> i32 {
     // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` set by
@@ -40,17 +41,15 @@ pub extern "C" fn rust_net_iface_count() -> i32 {
     // reading it as false simply reports "no interfaces".
     if !unsafe { stack::STACK_READY } {
         0
-    } else if crate::runtime::rust_net_link_is_up() > 0 {
-        2
     } else {
-        1
+        crate::runtime::rust_net_nic_count() + 1
     }
 }
 
-/// Fill `out` with interface `idx`.  Index 0 is the NIC and 1 is `lo` while a NIC
-/// is registered; with no NIC, `lo` is the only interface and lives at index 0.
-/// Returns 0 on success, -1 when `out` is NULL, the stack is down, or `idx` is out
-/// of range.
+/// Fill `out` with interface `idx`.  Indices `0..nic_count` are the registered
+/// NICs (in registration order, so index 0 is the primary) and the last index is
+/// `lo`.  Returns 0 on success, -1 when `out` is NULL, the stack is down, or
+/// `idx` is out of range.
 ///
 /// # Safety
 ///
@@ -66,9 +65,8 @@ pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -
     if !unsafe { stack::STACK_READY } {
         return -1;
     }
-    let has_nic = crate::runtime::rust_net_link_is_up() > 0;
-    let count = if has_nic { 2 } else { 1 };
-    if idx >= count {
+    let nics = crate::runtime::rust_net_nic_count();
+    if idx as i32 >= nics + 1 {
         return -1;
     }
     // SAFETY: the caller contract (see # Safety) makes `out` a live, aligned
@@ -80,26 +78,34 @@ pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -
     // SAFETY: `info` points at one fully initialised `CactIfaceInfo`, so a
     // one-element byte fill is in bounds.
     unsafe { core::ptr::write_bytes(info as *mut CactIfaceInfo, 0, 1) };
-    if has_nic && idx == 0 {
-        fill_nic(info);
+    if (idx as i32) < nics {
+        fill_nic(info, idx);
     } else {
         fill_loopback(info);
     }
     0
 }
 
-fn fill_nic(info: &mut CactIfaceInfo) {
-    // SAFETY: `info.name` is a live 16-byte buffer and `runtime::rust_net_get_ifname`
+/// Fill `info` with the `index`-th registered NIC.
+///
+/// Only the primary NIC (index 0) carries the active datapath's IPv4
+/// configuration.  A further NIC reports its real name and MAC but no address
+/// and no link: it is registered and visible, yet the stack does not route
+/// through it until per-NIC interfaces attach it.
+fn fill_nic(info: &mut CactIfaceInfo, index: u32) {
+    // SAFETY: `info.name` is a live 16-byte buffer and `rust_net_nic_ifname`
     // copies at most `cap` bytes, stopping at the terminator; it only fails
-    // (returns -1) when there is no NIC, which leaves the name empty.
-    unsafe { runtime::rust_net_get_ifname(info.name.as_mut_ptr(), info.name.len() as u32) };
+    // (returns -1) for an out-of-range index, which leaves the name empty.
+    unsafe { runtime::rust_net_nic_ifname(index, info.name.as_mut_ptr(), info.name.len() as u32) };
     // SAFETY: as above, for the 6-byte MAC buffer.
-    unsafe { runtime::rust_net_get_mac(info.mac.as_mut_ptr()) };
-    info.ip_host = config::ip_host();
-    info.netmask_host = config::netmask_host();
-    info.gateway_host = config::gateway_host();
-    info.dns_host = config::dns_host();
-    info.link_up = 1;
+    unsafe { runtime::rust_net_nic_mac(index, info.mac.as_mut_ptr()) };
+    if index == 0 {
+        info.ip_host = config::ip_host();
+        info.netmask_host = config::netmask_host();
+        info.gateway_host = config::gateway_host();
+        info.dns_host = config::dns_host();
+        info.link_up = 1;
+    }
     info.flags = 0;
 }
 
