@@ -181,26 +181,46 @@ fn is_block_start(block: *const HeapBlock) -> bool {
     unsafe { (*prev).next == block as *mut HeapBlock }
 }
 
-/// Pop the head of the smallest non-empty size class that fits `size`, or null.
+/// Pop the smallest free block that can hold `size`, or null.
 ///
 /// The `FREE_CLASSES` borrow is taken and released here, so a caller never holds
 /// it across a call that also touches the array.
+///
+/// A class is a power-of-two *upper* bound (`class_of` is `ceil(log2)`), so the
+/// request's own class can hold blocks smaller than the request: a 40-byte block
+/// and a 56-byte request both map to class 6, and the head may be the smaller of
+/// the two.  A block that does not fit is left on its list and walked past; the
+/// first block that fits is unlinked in O(1).  Only the request's starting class
+/// can need that scan — every later class holds sizes strictly above the request.
 fn take_block(size: u32) -> *mut HeapBlock {
     // SAFETY: `FREE_CLASSES` head array, mutated under `HEAP_LOCK` (held by the
     // caller).
     let classes = unsafe { KStatic::get_mut(FREE_CLASSES.as_ptr()) };
     let mut i = class_of(size);
     while i < CLASS_COUNT {
-        if !classes[i].is_null() {
-            let block = classes[i];
-            // SAFETY: `block` is a live free block; its header holds the class links.
+        let mut block = classes[i];
+        while !block.is_null() {
+            // SAFETY: `block` is a node of class `i`, so its header is live.
             let next = unsafe { (*block).cnext };
-            classes[i] = next;
-            if !next.is_null() {
-                // SAFETY: `next` is a live free block of the same class.
-                unsafe { (*next).cprev = core::ptr::null_mut() };
+            // SAFETY: `(*block).size` of that same live free block.
+            if unsafe { (*block).size } >= size {
+                // Unlink the chosen block, which need not be the class head.
+                // SAFETY: `(*block).cprev` of the live free block being removed.
+                let prev = unsafe { (*block).cprev };
+                if prev.is_null() {
+                    classes[i] = next;
+                } else {
+                    // SAFETY: `prev` is the live block before `block` in class `i`.
+                    unsafe { (*prev).cnext = next };
+                }
+                if !next.is_null() {
+                    // SAFETY: `next` is the live block after `block` in class `i`.
+                    unsafe { (*next).cprev = prev };
+                }
+                return block;
             }
-            return block;
+            // Too small for this request: leave it on its list for a smaller one.
+            block = next;
         }
         i += 1;
     }
