@@ -387,6 +387,9 @@ fn slot_drv(slot: usize) -> *mut NetDriver {
 struct SlotDev<'a> {
     phy: &'a mut CactPhy,
     drv: *mut NetDriver,
+    /// Interface slot this device belongs to, so received ARP frames are learned
+    /// against the right self-address ([`crate::arp::note_frame`]).
+    slot: usize,
     unconfigured: bool,
 }
 
@@ -528,7 +531,7 @@ impl Device for SlotDev<'_> {
         // Learn the neighbor from any ARP frame before smoltcp consumes it, so
         // the kernel's ARP table (`ip neigh`) mirrors the traffic on the wire.
         // Safe to touch the table directly here: `receive` runs under `STACK_LOCK`.
-        crate::arp::note_frame(&phy.rx[slot][..n]);
+        crate::arp::note_frame(&phy.rx[slot][..n], self.slot);
         Some((
             CactRxToken {
                 slice: &phy.rx[slot][..n],
@@ -590,6 +593,7 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     let mut dev = SlotDev {
         phy: &mut s.phy,
         drv: s.drv,
+        slot,
         unconfigured: slot_unconfigured(slot),
     };
     let new_iface = Interface::new(cfg, &mut dev, now);
@@ -808,6 +812,7 @@ pub fn stack_poll() {
         let mut dev = SlotDev {
             phy: &mut s.phy,
             drv,
+            slot,
             unconfigured,
         };
         if let (Some(iface), Some(socks)) = (s.iface.as_mut(), s.socks.as_mut()) {

@@ -62,16 +62,17 @@ pub struct CactArpEntry {
 static mut ARP_TABLE: [ArpEntry; ARP_TABLE_MAX] = [ArpEntry::empty(); ARP_TABLE_MAX];
 
 /// Record the sender of `frame` as a neighbor if it is an Ethernet/IPv4 ARP
-/// request or reply.
+/// request or reply.  `slot` is the interface the frame arrived on, so the
+/// interface's own address is not mistaken for a neighbor.
 ///
 /// The caller must hold the stack lock (the RX path does, because `stack_poll`
 /// holds it while it calls `Interface::poll`).
-pub(crate) fn note_frame(frame: &[u8]) {
+pub(crate) fn note_frame(frame: &[u8], slot: usize) {
     let Some((ip_host, mac)) = parse_sender(frame) else {
         return;
     };
-    // A mapping for our own address is not a neighbor.
-    if ip_host == config::ip_host() {
+    // A mapping for the interface's own address is not a neighbor.
+    if ip_host == config::ip_host_of(slot) {
         return;
     }
     // SAFETY: only the RX path and this module's readers touch `ARP_TABLE`, and
