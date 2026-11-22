@@ -115,9 +115,8 @@ pub const PAGE_PCD:     u32 = 0x010;
 /// selects a memory type from the IA32_PAT MSR.  (PAT=1,PCD=0,PWT=0) → entry 4
 /// = WC.  In a 2 MiB/1 GiB entry this bit is `PAGE_PS` instead and the PAT
 /// selection sits in bit 12 — `vmm_set_kernel_cache` re-targets the request for
-/// that shape.  Reserved for future Rust-side PAT usage; currently used by C
-/// pat.c.
-//pub const PAGE_PAT:     u32 = 0x080;
+/// that shape.  Used by the PAT driver (`vmm::pat`).
+pub const PAGE_PAT:     u32 = 0x080;
 pub const PTE_ACCESSED: u32 = 0x020;
 pub const PAGE_COW:     u32 = 0x200;
 pub const PAGE_DEMAND:  u32 = 0x400;
@@ -484,6 +483,20 @@ unsafe extern "C" {
 
     pub fn load_page_directory(dir: *mut u64);
     pub fn enable_paging();
+
+    /// Read/write an MSR (cpu_ops.c, cpu_ops.h).  The kernel's only MSR access;
+    /// the PAT driver uses it for IA32_PAT.
+    pub fn cact_rdmsr(msr: u32) -> u64;
+    pub fn cact_wrmsr(msr: u32, value: u64);
+    /// Raw CPUID (cpudev.c, cpudev.h): leaf/subleaf in, the four registers out.
+    pub fn cact_cpuid(
+        leaf: u32,
+        subleaf: u32,
+        eax: *mut u32,
+        ebx: *mut u32,
+        ecx: *mut u32,
+        edx: *mut u32,
+    );
 
     pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut u8) -> i32;
 

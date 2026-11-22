@@ -4,6 +4,7 @@
 //! Virtual memory: kernel page tables, fork/COW, and mmap bookkeeping.
 
 pub mod paging;
+pub mod pat;
 pub mod cow;
 pub mod mmap;
 pub mod stats;

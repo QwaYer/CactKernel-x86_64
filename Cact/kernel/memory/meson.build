@@ -6,8 +6,6 @@ kernel_objects += custom_target('asm-mm',
   output: 'mm.o',
   command: [nasm, '-f', 'elf64', '@INPUT@', '-o', '@OUTPUT@'])
 
-kernel_libs += static_library('cact_memory',
-  files('pat.c'),
-  include_directories: cact_includes,
-  implicit_include_directories: false,
-  c_args: kernel_c_args)
+# The PAT driver used to be pat.c here; it now lives in Rust as
+# rust_mm/src/vmm/pat.rs (pat_init / pat_enable_wc_for_framebuffer, C linkage),
+# so this directory contributes only the asm stub.

@@ -129,8 +129,8 @@ vmm_user_stats_t vmm_user_stats(uint64_t* pd, void* proc);
 uint32_t  vmm_kernel_ptable_pages(void);
 /* Set/clear cache-attribute bits on the kernel's own mapping for `va`
  * (rust_mm: paging.rs).  The kernel maps with 2 MiB pages, so this reaches the
- * page-directory entry when there is no PTE; pat.c uses it for write-combining
- * framebuffer pages. */
+ * page-directory entry when there is no PTE; the PAT driver (rust_mm: vmm/pat.rs)
+ * uses it for write-combining framebuffer pages. */
 void      vmm_set_kernel_cache(uint64_t va, uint64_t set, uint64_t clear);
 uint64_t* vmm_create_address_space(void);
 void      vmm_free_address_space(uint64_t* pd);

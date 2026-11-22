@@ -13,8 +13,9 @@
 ; — the point inside acpi_suspend_lowlevel() just after the sleep call, on the
 ; suspended task's own kernel stack.  Everything else (GDT/IDT, LAPIC,
 ; timebase, PAT, ACPI GPEs) is restored by acpi_resume_finish() in C;
-; IA32_PAT in particular belongs to pat_init() (see pat.h: "an S3 resume resets
-; the MSR, so pat_init() sets it explicitly on every (re)initialisation").
+; IA32_PAT in particular belongs to pat_init() (the PAT driver,
+; memory/rust_mm/src/vmm/pat.rs: "an S3 resume resets the MSR, so pat_init()
+; sets it explicitly on every (re)initialisation").
 ;
 ; The layout mirrors kernel/smp/trampoline.asm: the info block lives at a fixed
 ; offset near the top of the page (INFO_BASE) so it can never be reached by

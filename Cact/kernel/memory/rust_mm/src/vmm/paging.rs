@@ -776,8 +776,9 @@ pub unsafe extern "C" fn vmm_unmap(pd: *mut u64, virtual_addr: u64) -> u64 {
 ///
 /// The kernel's own window is mapped with 2 MiB pages, so the entry that carries
 /// the cache policy is the *page-directory* one, not a PTE; this walks to
-/// whichever of the two describes `va` and rewrites it.  pat.c uses it to make
-/// the framebuffer write-combining (PAT set, PCD/PWT clear).
+/// whichever of the two describes `va` and rewrites it.  The PAT driver
+/// (`vmm::pat`) uses it to make the framebuffer write-combining (PAT set,
+/// PCD/PWT clear).
 ///
 /// The PAT bit is *not* in the same place at both shapes.  A 4 KiB PTE carries
 /// it in bit 7; in a 2 MiB (or 1 GiB) entry bit 7 is `PAGE_PS` and the PAT

@@ -69,9 +69,9 @@ Ordered by how hard each gap blocks a port:
   though the constants are vendored in `drm/uapi/drm_fourcc.h`.
 - **No general write-combining mapping.** `vmm_map()` forces `PCD|PWT` for any
   physical address ≥ the runtime `pmm::ram_end()` (`rust_mm/src/vmm/paging.rs`),
-  so PAT entry 4 (WC, programmed in `memory/pat.c`) is unreachable for a BAR;
-  the only WC helper is `pat_enable_wc_for_framebuffer()`. MTRR is not used for
-  this — there is no range allocator.
+  so PAT entry 4 (WC, programmed in `memory/rust_mm/src/vmm/pat.rs`) is unreachable
+  for a BAR; the only WC helper is `pat_enable_wc_for_framebuffer()`. MTRR is not
+  used for this — there is no range allocator.
 - **No runtime firmware loader.** `request_firmware` (ksym) can stage a blob
   that ships in the build-time cctkfs table, but there is no on-demand loader or
   workqueue, so GuC/HuC/DMC blobs have no practical path into kernel memory.
