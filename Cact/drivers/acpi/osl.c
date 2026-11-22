@@ -17,20 +17,28 @@
 #define ACPI_OSL_MAX_MAPPINGS  64
 
 /*
- * Stable, reference-counted temporary mapping of ACPI physical memory.
+ * Reference-counted temporary mapping of ACPI physical memory.
  *
- * The same physical page is always mapped at the same virtual address, so a
- * persistent ACPI table pointer (Table->Pointer) stays valid across the
- * validate/parse/re-parse cycles instead of being re-mapped to a fresh VA each
- * time.  The mapping window is bounded by the number of distinct physical pages
- * (not the number of map/unmap calls), so it cannot creep into MMIO/framebuffer
- * space.  A mapping is torn down only when its last reference is released;
- * a freed slot is reused for the same physical page first to keep its VA stable.
+ * Each mapping owns a disjoint run of the fixed VA window, so the window is
+ * bounded by the set of run sizes in flight (not by the number of map/unmap
+ * calls) and cannot creep into the ECAM window next door.
+ *
+ * A slot is free when `virt` is NULL.  When the last reference is dropped the
+ * VA run is *kept* (slot goes idle: `refs == 0`, `virt`/`pages` intact) so a
+ * later map of the same size reuses it and the VA frontier stays bounded.
+ *
+ * A run is never extended in place, and no two slots' [virt, virt+pages)
+ * ranges ever overlap: a request that needs more pages than an existing live
+ * run for the same physical page takes a *new* run instead.  That is what
+ * keeps two ACPI tables that share a 4K page (real firmware does this) from
+ * aliasing each other's physical page.  ACPICA tolerates the VA changing
+ * between maps: it re-reads the pointer from every AcpiOsMapMemory and NULLs
+ * it on invalidation.
  */
 struct acpi_mapping {
-    void*    virt;    /* page-aligned base VA for this physical page */
+    void*    virt;    /* page-aligned base VA of this run; NULL = free slot */
     UINT64   phys;    /* page-aligned physical address */
-    UINT32   pages;   /* number of 4K pages currently mapped */
+    UINT32   pages;   /* number of 4K pages in this run */
     UINT32   refs;    /* outstanding references */
 };
 
@@ -49,48 +57,74 @@ void* acpi_temp_map(UINT64 phys, UINT32 size)
     UINT64 phys_page = phys & ~0xFFFull;
     UINT32 pages     = (UINT32)((offset + size + 0xFFF) >> 12);
 
+    if (pages == 0)
+        pages = 1;
+
     spin_lock(&acpi_mappings_lock);
 
-    /* Reuse an existing mapping of the SAME physical page (keeps the VA stable). */
     struct acpi_mapping *m = NULL;
-    for (int i = 0; i < ACPI_OSL_MAX_MAPPINGS; i++) {
-        if (acpi_mappings[i].phys == phys_page) { m = &acpi_mappings[i]; break; }
-    }
 
-    if (m) {
-        if (pages > m->pages) {
-            for (UINT32 i = m->pages; i < pages; i++) {
-                vmm_map(get_current_pd(),
-                        (uint64_t)(uintptr_t)m->virt + (uint64_t)i * 4096,
-                        phys_page + (UINT64)i * 4096, PAGE_PRESENT | PAGE_RW | PAGE_PWT);
-            }
-            m->pages = pages;
+    /* 1. Share a live run of the SAME physical page that is already big
+     *    enough: same VA, same content, just one more reference. */
+    for (int i = 0; i < ACPI_OSL_MAX_MAPPINGS; i++) {
+        if (acpi_mappings[i].refs && acpi_mappings[i].phys == phys_page &&
+            acpi_mappings[i].pages >= pages) {
+            m = &acpi_mappings[i];
+            break;
         }
+    }
+    if (m) {
         m->refs++;
         spin_unlock(&acpi_mappings_lock);
         return (void*)(uintptr_t)((uintptr_t)m->virt + offset);
     }
 
-    /* Otherwise claim a free slot. */
+    /* 2. Otherwise take a run of exactly `pages`: an idle run of the same size
+     *    first (keeps the VA frontier bounded), else a never-used slot whose VA
+     *    comes fresh from the frontier.  A live run that is too small is never
+     *    extended — it would step on the VA another run already owns. */
     for (int i = 0; i < ACPI_OSL_MAX_MAPPINGS; i++) {
-        if (acpi_mappings[i].refs == 0) { m = &acpi_mappings[i]; break; }
+        if (!acpi_mappings[i].refs && acpi_mappings[i].virt &&
+            acpi_mappings[i].pages == pages) {
+            m = &acpi_mappings[i];
+            break;
+        }
+    }
+    if (!m) {
+        for (int i = 0; i < ACPI_OSL_MAX_MAPPINGS; i++) {
+            if (!acpi_mappings[i].refs && !acpi_mappings[i].virt) {
+                m = &acpi_mappings[i];
+                break;
+            }
+        }
     }
 
-    UINT32 virt = acpi_mapping_next_va;
+    UINT32 virt;
+    if (m && m->virt) {
+        virt = (UINT32)(uintptr_t)m->virt;
+    } else {
+        virt = acpi_mapping_next_va;
+        acpi_mapping_next_va += pages * 4096;
+    }
+
+    if ((UINT64)virt + (UINT64)pages * 4096 >
+        (UINT64)cact_mmio_window_base() + KERNEL_MMIO_WINDOW_SIZE) {
+        /* Past this the ACPI window aliases PCIe ECAM — the parser would read
+         * PCI config space as AML.  Loud, once per offending map. */
+        pr_warn("%s: temp-map window exhausted (va 0x%x, %u pages) — aliasing ECAM\n",
+                "acpi-osl", (unsigned)virt, (unsigned)pages);
+    }
     for (UINT32 i = 0; i < pages; i++) {
         vmm_map(get_current_pd(), virt + i * 4096, phys_page + (UINT64)i * 4096,
                 PAGE_PRESENT | PAGE_RW | PAGE_PWT);
     }
-    acpi_mapping_next_va += pages * 4096;
 
     if (!m) {
         /* Error path only: the mapping itself still works, but its VA can no
          * longer be tracked or freed.  Do not log per access. */
         pr_err("%s: mapping table exhausted (phys 0x%llx) — mapping untracked\n",
                "acpi-osl", (unsigned long long)phys_page);
-    }
-
-    if (m) {
+    } else {
         m->virt  = (void*)(uintptr_t)virt;
         m->phys  = phys_page;
         m->pages = pages;
@@ -117,15 +151,13 @@ void acpi_temp_unmap(void *virt, UINT32 size)
     if (m && m->refs > 0) {
         m->refs--;
         if (m->refs == 0) {
-            /* Last reference: tear the mapping down, but keep phys so the VA
-             * is reused for the same physical page (stable header). */
+            /* Last reference: unmap the pages, but keep virt/pages so the run is
+             * marked idle and reused by a later map of the same size. */
             for (UINT32 i = 0; i < m->pages; i++) {
                 /* Clear through the memory layer's four-level walk instead of
                  * indexing the tables with a two-level layout. */
                 vmm_unmap(get_current_pd(), (uint64_t)va + (uint64_t)i * 4096);
             }
-            m->pages = 0;
-            m->refs  = 0;
         }
     }
 
