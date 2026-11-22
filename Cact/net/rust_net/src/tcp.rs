@@ -18,6 +18,15 @@ fn ipv4_u32(a: Ipv4Addr) -> u32 {
     u32::from(o[0]) << 24 | u32::from(o[1]) << 16 | u32::from(o[2]) << 8 | u32::from(o[3])
 }
 
+/// IPv4 bits of an endpoint address for the 32-bit C mirrors (`tcp_sockets`,
+/// `TcpSocket`).  An IPv6 endpoint has no value there and reports 0.0.0.0.
+fn addr_v4_bits(a: IpAddress) -> u32 {
+    match a {
+        IpAddress::Ipv4(v4) => ipv4_u32(v4),
+        _ => 0,
+    }
+}
+
 pub(crate) fn tcp_lock() {
     let flags: u64;
     // SAFETY: this runs on the current CPU.  `pushfq`/`pop` capture RFLAGS into
@@ -279,13 +288,11 @@ pub fn sync_tcp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
         row.state = st as u32;
         if let Some(ep) = sock.local_endpoint() {
             row.local_port = ep.port;
-            let IpAddress::Ipv4(a) = ep.addr;
-            row.local_ip = ipv4_u32(a);
+            row.local_ip = addr_v4_bits(ep.addr);
         }
         if let Some(ep) = sock.remote_endpoint() {
             row.remote_port = ep.port;
-            let IpAddress::Ipv4(a) = ep.addr;
-            row.remote_ip = ipv4_u32(a);
+            row.remote_ip = addr_v4_bits(ep.addr);
         }
         // `accept_ready` marks a *listening* slot holding an unaccepted
         // connection.  The `listen_parent < 0` test keeps an accepted child
@@ -345,10 +352,7 @@ pub(crate) fn alloc_tcp_smoltcp(
 /// `accept()` report a peer port of 0.
 pub(crate) fn tcp_socket_peer(idx: usize) -> Option<(u32, u16)> {
     with_tcp_socket(idx as i32, |s| match s.remote_endpoint() {
-        Some(ep) => {
-            let IpAddress::Ipv4(a) = ep.addr;
-            (ipv4_u32(a), ep.port)
-        }
+        Some(ep) => (addr_v4_bits(ep.addr), ep.port),
         None => (0, 0),
     })
 }
@@ -360,8 +364,7 @@ pub(crate) fn tcp_socket_peer(idx: usize) -> Option<(u32, u16)> {
 pub(crate) fn tcp_socket_local(idx: usize) -> Option<(u32, u16)> {
     match with_tcp_socket(idx as i32, |s| {
         if let Some(ep) = s.local_endpoint() {
-            let IpAddress::Ipv4(a) = ep.addr;
-            return (ipv4_u32(a), ep.port);
+            return (addr_v4_bits(ep.addr), ep.port);
         }
         (0, s.listen_endpoint().port)
     }) {

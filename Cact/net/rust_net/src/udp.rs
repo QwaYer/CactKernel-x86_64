@@ -430,15 +430,19 @@ pub(crate) unsafe fn udp_recv_buf(
             unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy) };
             let ep = meta.endpoint;
             if !src_ip_out.is_null() {
-                let IpAddress::Ipv4(a) = ep.addr;
-                let o = a.octets();
-                // SAFETY: the caller contract makes `src_ip_out`, when non-null, a
-                // writable, aligned `u32`; the null check above excluded null.
-                unsafe {
-                    *src_ip_out = u32::from(o[0]) << 24
-                        | u32::from(o[1]) << 16
-                        | u32::from(o[2]) << 8
-                        | u32::from(o[3]);
+                // Only IPv4 datagrams exist at this stage; a v6 source has no
+                // 32-bit output slot (the C mirror is v4-only) and is left 0.
+                if let IpAddress::Ipv4(a) = ep.addr {
+                    let o = a.octets();
+                    // SAFETY: the caller contract makes `src_ip_out`, when
+                    // non-null, a writable, aligned `u32`; the null check above
+                    // excluded null.
+                    unsafe {
+                        *src_ip_out = u32::from(o[0]) << 24
+                            | u32::from(o[1]) << 16
+                            | u32::from(o[2]) << 8
+                            | u32::from(o[3]);
+                    }
                 }
             }
             if !src_port_out.is_null() {

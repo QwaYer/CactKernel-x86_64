@@ -15,7 +15,7 @@
 //! any NIC registers, and the first NIC adopts it.  IPv4 addressing is owned by
 //! userspace and stored per slot (see `config`).
 
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, Ipv6Addr};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
@@ -69,6 +69,13 @@ pub(crate) const LOOPBACK_IP_HOST: u32 = 0x7F00_0001; // 127.0.0.1
 pub(crate) const LOOPBACK_MASK_HOST: u32 = 0xFF00_0000;
 /// The interface name of the loopback interface.
 pub(crate) const LOOPBACK_IFNAME: &[u8] = b"lo";
+
+/// The prefix length of an IPv6 link-local address (`fe80::/64`).
+const LINK_LOCAL_PREFIX: u8 = 64;
+
+/// ff02::1, the IPv6 all-nodes link-local multicast group.  Every IPv6 host
+/// joins it so Router Advertisements (sent there) are delivered.
+const ALL_NODES_MULTICAST: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
 
 /// Placeholder MAC for the boot slot before a NIC is registered.  Locally
 /// administered and unicast.  `iface_attach` replaces it with the real hardware
@@ -185,7 +192,7 @@ fn mask_prefix_len(mask_host: u32) -> u8 {
 ///
 /// Userspace decides addressing, so between boot and the first lease the interface
 /// carries only loopback.  This is the single source of truth for that state:
-/// [`sync_iface_ipv4_from_config`] keys the `any_ip` receive hack on it, and the
+/// [`sync_iface_addrs_from_config`] keys the `any_ip` receive hack on it, and the
 /// TX path uses it to keep the unconfigured stack from emitting off-link unicast
 /// (see `SlotTxToken`'s `TxToken::consume`).
 pub(crate) fn slot_unconfigured(slot: usize) -> bool {
@@ -211,13 +218,77 @@ fn ipv4_dst_is_offlink_unicast(frame: &[u8]) -> bool {
     !(dst[0] == 127 || dst == [0xff, 0xff, 0xff, 0xff])
 }
 
-pub(crate) fn sync_iface_ipv4_from_config(iface: &mut Interface, slot: usize) {
+/// True while slot `slot` owns no userspace-configured IPv6 address, i.e. it
+/// carries only the stack-derived link-local.
+///
+/// The TX path uses it to keep an unaddressed interface from emitting off-link
+/// global IPv6 sourced from the link-local address (see `TxToken::consume`).
+pub(crate) fn slot_unconfigured_v6(slot: usize) -> bool {
+    !config::ipv6_configured_of(slot)
+}
+
+/// The IPv6 link-local address for a 48-bit MAC (RFC 4291 Appendix A): fe80::/64
+/// followed by the MAC with its universal/local bit flipped and `ff:fe`
+/// inserted.  Every interface carries one so IPv6 neighbour discovery and any
+/// SLAAC exchange work before userspace configures a global address.
+pub(crate) fn link_local_from_mac(mac: [u8; 6]) -> Ipv6Addr {
+    let mut o = [0u8; 16];
+    o[0] = 0xfe;
+    o[1] = 0x80;
+    o[8] = mac[0] ^ 0x02;
+    o[9] = mac[1];
+    o[10] = mac[2];
+    o[11] = 0xff;
+    o[12] = 0xfe;
+    o[13] = mac[3];
+    o[14] = mac[4];
+    o[15] = mac[5];
+    Ipv6Addr::from(o)
+}
+
+/// True when `frame` is an IPv6 Ethernet frame whose destination is global
+/// unicast — neither link-local (fe80::/10) nor multicast (ff00::/8).
+///
+/// Only consulted for an interface with no configured global address; see
+/// `TxToken::consume`.
+fn ipv6_dst_is_offlink_global(frame: &[u8]) -> bool {
+    // 14-byte Ethernet header plus the 16-byte IPv6 destination address, which
+    // starts 24 octets into the IPv6 header (after version/flow, payload length,
+    // next header and hop limit), i.e. frame offset 38..54.
+    if frame.len() < 54 {
+        return false;
+    }
+    if u16::from_be_bytes([frame[12], frame[13]]) != 0x86DD {
+        return false;
+    }
+    let dst = &frame[38..54];
+    let is_multicast = dst[0] == 0xff;
+    let is_link_local = dst[0] == 0xfe && (dst[1] & 0xc0) == 0x80;
+    !(is_multicast || is_link_local)
+}
+
+/// Push slot `slot`'s IPv4 and IPv6 addressing and routes into its smoltcp
+/// interface.  `mac` is the interface's hardware address, from which the IPv6
+/// link-local is derived (and cached in `config` for the routing paths).
+///
+/// IPv4 addressing is owned by userspace and stored per slot; IPv6 likewise, on
+/// top of the link-local every interface always carries.
+pub(crate) fn sync_iface_addrs_from_config(iface: &mut Interface, slot: usize, mac: [u8; 6]) {
     let ip = ipv4_from_host(config::ip_host_of(slot));
     let gw = ipv4_from_host(config::gateway_host_of(slot));
     // "No address yet": addressing is decided in userspace, so between boot and
     // the first lease the interface owns nothing on the wire — yet the DHCP
     // client still has to receive its OFFER/ACK then (see the `any_ip` note).
     let unconfigured = slot_unconfigured(slot);
+
+    // The link-local address is a pure function of the MAC; compute it and keep
+    // the cached copy in `config` in step, so `route_slot_v6` / `slot_owning_ipv6`
+    // agree with what the interface carries.
+    let ll = link_local_from_mac(mac);
+    config::set_ipv6_link_local_slot(slot, ll.octets());
+    let addr6 = config::ipv6_addr_of(slot);
+    let has_v6_global = addr6 != [0u8; 16];
+
     iface.update_ip_addrs(|addrs| {
         addrs.clear();
         // The NIC address first: `get_source_address_ipv4` returns the first
@@ -230,8 +301,19 @@ pub(crate) fn sync_iface_ipv4_from_config(iface: &mut Interface, slot: usize) {
         // Always present: it makes 127/8 on-link (see the loopback note above)
         // and lets the interface accept packets addressed to 127.0.0.1.
         let _ = addrs.push(IpCidr::new(IpAddress::Ipv4(LOOPBACK_IP), LOOPBACK_PREFIX));
+        // IPv6: the configured global address (when set) goes before the
+        // link-local so an off-link destination is sourced from a globally
+        // scoped address; the link-local is always present.
+        if has_v6_global {
+            let _ = addrs.push(IpCidr::new(
+                IpAddress::Ipv6(Ipv6Addr::from(addr6)),
+                config::ipv6_prefix_of(slot),
+            ));
+        }
+        let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(ll), LINK_LOCAL_PREFIX));
     });
     iface.routes_mut().remove_default_ipv4_route();
+    iface.routes_mut().remove_default_ipv6_route();
 
     if unconfigured {
         // smoltcp's IPv4 ingress drops a datagram unless its destination is one
@@ -254,6 +336,39 @@ pub(crate) fn sync_iface_ipv4_from_config(iface: &mut Interface, slot: usize) {
         if config::gateway_host_of(slot) != 0 && !gw.is_unspecified() {
             let _ = iface.routes_mut().add_default_ipv4_route(gw);
         }
+    }
+
+    // IPv6 default route: the configured next hop (a router's link-local or
+    // global address).  With none, off-link IPv6 has no path — honest, and what
+    // an interface with only a link-local address should report.
+    let gw6 = config::ipv6_gateway_of(slot);
+    if gw6 != [0u8; 16] {
+        let _ = iface
+            .routes_mut()
+            .add_default_ipv6_route(Ipv6Addr::from(gw6));
+    }
+
+    // Join ff02::1 (all-nodes) so Router Advertisements reach the interface and
+    // userspace can run SLAAC/DHCPv6.  Joining is idempotent; the solicited-node
+    // groups for the addresses above are joined by smoltcp itself when the
+    // address list is updated.
+    let _ = iface.join_multicast_group(IpAddress::Ipv6(ALL_NODES_MULTICAST));
+}
+
+/// Resync slot `slot`'s interface addresses after a config change, holding the
+/// stack lock (the callers are the userspace netcfg paths, which do not already
+/// hold it).
+pub(crate) fn resync_slot_addrs(slot: usize) {
+    if slot >= NET_IF_MAX {
+        return;
+    }
+    let _stack_guard = StackGuard::new();
+    // SAFETY: `IFACES` is only used under `STACK_LOCK`, held here; `slot` is
+    // bounds-checked above, so this is an in-bounds, exclusive borrow.
+    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let mac = s.mac;
+    if let Some(iface) = s.iface.as_mut() {
+        sync_iface_addrs_from_config(iface, slot, mac);
     }
 }
 
@@ -369,6 +484,14 @@ fn frame_involves_loopback(frame: &[u8]) -> bool {
         0x0800 => frame.len() >= 34 && (frame[26] == 127 || frame[30] == 127),
         // ARP over Ethernet/IPv4: sender protocol address at 28, target at 38.
         0x0806 => frame.len() >= 42 && (frame[28] == 127 || frame[38] == 127),
+        // IPv6: the source address is at frame offset 22, the destination at 38
+        // (14-byte Ethernet header + 8 bytes before the addresses).  `::1` on
+        // either side marks a loopback exchange.
+        0x86DD => {
+            frame.len() >= 54
+                && (frame[22..38] == config::IPV6_LOOPBACK
+                    || frame[38..54] == config::IPV6_LOOPBACK)
+        }
         _ => false,
     }
 }
@@ -391,6 +514,9 @@ struct SlotDev<'a> {
     /// against the right self-address ([`crate::arp::note_frame`]).
     slot: usize,
     unconfigured: bool,
+    /// True when the slot carries no userspace-set global IPv6 address (only the
+    /// derived link-local); used by the TX token to drop off-link global IPv6.
+    unconfigured_v6: bool,
 }
 
 struct CactRxToken<'a> {
@@ -419,6 +545,7 @@ struct CactTxToken<'a> {
     lo_dropped: &'a mut u32,
     drv: *mut NetDriver,
     unconfigured: bool,
+    unconfigured_v6: bool,
 }
 
 impl CactTxToken<'_> {
@@ -444,7 +571,7 @@ impl TxToken for CactTxToken<'_> {
         let mut this = self;
         let r = f(&mut this.buf[..len]);
         // While no address is configured the interface carries only loopback and
-        // a default route pointing at it (see `sync_iface_ipv4_from_config`), so
+        // a default route pointing at it (see `sync_iface_addrs_from_config`), so
         // smoltcp sources *every* off-link flow from 127.0.0.1 and then accepts
         // the frame right back on ingress (`any_ip`).  For ICMP that means the
         // stack answers its own echo request: `ping` to any address "succeeds"
@@ -453,6 +580,13 @@ impl TxToken for CactTxToken<'_> {
         // DISCOVER/REQUEST (destination 255.255.255.255) is not off-link unicast
         // and still leaves the box.
         if this.unconfigured && ipv4_dst_is_offlink_unicast(&this.buf[..len]) {
+            return r;
+        }
+        // An interface that owns only a link-local IPv6 address must not emit
+        // off-link global IPv6 sourced from that link-local (a router would drop
+        // it); drop it so the failure is honest, as for IPv4 above.  Link-local
+        // and multicast destinations are still allowed through.
+        if this.unconfigured_v6 && ipv6_dst_is_offlink_global(&this.buf[..len]) {
             return r;
         }
         if frame_involves_loopback(&this.buf[..len]) {
@@ -500,6 +634,7 @@ impl Device for SlotDev<'_> {
     fn receive(&mut self, _timestamp: Instant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
         let drv = self.drv;
         let unconfigured = self.unconfigured;
+        let unconfigured_v6 = self.unconfigured_v6;
         let phy: &mut CactPhy = &mut *self.phy;
         let (slot, n) = {
             // Only the ring indices need the lock.  The producer never writes
@@ -545,6 +680,7 @@ impl Device for SlotDev<'_> {
                 lo_dropped: &mut phy.lo_dropped,
                 drv,
                 unconfigured,
+                unconfigured_v6,
             },
         ))
     }
@@ -552,6 +688,7 @@ impl Device for SlotDev<'_> {
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {
         let drv = self.drv;
         let unconfigured = self.unconfigured;
+        let unconfigured_v6 = self.unconfigured_v6;
         let phy: &mut CactPhy = &mut *self.phy;
         Some(CactTxToken {
             buf: &mut phy.tx,
@@ -562,6 +699,7 @@ impl Device for SlotDev<'_> {
             lo_dropped: &mut phy.lo_dropped,
             drv,
             unconfigured,
+            unconfigured_v6,
         })
     }
 
@@ -595,6 +733,7 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
         drv: s.drv,
         slot,
         unconfigured: slot_unconfigured(slot),
+        unconfigured_v6: slot_unconfigured_v6(slot),
     };
     let new_iface = Interface::new(cfg, &mut dev, now);
     s.iface = Some(new_iface);
@@ -622,7 +761,7 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     s.icmp_handle = Some(socks.add(icmp_sock));
 
     if let Some(iface) = s.iface.as_mut() {
-        sync_iface_ipv4_from_config(iface, slot);
+        sync_iface_addrs_from_config(iface, slot, mac);
     }
 
     // The shared DNS resolver socket lives on slot 0 only; other slots carry no
@@ -685,7 +824,7 @@ pub(crate) fn iface_attach(slot: usize, drv: *mut NetDriver, mac: [u8; 6]) {
     }
     if let Some(iface) = s.iface.as_mut() {
         iface.set_hardware_addr(HardwareAddress::Ethernet(EthernetAddress::from_bytes(&mac)));
-        sync_iface_ipv4_from_config(iface, slot);
+        sync_iface_addrs_from_config(iface, slot, mac);
     }
     // Drop any frames staged by the placeholder before the NIC was attached.
     {
@@ -710,7 +849,7 @@ pub(crate) fn iface_detach(slot: usize) {
         s.mac = mac;
         if let Some(iface) = s.iface.as_mut() {
             iface.set_hardware_addr(HardwareAddress::Ethernet(EthernetAddress::from_bytes(&mac)));
-            sync_iface_ipv4_from_config(iface, 0);
+            sync_iface_addrs_from_config(iface, 0, mac);
         }
     }
     {
@@ -809,11 +948,13 @@ pub fn stack_poll() {
         }
         let drv = s.drv;
         let unconfigured = slot_unconfigured(slot);
+        let unconfigured_v6 = slot_unconfigured_v6(slot);
         let mut dev = SlotDev {
             phy: &mut s.phy,
             drv,
             slot,
             unconfigured,
+            unconfigured_v6,
         };
         if let (Some(iface), Some(socks)) = (s.iface.as_mut(), s.socks.as_mut()) {
             iface.poll(now, &mut dev, socks);

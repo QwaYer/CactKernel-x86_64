@@ -21,9 +21,18 @@ webpki-roots = { version = "1", default-features = false }
 smoltcp = { version = "0.12", default-features = false, features = [
     "medium-ethernet",
     "proto-ipv4",
+    "proto-ipv6",
+    "multicast",
     "socket-tcp",
     "socket-udp",
     "socket-icmp",
+    # Per-interface caps: IPv4 (NIC + 127/8) and IPv6 (global + link-local) share
+    # one address list, and the IPv6 multicast/multicast-neighbour machinery needs
+    # room beyond smoltcp's defaults (2 addrs, 4 groups, 2 routes, 8 neighbours).
+    "iface-max-addr-count-8",
+    "iface-max-multicast-group-count-8",
+    "iface-max-route-count-8",
+    "iface-neighbor-cache-count-16",
 ] }
 
 [patch.crates-io]

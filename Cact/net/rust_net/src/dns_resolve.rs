@@ -261,7 +261,11 @@ fn try_recv_dns_reply(socks: &mut SocketSet<'static>, dns_host: u32, id: u16) ->
     let h = unsafe { DNS_HANDLE }?;
     let s = socks.get_mut::<udp::Socket>(h);
     let (data, meta) = s.recv().ok()?;
-    let IpAddress::Ipv4(src_v4) = meta.endpoint.addr;
+    // DNS runs over IPv4 at this stage; a datagram whose source is not IPv4 is
+    // not an answer to this resolver's query.
+    let IpAddress::Ipv4(src_v4) = meta.endpoint.addr else {
+        return None;
+    };
     if ipv4_host_from_smoltcp_v4(src_v4) != dns_host {
         return None;
     }
