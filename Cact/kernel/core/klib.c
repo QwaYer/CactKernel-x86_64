@@ -315,11 +315,34 @@ void* memset(void* dest, int val, unsigned int len) {
     return dest;
 }
 
-// memcpy wrapper with unsigned length
+// memcpy wrapper with unsigned length.
+//
+// Widened from a byte loop: the console scroll and the framebuffer flush copy
+// megabytes per line, and a byte-at-a-time copy at -O0 turned each of those
+// into tens of millions of load/store pairs.  Long copies run as REP MOVSQ;
+// short ones (below its start-up cost) as an unaligned 8-byte loop; a byte tail
+// finishes a length that is not a multiple of eight.  The 8-byte steps go
+// through a packed struct so a misaligned `s`/`d` is defined behaviour.
+typedef struct { uint64_t v; } __attribute__((packed)) klib_unaligned64;
+
 void* memcpy(void* dest, const void* src, unsigned int len) {
     unsigned char* d = (unsigned char*)dest;
     const unsigned char* s = (const unsigned char*)src;
-    while (len-- > 0) *d++ = *s++;
+    size_t n = (size_t)len;
+
+    if (n >= 64) {
+        size_t qwords = n >> 3;
+        __asm__ __volatile__("rep movsq"
+            : "+D"(d), "+S"(s), "+c"(qwords)
+            :
+            : "memory");
+        n &= 7u;
+    }
+    while (n >= 8) {
+        ((klib_unaligned64*)d)->v = ((const klib_unaligned64*)s)->v;
+        d += 8; s += 8; n -= 8;
+    }
+    while (n-- > 0) *d++ = *s++;
     return dest;
 }
 
