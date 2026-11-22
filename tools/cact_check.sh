@@ -165,10 +165,11 @@ trap - EXIT
 # ------------------------------------------------------------------------------
 fail_re='PANIC|SELF-TEST FAILED|check\(s\) FAILED'
 fail_re+='|CACT-CHECK: [A-Za-z0-9_]+ FAIL|CACT-CHECK: DONE.*fail=[1-9]'
-# localrepo pipeline: a boot medium without the module, an empty /dev/localrepo
-# or a failed/partial copy into tmpfs.
+# localrepo pipeline: a boot medium without the module, an empty /dev/localrepo,
+# a failed archive source, or the removed tmpfs-staging regression.
 fail_re+='|devfs: no localrepo module|localrepo source is empty'
 fail_re+='|localrepo copy failed|no localrepo archive source found'
+fail_re+='|cgoct: localrepo staged'
 
 # Markers that must be present for the check to pass.  Empty: the kernel has no
 # boot self-tests any more, so the boot is judged on reaching userspace, on the
@@ -243,13 +244,15 @@ else
   echo "cact-check:         (this ISO carries no localrepo.tar.zst — /dev/localrepo reads empty)" >&2
   rc=1
 fi
+# The archive is served in place as the node /dev/localrepo (the check above just
+# confirmed the module is present).  cgoct must NOT copy it into tmpfs any more:
+# doing so would put ~500 MiB into the guest's 2 GiB of RAM.  A staging line means
+# that removal regressed, so its reappearance is a hard failure (see `fail_re`).
 if grep -qF "cgoct: localrepo staged -> " "$log"; then
-  grep -Fm1 "cgoct: localrepo staged -> " "$log" | sed 's/^/cact-check:   ok    /'
-elif grep -qF "cgoct: supervisor online" "$log"; then
-  echo "cact-check:   MISS  cgoct ran but never staged the archive into tmpfs" >&2
+  echo "cact-check:   FAIL  cgoct staged localrepo into tmpfs (removed behaviour came back)" >&2
   rc=1
 else
-  echo "cact-check:   skip  no supervisor in this image (cgoct did not run)"
+  echo "cact-check:   ok    cgoct did not stage localrepo into tmpfs (served in place)"
 fi
 
 # The boot cctkfs image: the kernel serves the module in place as /dev/cctkfs,
