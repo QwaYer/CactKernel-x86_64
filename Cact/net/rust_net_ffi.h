@@ -47,6 +47,18 @@ int rust_net_iface_get(uint32_t idx, struct cact_iface_info* out);
    the loopback interface. */
 int rust_net_iface_set_cfg(uint32_t idx, uint32_t ip_h, uint32_t mask_h, uint32_t gw_h, uint32_t dns_h);
 
+/* ── IPv6 link configuration ────────────────────────────────────────────── */
+/* addr/gw/dns point to 16 big-endian octets each (core::net::Ipv6Addr::octets).
+   The link-local address is derived by the stack and is not set here. */
+/* Set the primary interface's IPv6 global address (root only); all-zero clears
+   the address / default route / resolver.  0 on success. */
+int rust_net_set_ipv6_config(const uint8_t* addr, uint32_t prefix,
+                             const uint8_t* gw, const uint8_t* dns);
+/* Set interface idx's IPv6 global address (root only).  0 on success, -1 when
+   idx is out of range or names the loopback interface. */
+int rust_net_iface_set_cfg6(uint32_t idx, const uint8_t* addr, uint32_t prefix,
+                            const uint8_t* gw, const uint8_t* dns);
+
 /* ── ARP / IPv4 neighbor table (see cact_arp_entry_t in ioctl_abi.h) ── */
 struct cact_arp_entry; /* defined in ioctl_abi.h */
 /* Number of live neighbors (entries not yet aged out). */

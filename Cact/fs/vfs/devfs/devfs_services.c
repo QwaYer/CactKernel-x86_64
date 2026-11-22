@@ -467,6 +467,24 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
                                       a.gateway_host, a.dns_host);
     }
 
+    case CACT_NETCTL_NETCFG6: {
+        int r = _root_only();
+        if (r) return r;
+        cact_netcfg6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_set_ipv6_config(a.addr, a.prefix, a.gateway, a.dns);
+    }
+
+    case CACT_NETCTL_IFACE_SETCFG6: {
+        int r = _root_only();
+        if (r) return r;
+        cact_iface_setcfg6_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_iface_set_cfg6(a.index, a.addr, a.prefix, a.gateway, a.dns);
+    }
+
     default:
         return -EINVAL;
     }

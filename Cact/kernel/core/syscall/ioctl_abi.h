@@ -446,6 +446,8 @@ typedef struct cact_recvfrom_arg {
 #define CACT_NETCTL_ARP_COUNT    0x340B  // no arg; returns the number of live ARP entries
 #define CACT_NETCTL_ARP_GET      0x340C  // arg=cact_arp_get_arg_t*; in index, out ARP entry
 #define CACT_NETCTL_IFACE_SETCFG 0x340D  // arg=cact_iface_setcfg_arg_t* (root): set one interface's IPv4
+#define CACT_NETCTL_NETCFG6      0x340E  // arg=cact_netcfg6_arg_t* (root): set the primary interface's IPv6
+#define CACT_NETCTL_IFACE_SETCFG6 0x340F // arg=cact_iface_setcfg6_arg_t* (root): set one interface's IPv6
 
 // Interface name as the driver registered it ("eth0", "wlan0").  A separate
 // ioctl rather than a field in cact_netcfg_get_t so that binaries built against
@@ -504,6 +506,14 @@ typedef struct cact_iface_info {
     uint8_t  mac[6];                // all-zero for a non-Ethernet interface (lo)
     uint32_t link_up;               // 1 when the interface is up
     uint32_t flags;                 // CACT_IFACE_FLAG_*
+    // IPv6, appended so the IPv4 view above stays byte-identical for callers
+    // that only read the leading fields.  All-zero means "absent" (except
+    // ip6_link_local, which every NIC interface carries).
+    uint8_t  ip6[16];               // global/ULA address (0 = none)
+    uint32_t ip6_prefix;            // prefix length for ip6 (0 when ip6 is absent)
+    uint8_t  ip6_link_local[16];    // always present on a NIC interface (fe80::/64)
+    uint8_t  ip6_gateway[16];       // default-route next hop (0 = none)
+    uint8_t  ip6_dns[16];           // AAAA resolver (0 = none)
 } cact_iface_info_t;
 
 typedef struct cact_iface_get_arg {
@@ -522,6 +532,28 @@ typedef struct cact_iface_setcfg_arg {
     uint32_t gateway_host;
     uint32_t dns_host;
 } cact_iface_setcfg_arg_t;
+
+// Set the primary interface's IPv6 (CACT_NETCTL_NETCFG6, root only) — the
+// dual-stack counterpart of CACT_NETCTL_NETCFG.  An all-zero addr clears the
+// global address, an all-zero gateway the default route and an all-zero dns the
+// resolver; the link-local address is derived by the stack and is not set here.
+typedef struct cact_netcfg6_arg {
+    uint8_t  addr[16];              // in: global/ULA address (big-endian), 0 = clear
+    uint32_t prefix;                // in: prefix length for addr (0..128)
+    uint8_t  gateway[16];           // in: default-route next hop, 0 = clear
+    uint8_t  dns[16];               // in: AAAA resolver, 0 = clear
+} cact_netcfg6_arg_t;
+
+// Configure one interface's IPv6 (CACT_NETCTL_IFACE_SETCFG6, root only).  `index`
+// is the same as CACT_NETCTL_IFACE_GET; `lo` is not configurable.  Fields as in
+// cact_netcfg6_arg_t.
+typedef struct cact_iface_setcfg6_arg {
+    uint32_t index;                 // in
+    uint8_t  addr[16];              // in
+    uint32_t prefix;                // in
+    uint8_t  gateway[16];           // in
+    uint8_t  dns[16];               // in
+} cact_iface_setcfg6_arg_t;
 
 // ARP / IPv4 neighbor table (CACT_NETCTL_ARP_COUNT / CACT_NETCTL_ARP_GET).  The
 // table is learned from the ARP traffic the kernel sees; entries age out after

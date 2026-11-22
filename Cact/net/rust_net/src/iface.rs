@@ -28,7 +28,21 @@ pub struct CactIfaceInfo {
     pub mac: [u8; 6],
     pub link_up: u32,
     pub flags: u32,
+    /// Global/ULA IPv6 address (all-zero = none).
+    pub ip6: [u8; 16],
+    /// Prefix length for `ip6` (0 when `ip6` is absent).
+    pub ip6_prefix: u32,
+    /// Stack-derived link-local address (fe80::/64); always present on a NIC.
+    pub ip6_link_local: [u8; 16],
+    /// IPv6 default-route next hop (all-zero = none).
+    pub ip6_gateway: [u8; 16],
+    /// AAAA resolver (all-zero = none).
+    pub ip6_dns: [u8; 16],
 }
+
+// The C `cact_iface_info_t` must stay byte-identical: 16 (name) + 4*4 (v4) + 6
+// (mac) + 4 (link_up) + 4 (flags) + 16 (ip6) + 4 (prefix) + 16*3 (ll/gw/dns).
+const _: () = assert!(core::mem::size_of::<CactIfaceInfo>() == 116);
 
 /// Number of interfaces currently present: every registered NIC, then loopback,
 /// or 0 when the stack is not up.  With no NIC the list is loopback-only, so `lo`
@@ -123,6 +137,11 @@ fn fill_nic(info: &mut CactIfaceInfo, index: u32) {
         info.netmask_host = config::netmask_host_of(s);
         info.gateway_host = config::gateway_host_of(s);
         info.dns_host = config::dns_host_of(s);
+        info.ip6 = config::ipv6_addr_of(s);
+        info.ip6_prefix = config::ipv6_prefix_of(s) as u32;
+        info.ip6_link_local = config::ipv6_link_local_of(s);
+        info.ip6_gateway = config::ipv6_gateway_of(s);
+        info.ip6_dns = config::ipv6_dns_of(s);
     }
     info.link_up = 1;
     info.flags = 0;
@@ -135,6 +154,77 @@ fn fill_loopback(info: &mut CactIfaceInfo) {
     info.netmask_host = stack::LOOPBACK_MASK_HOST;
     info.gateway_host = 0;
     info.dns_host = 0;
+    // Loopback's IPv6 address is `::1/128`, the analogue of the 127.0.0.1/8 above.
+    info.ip6 = config::IPV6_LOOPBACK;
+    info.ip6_prefix = 128;
     info.link_up = 1;
     info.flags = IFACE_FLAG_LOOPBACK;
+}
+
+/// Configure interface `index`'s IPv6 global address (`CACT_NETCTL_IFACE_SETCFG6`,
+/// root only).  Returns 0 on success, or -1 (`ENODEV`) when `index` is beyond the
+/// last NIC — which also covers `lo`, the final index, since it owns no
+/// configurable address of its own.
+///
+/// # Safety
+///
+/// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
+/// the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_iface_set_cfg6(
+    index: u32,
+    addr: *const u8,
+    prefix: u32,
+    gw: *const u8,
+    dns: *const u8,
+) -> i32 {
+    if addr.is_null() || gw.is_null() || dns.is_null() {
+        return -1;
+    }
+    let slot = runtime::rust_net_nic_slot(index);
+    if slot < 0 {
+        return -1;
+    }
+    let mut a = [0u8; 16];
+    let mut g = [0u8; 16];
+    let mut d = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes each pointer a live
+    // 16-byte readable buffer, and each destination is a distinct 16-byte array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16) };
+    // SAFETY: as above, for `gw` into `g`.
+    unsafe { core::ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16) };
+    // SAFETY: as above, for `dns` into `d`.
+    unsafe { core::ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16) };
+    crate::config::set_ipv6_config_slot(slot as usize, a, prefix.min(128) as u8, g, d)
+}
+
+/// Configure the primary interface's (socket slot 0's) IPv6 global address
+/// (`CACT_NETCTL_NETCFG6`, root only) — the dual-stack counterpart of
+/// `rust_net_set_ipv4_config`.
+///
+/// # Safety
+///
+/// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
+/// the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_set_ipv6_config(
+    addr: *const u8,
+    prefix: u32,
+    gw: *const u8,
+    dns: *const u8,
+) -> i32 {
+    if addr.is_null() || gw.is_null() || dns.is_null() {
+        return -1;
+    }
+    let mut a = [0u8; 16];
+    let mut g = [0u8; 16];
+    let mut d = [0u8; 16];
+    // SAFETY: the caller contract (see # Safety) makes each pointer a live
+    // 16-byte readable buffer, and each destination is a distinct 16-byte array.
+    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16) };
+    // SAFETY: as above, for `gw` into `g`.
+    unsafe { core::ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16) };
+    // SAFETY: as above, for `dns` into `d`.
+    unsafe { core::ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16) };
+    crate::config::set_ipv6_config_slot(0, a, prefix.min(128) as u8, g, d)
 }
