@@ -187,13 +187,27 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint3
                  + (size_t)y * (size_t)fb_pitch
                  + (size_t)x * (size_t)fb_bytespp;
 
-    for (uint32_t r = 0; r < height; r++) {
-        uint8_t* p = row;
-        for (uint32_t c = 0; c < width; c++) {
-            fb_store_pixel(p, px);
-            p += fb_bytespp;
+    if (fb_bytespp == 4) {
+        /* 4-byte pixels: fill each row with one REP STOSL instead of a store
+         * per pixel.  clear_screen() and scroll()'s bottom band come through
+         * here, and those are whole-screen writes. */
+        for (uint32_t r = 0; r < height; r++) {
+            uint32_t n = width;
+            __asm__ __volatile__("rep stosl"
+                : "+D"(row), "+c"(n)
+                : "a"(px)
+                : "memory");
+            row += fb_pitch;
         }
-        row += fb_pitch;
+    } else {
+        for (uint32_t r = 0; r < height; r++) {
+            uint8_t* p = row;
+            for (uint32_t c = 0; c < width; c++) {
+                fb_store_pixel(p, px);
+                p += fb_bytespp;
+            }
+            row += fb_pitch;
+        }
     }
     fb_mark_dirty_rows(y, y + height);
 }

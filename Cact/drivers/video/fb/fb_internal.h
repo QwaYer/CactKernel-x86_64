@@ -40,27 +40,32 @@ uint32_t fb_pack_color(uint32_t rgb);
 
 /* Store one packed pixel at `p`, writing exactly fb_bytespp bytes.  Defined
  * here (not in fb.c) so the rasteriser and the drawing primitives share one
- * inlined code path for every pixel depth. */
-static inline void fb_store_pixel(uint8_t* p, uint32_t px) {
+ * inlined code path for every pixel depth.  The 2- and 4-byte depths emit a
+ * single native-size store instead of assembling the pixel byte by byte;
+ * __builtin_memcpy keeps that a legal unaligned store rather than a type-punned
+ * one.  always_inline matters because the kernel builds without -O, where a
+ * plain `static inline` is still a call per pixel — the byte loop it replaces
+ * is exactly what makes the console crawl. */
+__attribute__((always_inline)) static inline void fb_store_pixel(uint8_t* p, uint32_t px) {
     switch (fb_bytespp) {
     case 1:
         p[0] = (uint8_t)px;
         break;
-    case 2:
-        p[0] = (uint8_t)px;
-        p[1] = (uint8_t)(px >> 8);
+    case 2: {
+        uint16_t v = (uint16_t)px;
+        __builtin_memcpy(p, &v, sizeof(v));
         break;
+    }
     case 3:
         p[0] = (uint8_t)px;
         p[1] = (uint8_t)(px >> 8);
         p[2] = (uint8_t)(px >> 16);
         break;
-    default:  /* 4 */
-        p[0] = (uint8_t)px;
-        p[1] = (uint8_t)(px >> 8);
-        p[2] = (uint8_t)(px >> 16);
-        p[3] = (uint8_t)(px >> 24);
+    default: {  /* 4 */
+        uint32_t v = px;
+        __builtin_memcpy(p, &v, sizeof(v));
         break;
+    }
     }
 }
 
