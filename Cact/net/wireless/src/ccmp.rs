@@ -26,9 +26,12 @@ fn xor16(d: &mut [u8; 16], s: &[u8; 16]) {
 
 /// mac80211's `ccmp_gcmp_aad()`: the data header with the subtype bits and
 /// Retry/PwrMgmt/MoreData (and Order, for QoS) masked to 0, Protected set to 1,
-/// the sequence number cleared, and the QoS control reduced to its TID.
-fn aad(hdr: &[u8], hdr_len: usize, out: &mut [u8; 24]) -> usize {
-    let qos = hdr_len >= 26;
+/// the sequence number cleared, and the QoS control reduced to its TID.  On a
+/// WDS/repeater frame the A4 field is authenticated too (it sits after the
+/// sequence control; the QoS control follows it).
+fn aad(hdr: &[u8], _hdr_len: usize, out: &mut [u8; 30]) -> usize {
+    let a4 = hdr[1] & 0x03 == 0x03;
+    let qos = ((hdr[0] >> 4) & 0x0f) & 0x8 != 0;
     let mut fc1 = (hdr[1] & 0xc7) | 0x40;
     if qos {
         fc1 &= !0x80;
@@ -38,18 +41,24 @@ fn aad(hdr: &[u8], hdr_len: usize, out: &mut [u8; 24]) -> usize {
     out[2..20].copy_from_slice(&hdr[4..22]); // A1, A2, A3
     out[20] = hdr[22] & 0x0f; // SC fragment
     out[21] = 0x00; // sequence number cleared
-    if qos {
-        out[22] = hdr[24] & 0x0f; // QoS control: TID only
-        out[23] = 0x00;
-        24
-    } else {
-        22
+    let mut n = 22;
+    if a4 {
+        out[22..28].copy_from_slice(&hdr[24..30]); // A4
+        n = 28;
     }
+    if qos {
+        out[n] = hdr[if a4 { 30 } else { 24 }] & 0x0f; // QoS control: TID only
+        out[n + 1] = 0x00;
+        n += 2;
+    }
+    n
 }
 
 /// The CCMP nonce: Nonce Flags | A2 | PN (13 bytes).
-fn nonce(hdr: &[u8], hdr_len: usize, pn: u64, out: &mut [u8; 13]) {
-    out[0] = if hdr_len >= 26 { hdr[24] & 0x0f } else { 0 };
+fn nonce(hdr: &[u8], _hdr_len: usize, pn: u64, out: &mut [u8; 13]) {
+    let a4 = hdr[1] & 0x03 == 0x03;
+    let qos = ((hdr[0] >> 4) & 0x0f) & 0x8 != 0;
+    out[0] = if qos { hdr[if a4 { 30 } else { 24 }] & 0x0f } else { 0 };
     out[1..7].copy_from_slice(&hdr[10..16]); // A2
     for i in 0..6 {
         out[7 + i] = (pn >> (8 * i)) as u8;
@@ -149,7 +158,7 @@ pub fn encrypt(
     }
     let aes = Aes128::new(tk);
 
-    let mut a = [0u8; 24];
+    let mut a = [0u8; 30];
     let aad_len = aad(hdr, hdr_len, &mut a);
     let mut nc = [0u8; 13];
     nonce(hdr, hdr_len, pn, &mut nc);
@@ -200,7 +209,7 @@ pub fn decrypt(tk: &[u8; 16], f: &mut [u8], flen: usize, hdr_len: usize) -> Opti
         return None;
     }
 
-    let mut a = [0u8; 24];
+    let mut a = [0u8; 30];
     let aad_len = aad(f, hdr_len, &mut a);
     let mut nc = [0u8; 13];
     nonce(f, hdr_len, pn, &mut nc);

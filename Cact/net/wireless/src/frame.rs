@@ -8,8 +8,34 @@
 //! beacons / probe responses / auth / assoc responses and received data.
 
 pub const DOT11_HDR: usize = 24;
-pub const DOT11_QOS_HDR: usize = 26;
+/// The QoS control field (2 bytes), appended after A4 on a 4-address frame.
+pub const QOS_CTL_LEN: usize = 2;
+/// The A4 field of a WDS (repeater) frame — present only when ToDS and FromDS
+/// are both set — grows the header by 6 bytes.  A4 sits right after the
+/// sequence control (offset 24); QoS control then follows it (offset 30).
+pub const WDS_A4_LEN: usize = 6;
 pub const LLC_SNAP_LEN: usize = 8;
+
+/// True for a WDS / repeater link frame (both ToDS and FromDS set), the 4-address
+/// form whose A3 is the destination and A4 the original source
+/// (IEEE 802.11-2016 9.3.2.1.3).
+pub fn is_4addr(f: &[u8]) -> bool {
+    f.len() >= 2 && f[1] & 0x03 == 0x03
+}
+
+/// True for a QoS data frame (a data frame, subtype bit 3).
+pub fn is_qos(f: &[u8]) -> bool {
+    !f.is_empty() && (f[0] >> 2) & 0x3 == 2 && ((f[0] >> 4) & 0x0f) & 0x8 != 0
+}
+
+/// Data / management header length: 24 bytes, +6 for the A4 field (WDS) and +2
+/// for the QoS control.  A4 precedes the QoS control, so a 4-address QoS header
+/// is 32 bytes (`ieee80211_hdrlen`).
+pub fn hdr_len(f: &[u8]) -> usize {
+    DOT11_HDR
+        + if is_4addr(f) { WDS_A4_LEN } else { 0 }
+        + if is_qos(f) { QOS_CTL_LEN } else { 0 }
+}
 
 /// Rate bitmap bit for an 802.11 supported-rate byte (low 7 bits are 0.5 Mbit/s
 /// units): 0..3 are CCK 1/2/5.5/11, then 4..11 the OFDM rates 6..54.
@@ -259,7 +285,43 @@ pub fn build_data_tods(
     Some(n + payload.len())
 }
 
-/// True when a FromDS data frame carries EAPOL (LLC/SNAP ethertype 0x888e).
+/// Wrap a payload in a WDS (ToDS+FromDS, 4-address) data frame + LLC/SNAP with
+/// `ethertype`.  A1 = the AP (RA), A2 = this station (TA), A3 = `dst`, A4 =
+/// `src`.  This is the form a repeater link carries bridged traffic in: `src`
+/// need not be our own address, which is the whole point of A4.
+pub fn build_data_wds(
+    our_mac: &[u8; 6],
+    bssid: &[u8; 6],
+    dst: &[u8; 6],
+    src: &[u8; 6],
+    ethertype: u16,
+    payload: &[u8],
+    out: &mut [u8],
+) -> Option<usize> {
+    let hdr = DOT11_HDR + WDS_A4_LEN;
+    let n_total = hdr + LLC_SNAP_LEN + payload.len();
+    if out.len() < n_total {
+        return None;
+    }
+    out[0] = 0x08; // data
+    out[1] = 0x03; // ToDS + FromDS
+    out[4..10].copy_from_slice(bssid); // A1 = RA (the AP)
+    out[10..16].copy_from_slice(our_mac); // A2 = TA (this station)
+    out[16..22].copy_from_slice(dst); // A3 = DA
+    out[22] = 0;
+    out[23] = 0;
+    out[24..30].copy_from_slice(src); // A4 = SA
+    let mut n = hdr;
+    out[n..n + 3].copy_from_slice(&[0xaa, 0xaa, 0x03]);
+    out[n + 6] = (ethertype >> 8) as u8;
+    out[n + 7] = ethertype as u8;
+    n += LLC_SNAP_LEN;
+    out[n..n + payload.len()].copy_from_slice(payload);
+    Some(n + payload.len())
+}
+
+/// True when a FromDS (3- or 4-address) data frame carries EAPOL
+/// (LLC/SNAP ethertype 0x888e).
 pub fn is_eapol_rx(f: &[u8]) -> bool {
     if f.len() < DOT11_HDR + LLC_SNAP_LEN {
         return false;
@@ -267,8 +329,7 @@ pub fn is_eapol_rx(f: &[u8]) -> bool {
     if frame_type_sub(f).0 != 2 || f[1] & 0x02 == 0 {
         return false;
     }
-    let sub = (f[0] >> 4) & 0xf;
-    let hdr = if sub & 0x8 != 0 { DOT11_QOS_HDR } else { DOT11_HDR };
+    let hdr = hdr_len(f);
     if f.len() < hdr + LLC_SNAP_LEN {
         return false;
     }
@@ -276,12 +337,7 @@ pub fn is_eapol_rx(f: &[u8]) -> bool {
     llc[0] == 0xaa && llc[1] == 0xaa && llc[2] == 0x03 && llc[6] == 0x88 && llc[7] == 0x8e
 }
 
-/// Data frame header length (24, or 26 when QoS).
+/// Data frame header length (24, +6 for the A4 field, +2 when QoS).
 pub fn data_hdr_len(f: &[u8]) -> usize {
-    let sub = (f[0] >> 4) & 0xf;
-    if sub & 0x8 != 0 {
-        DOT11_QOS_HDR
-    } else {
-        DOT11_HDR
-    }
+    hdr_len(f)
 }

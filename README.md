@@ -532,8 +532,9 @@ smoltcp keeps its neighbour cache private, so `cact_net` shadows it: `arp.rs` le
 The Linux-shaped split, with the **mac80211-equivalent in the kernel** (Rust crate `cact80211`, `Cact/net/wireless`) and the Wi-Fi driver reduced to a **dumb radio**:
 
 - **Engine** (`hw.rs` / `dev.rs` / `frame.rs` / `ccmp.rs` / `aes.rs` / `control.rs`) — scan (channel walk + probe request), open-system auth/association, the 802.11↔802.3 datapath, TK/GTK install, a beacon-loss watchdog, and **software CCMP/AES-128**. It registers netdev **`wlan0`** and the **`/dev/wlan0`** chardev; `read(/dev/wlan0)` serves the AP list as text.
-- **Driver contract** — a NIC module calls the ksym exports **`cact80211_register`** / **`_unregister`** / **`_rx`** with a `cact80211_hw` (ops `tx` / `config` / `rx_poll`) defined in [`cact80211.h`](Cact/net/wireless/cact80211.h); the driver only touches the hardware.
-- **Userspace is the WPA2 supplicant** — `wljoin` reads the BSS list, `CONNECT`s, runs the 4-way over EAPOL and installs TK/GTK through `CACT_WLANCTL_*` (`0x3F00`); `wifid` drives the connection lifecycle.
+- **Repeater / WDS links** — the datapath speaks **4-address** (ToDS+FromDS) data frames: A3 is the destination and A4 the original source, and the CCMP AAD authenticates A4. `CACT_WLANCTL_SET_WDS` enables it before `CONNECT` (a WDS peer may drop a 3-address uplink); the engine also latches it the first time the AP sends a 4-address frame. This is what lets DHCP/ARP pass when the uplink is a repeater rather than a plain AP. EAPOL stays 3-address, as in mac80211.
+- **Driver contract** — a NIC module calls the ksym exports **`cact80211_register`** / **`_unregister`** / **`_rx`** with a `cact80211_hw` (ops `tx` / `config` / `rx_poll`) defined in [`cact80211.h`](Cact/net/wireless/cact80211.h); the driver only touches the hardware and must pass an MPDU through verbatim (A4 included).
+- **Userspace is the WPA2 supplicant** — `wljoin` reads the BSS list, `CONNECT`s, runs the 4-way over EAPOL and installs TK/GTK through `CACT_WLANCTL_*` (`0x3F00`); `wifid` drives the connection lifecycle and turns on repeater/WDS `4addr` for a repeater uplink.
 - Current target radio: **Ralink RT3070** (`rt2800usb`, USB) as an out-of-tree **`.cctk`**; the engine stays dormant until that module is loaded on hardware (QEMU has no radio).
 
 Logical TCP states (C metadata / VFS view; ingress TCP is handled by **smoltcp**):
@@ -553,7 +554,7 @@ Full socket API (the libc wrappers over **`CACT_SOCKCTL_*`**): `socket`, `bind`,
 |-------|----------------|
 | **Ethernet / ARP / IPv4 / ICMP / TCP / UDP** | smoltcp (`cact_net`) |
 | **Interfaces** | One `Interface` + one `SocketSet`; `lo` = `127.0.0.1/8` as a second address (PHY loopback ring); the `arp.rs` shadow table mirrors smoltcp's private neighbour cache |
-| **Wi-Fi** | `cact80211` engine: `wlan0` netdev + `/dev/wlan0` (`CACT_WLANCTL_*`); drivers are dumb radios (RT3070), bound via `cact80211_register` / `_rx` |
+| **Wi-Fi** | `cact80211` engine: `wlan0` netdev + `/dev/wlan0` (`CACT_WLANCTL_*`), infrastructure **and repeater/WDS 4-address** links; drivers are dumb radios (RT3070), bound via `cact80211_register` / `_rx` |
 | **Sockets / VFS** | Up to **16** kernel socket nodes integrated with `read`/`write`/`close`; `.poll` reports real readiness (`POLLIN`/`POLLOUT`/`POLLHUP`), `fcntl(F_SETFL, O_NONBLOCK)` (and `SOCK_NONBLOCK`) makes `read`/`write` return `-EAGAIN` instead of blocking, `getsockname`/`getpeername` work, and a blocking `read`/`write`/`accept` yields `-EINTR` to a pending signal — so Ctrl+C reaches a task parked in a socket call |
 | **net_poll_task** | Dedicated kernel thread: sleeps on a semaphore, wakes on NIC RX, calls **`net_poll` → `stack_poll()`** |
 | **net_timer_task** | Periodic timer kick — wakes `net_poll_task` so smoltcp timers advance without RX traffic |
@@ -638,7 +639,7 @@ Syscall dispatch uses **`SYSCALL`/`SYSRET`** (long mode has no `SYSENTER`, and t
 | **`CACT_EPOLLCTL_*`** 0x3C00 | ioctl on `/dev/epoll` — `epoll_create`, `EPOLL_CTL`, `EPOLL_WAIT` |
 | **`CACT_TTYCTL_*`** 0x3D00 | ioctl on `/dev/ttyN` — VT activate/state/ctty, console foreground process group |
 | **`CACT_PTYCTL_*`** 0x3E00 | ioctl on `/dev/ptmx` — pts number, slave lock |
-| **`CACT_WLANCTL_*`** 0x3F00 | ioctl on `/dev/wlan0` — 802.11 scan/BSS list, connect/disconnect, TK/GTK install, EAPOL in/out, status |
+| **`CACT_WLANCTL_*`** 0x3F00 | ioctl on `/dev/wlan0` — 802.11 scan/BSS list, connect/disconnect, repeater/WDS (4-address) mode on/off, TK/GTK install, EAPOL in/out, status |
 | **`CACT_MQCTL_*`** 0x4000 | ioctl on a message-queue fd — POSIX queue init/send/receive/getattr/setattr/notify |
 | **`CACT_CHVCTL_*`** 0x4100 | ioctl on `/dev/chv` — the Cact hypervisor: `caps` (VT-x/AMD-V), `run` (launch the model's guest on demand) |
 | **DRM uapi** | ioctl on `/dev/dri/cardN` / `renderDN` — the DRM ioctls (`'d'` = 0x64 magic; the `drm_mode_*` band `0xA0`–`0xCE`, vendor commands from `DRM_COMMAND_BASE` 0x40 up) — see **Graphics — DRM / KMS** |

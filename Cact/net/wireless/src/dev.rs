@@ -111,6 +111,13 @@ pub struct Dev {
     pub name_ready: bool,
     pub channel: u8,
     pub assoc: bool,
+    /// Repeater/WDS link: speak 4-address data frames (ToDS+FromDS) with the
+    /// peer.  Set by `CACT_WLANCTL_SET_WDS` before `CONNECT`, or latched the
+    /// first time the AP sends us a 4-address frame.
+    pub wds: bool,
+    /// The operator's requested mode; `wds` is re-seeded from this on every
+    /// connect so a latched flag does not leak into the next BSS.
+    wds_cfg: bool,
     pub secured: bool,
     pub privacy: bool,
     pub bssid: [u8; 6],
@@ -157,6 +164,8 @@ impl Dev {
             name_ready: false,
             channel: 1,
             assoc: false,
+            wds: false,
+            wds_cfg: false,
             secured: false,
             privacy: false,
             bssid: [0; 6],
@@ -441,15 +450,48 @@ fn rx_data(d: &mut Dev, f: &[u8]) {
     if !d.assoc || f.len() < DOT11_HDR {
         return;
     }
+    // Downlink is FromDS (3-address) or ToDS+FromDS (4-address, a repeater/WDS
+    // peer).  A ToDS-only frame is one we sent, never a downlink.
+    let four = frame::is_4addr(f);
     if f[1] & 0x02 == 0 {
-        return; // FromDS only
-    }
-    if f[10..16] != d.bssid {
-        d.rx_other += 1;
         return;
+    }
+    if four {
+        // WDS: there is no BSSID field to compare against (mac80211 does the
+        // same for a 4addr station), so accept a frame addressed to us or to a
+        // group and reject only an echo of our own transmission (TA is us).
+        let ra_group = f[4] & 0x01 != 0;
+        if f.len() < DOT11_HDR + frame::WDS_A4_LEN
+            || (!ra_group && f[4..10] != d.our_mac)
+            || f[10..16] == d.our_mac
+        {
+            d.rx_other += 1;
+            return;
+        }
+        // The peer is talking 4-address: answer in the same mode.
+        d.wds = true;
+    } else {
+        // A universal repeater with Proxy ARP / MAC translation may put a TA of
+        // its own in A2 rather than the BSSID; a unicast frame addressed to this
+        // station is ours regardless.  A group frame still has to come from our
+        // BSS to avoid the channel's other traffic.
+        let to_us = f[4..10] == d.our_mac;
+        if f[10..16] != d.bssid && !to_us {
+            d.rx_other += 1;
+            return;
+        }
     }
     let hdr = frame::data_hdr_len(f);
     if f.len() < hdr {
+        return;
+    }
+    // On a WDS frame A3 is the destination and A4 the original source.
+    let (da_off, sa_off) = if four { (16usize, 24usize) } else { (4usize, 16usize) };
+    // A group frame whose source is this station is our own broadcast looped back
+    // by the relay (a proxy-ARP/MAT repeater does this): handing it up would make
+    // the stack process its own DHCP Discover/ARP.  mac80211 drops it too.
+    if f[da_off] & 0x01 != 0 && f[sa_off..sa_off + 6] == d.our_mac {
+        d.rx_other += 1;
         return;
     }
 
@@ -471,18 +513,20 @@ fn rx_data(d: &mut Dev, f: &[u8]) {
         buf[..n].copy_from_slice(&f[..n]);
         match crate::ccmp::decrypt(&key, buf, n, hdr) {
             Some(plen) if plen >= LLC_SNAP_LEN => {
-                deliver_ethernet(d, buf, hdr, plen);
+                deliver_ethernet(d, buf, hdr, plen, da_off, sa_off);
             }
             _ => d.rx_bad += 1,
         }
     } else {
-        deliver_ethernet(d, f, hdr, f.len() - hdr);
+        deliver_ethernet(d, f, hdr, f.len() - hdr, da_off, sa_off);
     }
 }
 
 /// Turn the LLC/SNAP payload at `buf[base..base+plen]` into an Ethernet frame.
-fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize) {
-    if plen < LLC_SNAP_LEN {
+/// `da_off`/`sa_off` locate the destination and source addresses in the 802.11
+/// header (A1/A3 for a 3-address frame, A3/A4 for a WDS one).
+fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize, da_off: usize, sa_off: usize) {
+    if plen < LLC_SNAP_LEN || buf.len() < sa_off + 6 || buf.len() < da_off + 6 {
         return;
     }
     let llc = &buf[base..base + plen];
@@ -506,14 +550,14 @@ fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize) {
     }
     // SAFETY: `dst` points at the freshly reserved (14 + payload.len()) bytes.
     let out = unsafe { core::slice::from_raw_parts_mut(dst, 14 + payload.len()) };
-    out[..6].copy_from_slice(&buf[4..10]); // A1 = destination
-    out[6..12].copy_from_slice(&buf[16..22]); // A3 = original source
+    out[..6].copy_from_slice(&buf[da_off..da_off + 6]); // DA
+    out[6..12].copy_from_slice(&buf[sa_off..sa_off + 6]); // SA
     out[12] = (ethertype >> 8) as u8;
     out[13] = ethertype as u8;
     out[14..].copy_from_slice(payload);
 
     d.rx_data += 1;
-    if buf[4] & 0x01 != 0 {
+    if buf[da_off] & 0x01 != 0 {
         d.rx_group += 1;
     }
     // SAFETY: `skb` is a complete Ethernet frame that `netif_rx` consumes.
@@ -564,15 +608,27 @@ fn tx_ethernet(d: &mut Dev, eth: &[u8]) -> i32 {
     }
     let mut dst = [0u8; 6];
     dst.copy_from_slice(&eth[..6]);
+    let mut src = [0u8; 6];
+    src.copy_from_slice(&eth[6..12]);
     let ethertype = ((eth[12] as u16) << 8) | eth[13] as u16;
     let payload = &eth[14..];
     let is_group = eth[0] & 0x01 != 0;
 
     let mut f = [0u8; 1600];
-    let n = match frame::build_data_tods(&d.our_mac, &d.bssid, &dst, ethertype, payload, &mut f) {
-        Some(n) => n,
-        None => return EINVAL,
+    let n = if d.wds {
+        // Repeater/WDS link: carry the real source in A4 so the AP bridges it.
+        match frame::build_data_wds(&d.our_mac, &d.bssid, &dst, &src, ethertype, payload, &mut f) {
+            Some(n) => n,
+            None => return EINVAL,
+        }
+    } else {
+        match frame::build_data_tods(&d.our_mac, &d.bssid, &dst, ethertype, payload, &mut f) {
+            Some(n) => n,
+            None => return EINVAL,
+        }
     };
+    // 24 bytes, 30 on a WDS frame: the CCMP AAD authenticates A4 too.
+    let hdr = frame::data_hdr_len(&f[..n]);
 
     let rc = if d.privacy {
         // A group frame needs the GTK, a unicast one the TK: sending without
@@ -589,7 +645,7 @@ fn tx_ethernet(d: &mut Dev, eth: &[u8]) -> i32 {
         let pn = d.pn[key_id as usize & 3];
         f[1] |= 0x40; // Protected
         let mut out = [0u8; 1600];
-        match crate::ccmp::encrypt(&key, key_id, pn, &f[..DOT11_HDR], DOT11_HDR, &f[DOT11_HDR..n], &mut out) {
+        match crate::ccmp::encrypt(&key, key_id, pn, &f[..hdr], hdr, &f[hdr..n], &mut out) {
             Some(tot) => hw_tx(d, &out[..tot], Q_DATA),
             None => EINVAL,
         }
@@ -671,6 +727,7 @@ fn connect_inner(bssid: &[u8; 6], ssid: &[u8]) -> i32 {
     d.channel = if bss.channel != 0 { bss.channel } else { d.channel };
     d.assoc = false;
     d.secured = false;
+    d.wds = d.wds_cfg;
     d.have_tk = false;
     d.have_gtk = false;
     d.eapol_head = 0;
@@ -803,6 +860,28 @@ pub fn disconnect() -> i32 {
     d.have_gtk = false;
     radio_unlock();
     0
+}
+
+/// Set the repeater (WDS / 4-address) frame mode.  It should be enabled before
+/// `CONNECT` so the uplink is 4-address from the first frame — a peer set up
+/// for WDS may drop a 3-address uplink.  Once the AP is heard talking
+/// 4-address the engine latches the mode by itself.
+pub fn set_wds(on: bool) -> bool {
+    radio_lock();
+    let d = dev();
+    let prev = d.wds;
+    d.wds_cfg = on;
+    d.wds = on;
+    radio_unlock();
+    prev
+}
+
+/// Whether the engine is currently speaking 4-address (repeater/WDS) frames.
+pub fn wds_enabled() -> bool {
+    radio_lock();
+    let v = dev().wds;
+    radio_unlock();
+    v
 }
 
 /// Fill the `cact_wlan_status_t` fields (see `control.rs`).

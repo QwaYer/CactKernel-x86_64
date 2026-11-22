@@ -21,7 +21,9 @@ actually has, not a promise. What already works is described in
   QEMU has no radio, and the only target so far is the Ralink **RT3070**
   (`rt2800usb`, out-of-tree `.cctk`). The engine is **legacy 802.11b/g rates
   only**: no HT, no A-MPDU de-aggregation, and the driver is a raw radio bound
-  through `cact80211_register` / `_rx`.
+  through `cact80211_register` / `_rx`. It speaks both 3-address infrastructure
+  and **4-address repeater/WDS** links, but has **no AP/softAP role and no
+  802.11s mesh**, and WPA2-CCMP is the only cipher (no WPA3/SAE, no TKIP/GCMP).
 - **One NIC at a time, plus `lo`.** The stack holds a single smoltcp `Interface`
   and a single `SocketSet` (a second NIC replaces the active one), and loopback
   is `127.0.0.1/8` carried as a *second address* rather than a separate device.

@@ -13,6 +13,13 @@
  * one `struct cact80211_hw` from its probe and calls `cact80211_rx()` for every
  * MPDU its RX path delivers.
  *
+ * Repeater / WDS links use 4-address data frames (ToDS+FromDS): the engine
+ * builds and parses them itself, so the radio must pass an MPDU through
+ * verbatim — including the A4 field after the sequence control — and must not
+ * rewrite addresses or assume a 24-byte header.  A frame's Protected bit is
+ * decided by the engine (software CCMP), so the radio marks frames as it
+ * already does and never hardware-encrypts.
+ *
  * The engine entry points are resolved through the kernel's ksym table.
  */
 

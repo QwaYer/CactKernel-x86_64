@@ -18,10 +18,12 @@ const WLANCTL_SCAN: u32 = 0x3F00;
 const WLANCTL_GET_BSS: u32 = 0x3F01;
 const WLANCTL_CONNECT: u32 = 0x3F02;
 const WLANCTL_DISCONNECT: u32 = 0x3F03;
+const WLANCTL_SET_WDS: u32 = 0x3F04;
 const WLANCTL_SET_KEY: u32 = 0x3F05;
 const WLANCTL_STATUS: u32 = 0x3F06;
 const WLANCTL_EAPOL_TX: u32 = 0x3F07;
 const WLANCTL_EAPOL_RX: u32 = 0x3F08;
+const WLANCTL_GET_WDS: u32 = 0x3F09;
 
 const SSID_MAX: usize = 33;
 const RSN_MAX: usize = 64;
@@ -160,10 +162,12 @@ extern "C" fn wlan_ioctl(_priv: *mut c_void, cmd: u32, arg: *mut c_void) -> c_in
         WLANCTL_GET_BSS => do_get_bss(arg),
         WLANCTL_CONNECT => do_connect(arg),
         WLANCTL_DISCONNECT => dev::disconnect(),
+        WLANCTL_SET_WDS => do_set_wds(arg),
         WLANCTL_SET_KEY => do_set_key(arg),
         WLANCTL_STATUS => do_status(arg),
         WLANCTL_EAPOL_TX => do_eapol_tx(arg),
         WLANCTL_EAPOL_RX => do_eapol_rx(arg),
+        WLANCTL_GET_WDS => do_get_wds(arg),
         _ => EINVAL,
     }
 }
@@ -311,6 +315,29 @@ fn do_eapol_rx(arg: *mut c_void) -> c_int {
         }
     }
     if copy_out(arg, &req) {
+        0
+    } else {
+        EFAULT
+    }
+}
+
+// ── repeater / WDS mode ───────────────────────────────────────────────────────
+fn do_set_wds(arg: *mut c_void) -> c_int {
+    let mut val: u32 = 0;
+    if !copy_in(arg, &mut val) {
+        return EFAULT;
+    }
+    let prev = dev::set_wds(val != 0) as u32;
+    if copy_out(arg, &prev) {
+        0
+    } else {
+        EFAULT
+    }
+}
+
+fn do_get_wds(arg: *mut c_void) -> c_int {
+    let val: u32 = if dev::wds_enabled() { 1 } else { 0 };
+    if copy_out(arg, &val) {
         0
     } else {
         EFAULT
