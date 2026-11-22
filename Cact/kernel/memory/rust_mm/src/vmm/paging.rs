@@ -778,19 +778,48 @@ pub unsafe extern "C" fn vmm_unmap(pd: *mut u64, virtual_addr: u64) -> u64 {
 /// the cache policy is the *page-directory* one, not a PTE; this walks to
 /// whichever of the two describes `va` and rewrites it.  pat.c uses it to make
 /// the framebuffer write-combining (PAT set, PCD/PWT clear).
+///
+/// The PAT bit is *not* in the same place at both shapes.  A 4 KiB PTE carries
+/// it in bit 7; in a 2 MiB (or 1 GiB) entry bit 7 is `PAGE_PS` and the PAT
+/// selection moved to bit 12.  The caller passes the PTE bit (bit 7) — the only
+/// value a page-table entry can carry — so when the walk lands on a large page
+/// this re-targets it to bit 12.  Without that, `(PAT=1, PCD=0, PWT=0)` becomes
+/// `(PAT=0, PCD=0, PWT=0)`: the request clears PCD/PWT and quietly selects PAT
+/// entry 0 (write-back) instead of entry 4 (write-combining), which on real
+/// device memory means read-for-ownership traffic against MMIO.
 #[unsafe(no_mangle)]
 pub extern "C" fn vmm_set_kernel_cache(va: u64, set: u64, clear: u64) {
+    /// PAT bit in a 4 KiB page-table entry.
+    const PTE_PAT: u64 = 0x080;
+    /// PAT bit in a 2 MiB / 1 GiB large-page entry (bit 7 there is `PAGE_PS`).
+    const LARGE_PAT: u64 = 0x1000;
+
     // SAFETY: the kernel's own map is a live page map; the walk only reads it.
     let w = unsafe { walk(get_kernel_pd(), va, false, false) };
-    let which = if !w.pte_entry.is_null() {
-        w.pte_entry
+    // A non-null PTE is a 4 KiB mapping; with none, the relevant entry is the
+    // page-directory one — a 2 MiB large page when present (`walk` reports a
+    // page table through `pte_entry`, so an absent PTE means large or absent).
+    let (which, large_page) = if !w.pte_entry.is_null() {
+        (w.pte_entry, false)
     } else {
-        w.pd_entry
+        (w.pd_entry, true)
     };
     if which.is_null() {
         return;
     }
     // SAFETY: `which` is an in-bounds entry of the kernel's own tables.
+    if unsafe { *which } & PAGE_PRESENT as u64 == 0 {
+        return;
+    }
+    let (set, clear) = if large_page {
+        (
+            if set & PTE_PAT != 0 { (set & !PTE_PAT) | LARGE_PAT } else { set },
+            if clear & PTE_PAT != 0 { (clear & !PTE_PAT) | LARGE_PAT } else { clear },
+        )
+    } else {
+        (set, clear)
+    };
+    // SAFETY: `which` is an in-bounds, present entry of the kernel's own tables.
     unsafe { *which = (*which | set) & !clear };
 }
 

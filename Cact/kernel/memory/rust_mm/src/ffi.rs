@@ -111,9 +111,12 @@ pub const PAGE_SWAPPED: u32 = 0x008;
 /// Bit 4 — Page Cache Disable (PCD).  Set for MMIO/PCI-hole PTEs so that
 /// reads/writes bypass L1/L2 cache and reach device registers directly.
 pub const PAGE_PCD:     u32 = 0x010;
-/// Bit 7 — Page Attribute Table (PAT).  Together with PCD/PWT selects a
-/// memory type from the IA32_PAT MSR.  (PAT=1,PCD=0,PWT=0) → entry 4 = WC.
-/// Reserved for future Rust-side PAT usage; currently used by C pat.c.
+/// Bit 7 — Page Attribute Table (PAT) *in a 4 KiB PTE*.  Together with PCD/PWT
+/// selects a memory type from the IA32_PAT MSR.  (PAT=1,PCD=0,PWT=0) → entry 4
+/// = WC.  In a 2 MiB/1 GiB entry this bit is `PAGE_PS` instead and the PAT
+/// selection sits in bit 12 — `vmm_set_kernel_cache` re-targets the request for
+/// that shape.  Reserved for future Rust-side PAT usage; currently used by C
+/// pat.c.
 //pub const PAGE_PAT:     u32 = 0x080;
 pub const PTE_ACCESSED: u32 = 0x020;
 pub const PAGE_COW:     u32 = 0x200;
