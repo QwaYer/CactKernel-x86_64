@@ -801,6 +801,20 @@ fn warn_tls_insecure() {
     }
 }
 
+/// The address an HTTP(S) fetch will connect to: IPv4 when an A record (or a
+/// dotted-decimal literal) resolves, otherwise IPv6 via AAAA.
+enum FetchTarget {
+    V4(u32),
+    V6([u8; 16]),
+}
+
+fn resolve_target(host: &[u8]) -> Option<FetchTarget> {
+    if let Some(ip) = dns_resolve::resolve_a(host) {
+        return Some(FetchTarget::V4(ip));
+    }
+    dns_resolve::resolve_aaaa(host).map(FetchTarget::V6)
+}
+
 fn do_fetch(
     url_bytes: &[u8],
     method: c_int,
@@ -822,7 +836,7 @@ fn do_fetch(
 
     let deadline = now_ticks().saturating_add(HTTP_TIMEOUT_TICKS);
 
-    let Some(ip) = dns_resolve::resolve_a(&parsed.host) else {
+    let Some(target) = resolve_target(&parsed.host) else {
         return (-1, resp);
     };
 
@@ -831,7 +845,15 @@ fn do_fetch(
         return (-1, resp);
     }
 
-    if tcp::tcp_connect(sock, ip, parsed.port) != 0 {
+    let connected = match target {
+        FetchTarget::V4(ip) => tcp::tcp_connect(sock, ip, parsed.port),
+        FetchTarget::V6(a6) => {
+            // SAFETY: `a6` is a local 16-byte array, so the pointer handed to
+            // `tcp_connect6` is readable for the call.
+            unsafe { tcp::tcp_connect6(sock, a6.as_ptr(), parsed.port) }
+        }
+    };
+    if connected != 0 {
         let _ = tcp::tcp_close(sock);
         return (-1, resp);
     }

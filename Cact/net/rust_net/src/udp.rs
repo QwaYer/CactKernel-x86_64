@@ -669,6 +669,15 @@ fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, l
                 return -1;
             };
             let s = socks.get_mut::<udp::Socket>(h);
+            // A multicast destination (DHCPv6's ff02::1:2, mDNS, …) needs hop
+            // limit 255: RFC 8415 §16/§17 requires it and the server drops a
+            // message that arrives with any other value.  Unicast keeps the
+            // smoltcp default (64).
+            if let SockAddr::V6(a) = dst {
+                if a[0] == 0xff {
+                    s.set_hop_limit(Some(255));
+                }
+            }
             // SAFETY: the caller contract (see # Safety) makes `data` a `len`-byte
             // readable buffer, which is what `from_raw_parts` asserts.
             let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
