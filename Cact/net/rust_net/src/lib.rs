@@ -41,6 +41,7 @@ pub mod config;
 pub mod dns_resolve;
 pub mod ffi;
 pub mod ffi_kernel;
+pub mod fw;
 pub mod http;
 pub mod iface;
 pub mod ping;

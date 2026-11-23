@@ -1,0 +1,552 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 CactOS Project
+
+//! In-kernel packet filter (firewall) — a small netfilter.
+//!
+//! A chain holds ordered rules and a default policy; the first rule that matches
+//! a frame decides its verdict and, when no rule matches, the chain's policy
+//! applies.  Rules and policies are set from userspace through `/dev/net`
+//! (`CACT_NETCTL_FW_*`); with no rules the policy is `ACCEPT`, so an
+//! unconfigured kernel behaves exactly as before the firewall existed.
+//!
+//! Evaluation sits where the stack meets the wire and is family-agnostic: the
+//! INPUT chain sees every frame pulled off a slot's receive ring, the OUTPUT
+//! chain every frame the stack is about to emit.  ARP is never filtered — it is
+//! L2 and belongs to a bridge, not to an IP firewall — so an INPUT `DROP` policy
+//! still leaves neighbour resolution working.  A frame whose L3 header cannot be
+//! parsed is likewise accepted untouched.
+
+use crate::stack::StackGuard;
+
+// ── ABI constants (mirror CACT_FW_* in ioctl_abi.h) ─────────────────────────
+
+/// Frame delivered to the local stack.
+pub const FW_CHAIN_INPUT: u8 = 0;
+/// Frame emitted by the local stack.
+pub const FW_CHAIN_OUTPUT: u8 = 1;
+/// Frame routed through the box (reserved for the forwarding path).
+pub const FW_CHAIN_FORWARD: u8 = 2;
+/// DNAT hook, before the routing decision (reserved for the NAT stage).
+#[allow(dead_code)]
+pub const FW_CHAIN_PREROUTING: u8 = 3;
+/// SNAT hook, after the routing decision (reserved for the NAT stage).
+#[allow(dead_code)]
+pub const FW_CHAIN_POSTROUTING: u8 = 4;
+/// Number of chains; must match `CACT_FW_CHAIN_COUNT`.
+pub const FW_CHAIN_COUNT: usize = 5;
+
+pub const FW_ACTION_ACCEPT: u8 = 0;
+pub const FW_ACTION_DROP: u8 = 1;
+
+const FW_FAMILY_V4: u8 = 4;
+const FW_FAMILY_V6: u8 = 6;
+
+const FW_PROTO_ANY: u8 = 0;
+const FW_PROTO_ICMP: u8 = 1;
+const FW_PROTO_TCP: u8 = 6;
+const FW_PROTO_UDP: u8 = 17;
+const FW_PROTO_ICMPV6: u8 = 58;
+
+const FW_IFACE_ANY: u8 = 0xFF;
+const FW_ICMP_ANY: u8 = 0xFF;
+
+/// Maximum rules per chain; must match `CACT_FW_RULES_MAX`.
+pub const FW_RULES_MAX: usize = 64;
+
+/// Policy values share the `CACT_FW_ACTION_ACCEPT` / `_DROP` numbering.
+
+/// One filter rule, byte-for-byte the C `cact_fw_rule_t` (88 bytes).  Addresses
+/// are big-endian; an IPv4 address lives in the first four bytes (`src[0..4]`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct FwRule {
+    pub chain: u8,
+    pub action: u8,
+    pub family: u8,
+    pub proto: u8,
+    pub has_src: u8,
+    pub has_dst: u8,
+    pub src_prefix: u8,
+    pub dst_prefix: u8,
+    pub state_mask: u8,
+    pub icmp_type: u8,
+    pub in_iface: u8,
+    pub _pad: u8,
+    pub src_port_min: u16,
+    pub src_port_max: u16,
+    pub dst_port_min: u16,
+    pub dst_port_max: u16,
+    pub nat_port: u16,
+    pub _pad2: u16,
+    pub packets: u64,
+    pub bytes: u64,
+    pub src: [u8; 16],
+    pub dst: [u8; 16],
+    pub nat_addr: [u8; 16],
+}
+
+impl FwRule {
+    const fn empty() -> Self {
+        Self {
+            chain: 0,
+            action: 0,
+            family: 0,
+            proto: 0,
+            has_src: 0,
+            has_dst: 0,
+            src_prefix: 0,
+            dst_prefix: 0,
+            state_mask: 0,
+            icmp_type: FW_ICMP_ANY,
+            in_iface: FW_IFACE_ANY,
+            _pad: 0,
+            src_port_min: 0,
+            src_port_max: 0,
+            dst_port_min: 0,
+            dst_port_max: 0,
+            nat_port: 0,
+            _pad2: 0,
+            packets: 0,
+            bytes: 0,
+            src: [0; 16],
+            dst: [0; 16],
+            nat_addr: [0; 16],
+        }
+    }
+}
+
+// The C `cact_fw_rule_t` must stay byte-identical.
+const _: () = assert!(core::mem::size_of::<FwRule>() == 88);
+
+/// The rule tables, one array per chain.  Mutated only under `STACK_LOCK`: the
+/// configuration ioctls take the guard, and the hooks already run under it
+/// (`SlotDev::receive` and the TX token are reached from `iface.poll`), so a
+/// rule cannot change under a frame being evaluated.
+static mut RULES: [[FwRule; FW_RULES_MAX]; FW_CHAIN_COUNT] =
+    [[FwRule::empty(); FW_RULES_MAX]; FW_CHAIN_COUNT];
+
+/// Live rule count per chain (the rule at index `RULE_COUNT[ch]` is unused).
+static mut RULE_COUNT: [u32; FW_CHAIN_COUNT] = [0; FW_CHAIN_COUNT];
+
+/// Default policy per chain (`FW_ACTION_ACCEPT` / `FW_ACTION_DROP`).
+static mut POLICY: [u8; FW_CHAIN_COUNT] = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT];
+
+/// The parsed L3/L4 view of one frame, copied out so the match loop holds no
+/// borrow of the frame buffer.
+struct Pkt {
+    family: u8,
+    proto: u8,
+    icmp_type: u8,
+    /// False when there is no usable L4 header (fragment, or an unparsed IPv6
+    /// extension header), so port rules cannot match.
+    has_l4: bool,
+    src: [u8; 16],
+    dst: [u8; 16],
+    sport: u16,
+    dport: u16,
+    /// Length of the L3 datagram, for the byte counter.
+    l3_len: u32,
+}
+
+impl Pkt {
+    /// Parse an Ethernet frame into its L3/L4 fields.  `None` when it is not IP
+    /// (ARP, and anything else the filter does not police).
+    fn parse(frame: &[u8]) -> Option<Pkt> {
+        if frame.len() < 14 {
+            return None;
+        }
+        match u16::from_be_bytes([frame[12], frame[13]]) {
+            0x0800 => Self::parse_ipv4(frame),
+            0x86DD => Self::parse_ipv6(frame),
+            _ => None,
+        }
+    }
+
+    fn parse_ipv4(frame: &[u8]) -> Option<Pkt> {
+        if frame.len() < 34 {
+            return None;
+        }
+        let ihl = (frame[14] & 0x0F) as usize * 4;
+        if ihl < 20 || 14 + ihl > frame.len() {
+            return None;
+        }
+        let proto = frame[23];
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src[..4].copy_from_slice(&frame[26..30]);
+        dst[..4].copy_from_slice(&frame[30..34]);
+        let l3_len = u16::from_be_bytes([frame[16], frame[17]]) as u32;
+        // A non-first fragment carries no L4 header.
+        let fragmented = u16::from_be_bytes([frame[20], frame[21]]) & 0x1FFF != 0;
+        let l4 = 14 + ihl;
+        let (has_l4, sport, dport, icmp_type) = Self::parse_l4(frame, proto, l4, fragmented);
+        Some(Pkt {
+            family: FW_FAMILY_V4,
+            proto,
+            icmp_type,
+            has_l4,
+            src,
+            dst,
+            sport,
+            dport,
+            l3_len,
+        })
+    }
+
+    fn parse_ipv6(frame: &[u8]) -> Option<Pkt> {
+        if frame.len() < 54 {
+            return None;
+        }
+        let proto = frame[20];
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src.copy_from_slice(&frame[22..38]);
+        dst.copy_from_slice(&frame[38..54]);
+        let l3_len = 40 + u16::from_be_bytes([frame[18], frame[19]]) as u32;
+        // Extension headers are not walked: only a directly following L4 header
+        // is parsed, so a rule with a port constraint simply does not match a
+        // frame that carries one.
+        let (has_l4, sport, dport, icmp_type) = Self::parse_l4(frame, proto, 54, false);
+        Some(Pkt {
+            family: FW_FAMILY_V6,
+            proto,
+            icmp_type,
+            has_l4,
+            src,
+            dst,
+            sport,
+            dport,
+            l3_len,
+        })
+    }
+
+    /// Extract the sport/dport/icmp-type triple.  `no_l4` is set when the L3
+    /// header already says there is no L4 header (an IPv4 fragment).
+    fn parse_l4(frame: &[u8], proto: u8, l4: usize, no_l4: bool) -> (bool, u16, u16, u8) {
+        match proto {
+            FW_PROTO_TCP | FW_PROTO_UDP => {
+                if no_l4 || l4 + 4 > frame.len() {
+                    return (false, 0, 0, FW_ICMP_ANY);
+                }
+                let sport = u16::from_be_bytes([frame[l4], frame[l4 + 1]]);
+                let dport = u16::from_be_bytes([frame[l4 + 2], frame[l4 + 3]]);
+                (true, sport, dport, FW_ICMP_ANY)
+            }
+            FW_PROTO_ICMP | FW_PROTO_ICMPV6 => {
+                if no_l4 || l4 >= frame.len() {
+                    return (false, 0, 0, FW_ICMP_ANY);
+                }
+                (true, 0, 0, frame[l4])
+            }
+            _ => (false, 0, 0, FW_ICMP_ANY),
+        }
+    }
+}
+
+/// True when `a` and `b` agree in the top `prefix` bits of a `family` address.
+fn addr_eq_prefix(a: &[u8; 16], b: &[u8; 16], prefix: u8, family: u8) -> bool {
+    let len = if family == FW_FAMILY_V4 { 4 } else { 16 };
+    let mut bits = prefix as u32;
+    for i in 0..len {
+        let mask = if bits >= 8 {
+            0xFFu8
+        } else if bits == 0 {
+            0x00u8
+        } else {
+            (!0u8) << (8 - bits)
+        };
+        if (a[i] & mask) != (b[i] & mask) {
+            return false;
+        }
+        bits = bits.saturating_sub(8);
+    }
+    true
+}
+
+/// Port range match: `min == 0` means "any port"; otherwise `port` must lie in
+/// `min..=max` (`max == 0` meaning `min..=65535`).
+fn port_match(port: u16, min: u16, max: u16) -> bool {
+    if min == 0 {
+        return true;
+    }
+    port >= min && port <= if max == 0 { u16::MAX } else { max }
+}
+
+/// Whether rule `r` matches packet `p` arriving on interface `slot`.
+fn rule_matches(r: &FwRule, p: &Pkt, slot: usize) -> bool {
+    if r.family != 0 && r.family != p.family {
+        return false;
+    }
+    if r.proto != FW_PROTO_ANY && r.proto != p.proto {
+        return false;
+    }
+    if r.in_iface != FW_IFACE_ANY && r.in_iface as usize != slot {
+        return false;
+    }
+    if r.icmp_type != FW_ICMP_ANY && (r.icmp_type != p.icmp_type || !p.has_l4) {
+        return false;
+    }
+    if r.has_src != 0 && !addr_eq_prefix(&r.src, &p.src, r.src_prefix, p.family) {
+        return false;
+    }
+    if r.has_dst != 0 && !addr_eq_prefix(&r.dst, &p.dst, r.dst_prefix, p.family) {
+        return false;
+    }
+    if (r.src_port_min != 0 || r.dst_port_min != 0) && !p.has_l4 {
+        return false;
+    }
+    if !port_match(p.sport, r.src_port_min, r.src_port_max) {
+        return false;
+    }
+    if !port_match(p.dport, r.dst_port_min, r.dst_port_max) {
+        return false;
+    }
+    true
+}
+
+/// True while any chain has a rule or a `DROP` policy — the fast path that keeps
+/// an unconfigured firewall completely free.
+fn configured() -> bool {
+    // SAFETY: both statics are only mutated under `STACK_LOCK`, which every
+    // caller of `configured` holds (the hooks run under it, like the ioctls).
+    let counts = unsafe { &*core::ptr::addr_of!(RULE_COUNT) };
+    // SAFETY: as above, for `POLICY`.
+    let policy = unsafe { &*core::ptr::addr_of!(POLICY) };
+    if policy.iter().any(|&p| p == FW_ACTION_DROP) {
+        return true;
+    }
+    counts.iter().any(|&c| c != 0)
+}
+
+/// Evaluate chain `chain` against one frame.  Returns the decided action
+/// (`FW_ACTION_ACCEPT` / `FW_ACTION_DROP`); a frame that is not IP is accepted.
+fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
+    let ch = chain as usize;
+    let p = match Pkt::parse(frame) {
+        Some(p) => p,
+        None => return FW_ACTION_ACCEPT,
+    };
+    // SAFETY: the tables are only mutated under `STACK_LOCK`; every call site
+    // holds it (the poll path and the TX token), so this read cannot race a
+    // configuration change.
+    let count = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] };
+    // One unsafe operation per block (crate lint): the shared borrow below is
+    // turned into an exclusive one only to bump counters, which the same lock
+    // makes sound — no other context reads the table concurrently.
+    // SAFETY: `RULES` is only touched under `STACK_LOCK`, held here.
+    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    for i in 0..count as usize {
+        let r = &mut rules[ch][i];
+        if rule_matches(r, &p, slot) {
+            r.packets = r.packets.wrapping_add(1);
+            r.bytes = r.bytes.wrapping_add(p.l3_len as u64);
+            return r.action;
+        }
+    }
+    // SAFETY: `POLICY` is read under `STACK_LOCK` just like the tables above.
+    unsafe { (*core::ptr::addr_of!(POLICY))[ch] }
+}
+
+/// Filter an inbound frame for interface `slot`.  Returns `true` when it may be
+/// delivered to the stack, `false` when the INPUT chain drops it.
+pub(crate) fn hook_input(frame: &[u8], slot: usize) -> bool {
+    if !configured() {
+        return true;
+    }
+    eval(FW_CHAIN_INPUT, frame, slot) == FW_ACTION_ACCEPT
+}
+
+/// Filter an outbound frame produced by interface `slot`.  Returns `true` when
+/// it may leave the stack, `false` when the OUTPUT chain drops it.
+pub(crate) fn hook_output(frame: &[u8], slot: usize) -> bool {
+    if !configured() {
+        return true;
+    }
+    eval(FW_CHAIN_OUTPUT, frame, slot) == FW_ACTION_ACCEPT
+}
+
+/// Whether `chain` may hold rules in this build (the NAT chains are reserved
+/// until the NAT stage).
+fn chain_is_filter(chain: u32) -> bool {
+    chain == FW_CHAIN_INPUT as u32
+        || chain == FW_CHAIN_OUTPUT as u32
+        || chain == FW_CHAIN_FORWARD as u32
+}
+
+// ── Configuration entry points (`CACT_NETCTL_FW_*`) ─────────────────────────
+
+/// Append `*rule` to its chain.  Returns 0 on success, -1 on a bad argument:
+/// null pointer, unknown chain, a reserved (NAT) chain, an unknown action, a
+/// non-zero state mask (conntrack is a later stage), or a full table.
+///
+/// # Safety
+///
+/// `rule` must be null or point to a live, properly aligned [`FwRule`] that
+/// stays readable for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
+    if rule.is_null() {
+        return -1;
+    }
+    let _guard = StackGuard::new();
+    // SAFETY: the caller contract (see # Safety) makes `rule` a live, aligned
+    // `FwRule`; the borrow ends before the table is touched below.
+    let r = unsafe { &*rule };
+    if !chain_is_filter(r.chain as u32) {
+        return -1;
+    }
+    if r.action != FW_ACTION_ACCEPT && r.action != FW_ACTION_DROP {
+        return -1;
+    }
+    // State matching arrives with conntrack; reject it now rather than silently
+    // ignoring it, so a rule never means more than it says.
+    if r.state_mask != 0 {
+        return -1;
+    }
+    let ch = r.chain as usize;
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
+    let counts = unsafe { &mut *core::ptr::addr_of_mut!(RULE_COUNT) };
+    let n = counts[ch] as usize;
+    if n >= FW_RULES_MAX {
+        return -1;
+    }
+    let mut copy = *r;
+    copy.packets = 0;
+    copy.bytes = 0;
+    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` and
+    // `n` are bounds-checked above.
+    unsafe { (&mut *core::ptr::addr_of_mut!(RULES))[ch][n] = copy };
+    counts[ch] += 1;
+    0
+}
+
+/// Delete rule `index` from chain `chain`, shifting later rules down.  Returns 0
+/// on success, -1 on a bad chain or an out-of-range index.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_rule_del(chain: u32, index: u32) -> i32 {
+    if chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    let ch = chain as usize;
+    let _guard = StackGuard::new();
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
+    let counts = unsafe { &mut *core::ptr::addr_of_mut!(RULE_COUNT) };
+    let n = counts[ch] as usize;
+    let i = index as usize;
+    if i >= n {
+        return -1;
+    }
+    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` is a
+    // valid chain and `i < n <= FW_RULES_MAX`, so both ranges are in bounds and
+    // `i + 1 <= n <= FW_RULES_MAX` keeps the shift's source in bounds too.
+    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    for k in i..n - 1 {
+        rules[ch][k] = rules[ch][k + 1];
+    }
+    rules[ch][n - 1] = FwRule::empty();
+    counts[ch] = (n - 1) as u32;
+    0
+}
+
+/// Number of rules in `chain`, or -1 for an unknown chain.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_rule_count(chain: u32) -> i32 {
+    if chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    let _guard = StackGuard::new();
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here; a u32
+    // load cannot tear.
+    unsafe { (*core::ptr::addr_of!(RULE_COUNT))[chain as usize] as i32 }
+}
+
+/// Copy rule `index` of `chain` (with its counters) into `*out`.  Returns 0 on
+/// success, -1 on a bad chain, an out-of-range index, or a null `out`.
+///
+/// # Safety
+///
+/// `out` may be null (the call then returns -1), but if non-null it must point
+/// to a writable, properly aligned [`FwRule`] that stays live for the call.
+#[no_mangle]
+pub unsafe extern "C" fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut FwRule) -> i32 {
+    if out.is_null() || chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    let ch = chain as usize;
+    let _guard = StackGuard::new();
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
+    let n = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] } as usize;
+    let i = index as usize;
+    if i >= n {
+        return -1;
+    }
+    // SAFETY: `RULES` is read under `STACK_LOCK`, held here, and `ch`/`i` are
+    // bounds-checked above.
+    let rule = unsafe { (*core::ptr::addr_of!(RULES))[ch][i] };
+    // SAFETY: the caller contract (see # Safety) makes `out` a live, aligned
+    // `FwRule`; `rule` is a local copy, so the ranges cannot overlap.
+    unsafe { core::ptr::write(out, rule) };
+    0
+}
+
+/// Remove every rule from `chain`.  Returns 0 on success, -1 for an unknown
+/// chain.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_flush(chain: u32) -> i32 {
+    if chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    let ch = chain as usize;
+    let _guard = StackGuard::new();
+    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` is a
+    // valid chain index.
+    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    rules[ch] = [FwRule::empty(); FW_RULES_MAX];
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here; `ch`
+    // is a valid chain index.
+    unsafe { (*core::ptr::addr_of_mut!(RULE_COUNT))[ch] = 0 };
+    0
+}
+
+/// Set `chain`'s default policy to `policy` (`FW_ACTION_ACCEPT` / `_DROP`).
+/// Returns 0 on success, -1 on an unknown chain or policy.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_policy_set(chain: u32, policy: u32) -> i32 {
+    if chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    if policy != FW_ACTION_ACCEPT as u32 && policy != FW_ACTION_DROP as u32 {
+        return -1;
+    }
+    let _guard = StackGuard::new();
+    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here; `chain` is
+    // bounds-checked above.
+    unsafe { (*core::ptr::addr_of_mut!(POLICY))[chain as usize] = policy as u8 };
+    0
+}
+
+/// Read `chain`'s default policy, or -1 for an unknown chain.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_policy_get(chain: u32) -> i32 {
+    if chain as usize >= FW_CHAIN_COUNT {
+        return -1;
+    }
+    let _guard = StackGuard::new();
+    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here; a byte load
+    // cannot tear.
+    unsafe { (*core::ptr::addr_of!(POLICY))[chain as usize] as i32 }
+}
+
+/// Flush every chain and reset every policy to `ACCEPT`.
+#[no_mangle]
+pub extern "C" fn rust_net_fw_reset() -> i32 {
+    let _guard = StackGuard::new();
+    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here.
+    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    *rules = [[FwRule::empty(); FW_RULES_MAX]; FW_CHAIN_COUNT];
+    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
+    unsafe { *core::ptr::addr_of_mut!(RULE_COUNT) = [0; FW_CHAIN_COUNT] };
+    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here.
+    unsafe { *core::ptr::addr_of_mut!(POLICY) = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT] };
+    0
+}

@@ -659,6 +659,11 @@ impl TxToken for CactTxToken<'_> {
         if this.unconfigured_v6 && ipv6_dst_is_offlink_global(&this.buf[..len]) {
             return r;
         }
+        // The OUTPUT chain sees every frame the stack emits, before it is looped
+        // back or handed to the NIC.
+        if !crate::fw::hook_output(&this.buf[..len], this.slot) {
+            return r;
+        }
         if frame_involves_loopback(&this.buf[..len], this.slot) {
             this.push_loopback(len);
             return r;
@@ -706,54 +711,62 @@ impl Device for SlotDev<'_> {
         let unconfigured = self.unconfigured;
         let unconfigured_v6 = self.unconfigured_v6;
         let phy: &mut CactPhy = &mut *self.phy;
-        let (slot, n) = {
-            // Only the ring indices need the lock.  The producer never writes
-            // the slot `rx_head` points at (it stops one short of it), so the
-            // bytes cannot change after `rx_head` advances.
-            let _rx_guard = RxGuard::new();
-            // Re-inject frames looped back last egress into the RX ring first, so
-            // the stack sees them on this poll.  A frame is left in `lo` if the RX
-            // ring is momentarily full; the next call retries.
-            while phy.lo_head != phy.lo_tail {
-                let next = (phy.rx_tail + 1) % RX_QUEUE_LEN;
-                if next == phy.rx_head {
-                    break;
+        loop {
+            let (slot, n) = {
+                // Only the ring indices need the lock.  The producer never writes
+                // the slot `rx_head` points at (it stops one short of it), so the
+                // bytes cannot change after `rx_head` advances.
+                let _rx_guard = RxGuard::new();
+                // Re-inject frames looped back last egress into the RX ring first, so
+                // the stack sees them on this poll.  A frame is left in `lo` if the RX
+                // ring is momentarily full; the next call retries.
+                while phy.lo_head != phy.lo_tail {
+                    let next = (phy.rx_tail + 1) % RX_QUEUE_LEN;
+                    if next == phy.rx_head {
+                        break;
+                    }
+                    let lo_slot = phy.lo_head;
+                    let m = phy.lo_len[lo_slot].min(PHY_MTU);
+                    phy.rx[phy.rx_tail][..m].copy_from_slice(&phy.lo[lo_slot][..m]);
+                    phy.rx_len[phy.rx_tail] = m;
+                    phy.rx_tail = next;
+                    phy.lo_head = (phy.lo_head + 1) % RX_QUEUE_LEN;
                 }
-                let lo_slot = phy.lo_head;
-                let m = phy.lo_len[lo_slot].min(PHY_MTU);
-                phy.rx[phy.rx_tail][..m].copy_from_slice(&phy.lo[lo_slot][..m]);
-                phy.rx_len[phy.rx_tail] = m;
-                phy.rx_tail = next;
-                phy.lo_head = (phy.lo_head + 1) % RX_QUEUE_LEN;
+                if phy.rx_head == phy.rx_tail {
+                    return None;
+                }
+                let slot = phy.rx_head;
+                phy.rx_head = (phy.rx_head + 1) % RX_QUEUE_LEN;
+                (slot, phy.rx_len[slot].min(PHY_MTU))
+            };
+            // The INPUT chain sees every frame before the stack does, including
+            // frames looped back from our own egress.  A dropped frame is simply
+            // skipped; the next one in the ring is considered in its place.
+            if !crate::fw::hook_input(&phy.rx[slot][..n], self.slot) {
+                continue;
             }
-            if phy.rx_head == phy.rx_tail {
-                return None;
-            }
-            let slot = phy.rx_head;
-            phy.rx_head = (phy.rx_head + 1) % RX_QUEUE_LEN;
-            (slot, phy.rx_len[slot].min(PHY_MTU))
-        };
-        // Learn the neighbor from any ARP frame before smoltcp consumes it, so
-        // the kernel's ARP table (`ip neigh`) mirrors the traffic on the wire.
-        // Safe to touch the table directly here: `receive` runs under `STACK_LOCK`.
-        crate::arp::note_frame(&phy.rx[slot][..n], self.slot);
-        Some((
-            CactRxToken {
-                slice: &phy.rx[slot][..n],
-            },
-            CactTxToken {
-                buf: &mut phy.tx,
-                lo: &mut phy.lo,
-                lo_len: &mut phy.lo_len,
-                lo_head: &mut phy.lo_head,
-                lo_tail: &mut phy.lo_tail,
-                lo_dropped: &mut phy.lo_dropped,
-                drv,
-                slot: self.slot,
-                unconfigured,
-                unconfigured_v6,
-            },
-        ))
+            // Learn the neighbor from any ARP frame before smoltcp consumes it, so
+            // the kernel's ARP table (`ip neigh`) mirrors the traffic on the wire.
+            // Safe to touch the table directly here: `receive` runs under `STACK_LOCK`.
+            crate::arp::note_frame(&phy.rx[slot][..n], self.slot);
+            return Some((
+                CactRxToken {
+                    slice: &phy.rx[slot][..n],
+                },
+                CactTxToken {
+                    buf: &mut phy.tx,
+                    lo: &mut phy.lo,
+                    lo_len: &mut phy.lo_len,
+                    lo_head: &mut phy.lo_head,
+                    lo_tail: &mut phy.lo_tail,
+                    lo_dropped: &mut phy.lo_dropped,
+                    drv,
+                    slot: self.slot,
+                    unconfigured,
+                    unconfigured_v6,
+                },
+            ));
+        }
     }
 
     fn transmit(&mut self, _timestamp: Instant) -> Option<Self::TxToken<'_>> {

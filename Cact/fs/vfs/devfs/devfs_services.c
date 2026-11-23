@@ -513,6 +513,70 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
         return rust_net_iface_set_cfg6(a.index, a.addr, a.prefix, a.gateway, a.dns);
     }
 
+    case CACT_NETCTL_FW_RULE_ADD: {
+        int r = _root_only();
+        if (r) return r;
+        cact_fw_rule_t rule;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&rule, arg, sizeof(rule)) != 0) return -EFAULT;
+        return rust_net_fw_rule_add(&rule);
+    }
+
+    case CACT_NETCTL_FW_RULE_DEL: {
+        int r = _root_only();
+        if (r) return r;
+        cact_fw_idx_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_fw_rule_del(a.chain, a.index);
+    }
+
+    case CACT_NETCTL_FW_RULE_COUNT: {
+        cact_fw_chain_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_fw_rule_count(a.chain);
+    }
+
+    case CACT_NETCTL_FW_RULE_GET: {
+        cact_fw_get_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (rust_net_fw_rule_get(a.chain, a.index, &a.rule) != 0) return -ENODEV;
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_NETCTL_FW_FLUSH: {
+        int r = _root_only();
+        if (r) return r;
+        cact_fw_chain_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_fw_flush(a.chain);
+    }
+
+    case CACT_NETCTL_FW_POLICY_SET: {
+        int r = _root_only();
+        if (r) return r;
+        cact_fw_policy_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_fw_policy_set(a.chain, a.policy);
+    }
+
+    case CACT_NETCTL_FW_POLICY_GET: {
+        cact_fw_chain_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        return rust_net_fw_policy_get(a.chain);
+    }
+
+    case CACT_NETCTL_FW_RESET: {
+        int r = _root_only();
+        if (r) return r;
+        return rust_net_fw_reset();
+    }
+
     default:
         return -EINVAL;
     }
