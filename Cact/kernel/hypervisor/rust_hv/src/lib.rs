@@ -20,6 +20,15 @@
 //! host frame — the translation proof) and then stores through a GPA that EPT
 //! deliberately leaves unmapped, which comes back as an EPT violation
 //! (VM-exit reason 48) carrying that GPA.
+//!
+//! Phase H5.1 makes the exit path a *loop*: the C/asm stub now re-enters the
+//! guest with VMRESUME after each handled exit (`vmx/vmx_launch.c`), so one run
+//! sees many exits.  The model handles CPUID (1) and I/O (30) and emulates just
+//! enough of a COM1 for the guest to speak: an `OUT 0x3F8` byte is relayed to
+//! the host's serial port, so the guest's text shows up on COM1 — the same thing
+//! a Linux guest will need.  The EPT violation is now a resumable hook too (the
+//! MMIO shape H4 left open): the model reports it and skips the access, and the
+//! guest runs on to `hlt`.
 
 #![no_std]
 
@@ -27,7 +36,10 @@ use core::ffi::c_char;
 
 extern "C" {
     fn printk(s: *const c_char);
+    fn serial_putc(c: c_char);
 
+    fn cact_cpuid(leaf: u32, subleaf: u32, eax: *mut u32, ebx: *mut u32,
+                  ecx: *mut u32, edx: *mut u32);
     fn cact_rdmsr(msr: u32) -> u64;
     fn cact_vmread(field: u64, value: *mut u64) -> i32;
     fn cact_vmwrite(field: u64, value: u64) -> i32;
@@ -105,6 +117,7 @@ const VMCS_VM_ENTRY_INSTRUCTION_LEN: u64 = 0x401A;
 const VMCS_SECONDARY_PROC_BASED_CTRL: u64 = 0x401E;
 const VMCS_VM_INSTRUCTION_ERROR: u64 = 0x4400;
 const VMCS_VM_EXIT_REASON: u64 = 0x4402;
+const VMCS_VM_EXIT_INSTRUCTION_LEN: u64 = 0x440C;
 const VMCS_EXIT_QUALIFICATION: u64 = 0x6400;
 const VMCS_GUEST_LINEAR_ADDRESS: u64 = 0x640A;
 const VMCS_GUEST_ES_LIMIT: u64 = 0x4800;
@@ -165,8 +178,13 @@ const VMCS_HOST_RSP: u64 = 0x6C14;
 const VMCS_HOST_RIP: u64 = 0x6C16;
 
 /* Primary processor-based control: exit on HLT.  Without it the guest's HLT
- * just halts the logical processor and the host never regains control. */
+ * just halts the logical processor and the host never regains control.  CPUID
+ * exiting and unconditional I/O exiting (no I/O bitmap needed) give the model
+ * the CPUID and I/O exits H5.1 handles — the latter is how the guest reaches
+ * the emulated COM1. */
 const CPU_BASED_HLT_EXITING: u64 = 1 << 7;
+const CPU_BASED_CPUID_EXITING: u64 = 1 << 10;
+const CPU_BASED_UNCOND_IO_EXITING: u64 = 1 << 24;
 
 /* Primary control bit 31: the secondary controls below take effect at all.
  * EPT lives in the secondary controls (bit 1). */
@@ -228,8 +246,25 @@ const GUEST_EFER: u64 = 0x500;      // LME | LMA
 /* The magic the guest stores and the host checks for. */
 const GUEST_MAGIC: u32 = 0xdead_beef;
 
+/* COM1: the base of the 16550 the host's own `serial_putc` drives.  The model
+ * emulates only its data register (an OUT byte is relayed) and reports the line
+ * status register as "transmitter ready", which is all the fixture needs. */
+const COM1_BASE: u16 = 0x3F8;
+
+/* The line the fixture guest prints over the emulated COM1. */
+const GUEST_LINE: &[u8] = b"\r\n[guest] hello over emulated COM1\r\n";
+
 /* The exit reason the last handled VM exit reported. */
 static mut EXIT_REASON: u64 = 0;
+
+/* Per-run tallies and the last EPT violation the handler saw (the violation is
+ * now a resumable hook, so it is not the final exit any more). */
+static mut IO_EXITS: u64 = 0;
+static mut CPUID_EXITS: u64 = 0;
+static mut SAW_EPT: bool = false;
+static mut LAST_GPA: u64 = 0;
+static mut LAST_QUAL: u64 = 0;
+static mut LAST_GLA: u64 = 0;
 
 /* First VMCS field whose VMWRITE failed (0 = none); diagnostics only. */
 static mut VMW_FAIL_FIELD: u64 = 0;
@@ -364,16 +399,124 @@ unsafe fn free_guest_pages(pages: &[*mut u8]) {
     unsafe { GUEST_PTABLE_PAGES = 0 };
 }
 
-/// VM-exit entry, called by the C/asm stub with RDI = the saved-GPR frame.
+/// VM-exit entry, called by the C/asm stub with RDI = the saved-GPR frame
+/// (`frame[k]` = RAX, RBX, RCX, RDX, RSI, RDI, RBP, R8..R15).  Returns the
+/// stub's verdict: 0 finishes the run, 1 re-enters the guest with VMRESUME.
 #[no_mangle]
-pub extern "C" fn hv_vmx_exit_entry(_regs: *mut u64) -> i32 {
+pub extern "C" fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
     let mut reason = 0u64;
     // SAFETY: the stub runs with the current VMCS loaded.
     let _ = unsafe { cact_vmread(VMCS_VM_EXIT_REASON, &mut reason) };
     // SAFETY: single-threaded bring-up probe.
     unsafe { EXIT_REASON = reason };
-    // Ask the stub to finish (it currently only supports finishing).
-    0
+
+    match reason {
+        // SAFETY: `regs` is the live GPR frame the stub handed us, and each
+        // handler steps the guest over the exit-causing instruction before
+        // asking to resume.
+        EXIT_CPUID => if unsafe { handle_cpuid(regs) } { 1 } else { 0 },
+        EXIT_IO => if unsafe { handle_io(regs) } { 1 } else { 0 },
+        EXIT_EPT_VIOLATION => {
+            // SAFETY: as above.
+            unsafe { record_ept() };
+            // Skipped like an MMIO access; if the CPU gave no instruction length
+            // we cannot step over it, so finish instead of spinning.
+            // SAFETY: as above.
+            if unsafe { advance_rip() } { 1 } else { 0 }
+        }
+        _ => 0, // HLT and anything unhandled end the run
+    }
+}
+
+/// Advance the guest past the instruction that caused the current exit, using
+/// the VMCS's instruction-length field.  Returns false when the CPU reported no
+/// length (0) — the caller must then finish rather than re-enter on the same
+/// exit forever.
+unsafe fn advance_rip() -> bool {
+    let mut len = 0u64;
+    // SAFETY: the current VMCS is loaded.
+    let _ = unsafe { cact_vmread(VMCS_VM_EXIT_INSTRUCTION_LEN, &mut len) };
+    if len == 0 {
+        return false;
+    }
+    let mut rip = 0u64;
+    // SAFETY: as above.
+    let _ = unsafe { cact_vmread(VMCS_GUEST_RIP, &mut rip) };
+    unsafe { cact_vmwrite(VMCS_GUEST_RIP, rip + len) };
+    true
+}
+
+/// CPUID exit: run the host's CPUID for the guest's leaf/subleaf and write the
+/// four results back into the GPR frame (RAX/RBX/RCX/RDX).  Pass-through — the
+/// guest sees the same CPUID the host does, VMX bits and all.
+unsafe fn handle_cpuid(frame: *mut u64) -> bool {
+    // SAFETY: frame[0..4] are RAX/RBX/RCX/RDX, each a live u64 slot.
+    let leaf = unsafe { core::ptr::read_volatile(frame) } as u32;
+    let subleaf = unsafe { core::ptr::read_volatile(frame.add(2)) } as u32;
+    let (mut a, mut b, mut c, mut d) = (0u32, 0u32, 0u32, 0u32);
+    // SAFETY: cact_cpuid writes exactly the four out-pointers it is handed.
+    unsafe { cact_cpuid(leaf, subleaf, &mut a, &mut b, &mut c, &mut d) };
+    unsafe {
+        core::ptr::write_volatile(frame, a as u64);
+        core::ptr::write_volatile(frame.add(1), b as u64);
+        core::ptr::write_volatile(frame.add(2), c as u64);
+        core::ptr::write_volatile(frame.add(3), d as u64);
+        CPUID_EXITS += 1;
+    }
+    // SAFETY: the current VMCS is loaded; the CPUID exit carries its length.
+    unsafe { advance_rip() }
+}
+
+/// I/O exit: emulate the COM1 bit the fixture uses.  The exit qualification
+/// carries port (31:16), direction (bit 3: 0 = OUT, 1 = IN) and size (2:0).
+/// An OUT data byte is relayed to the host's serial port; an IN reports
+/// "transmitter ready" (0x60) for the line-status register, else 0.  Anything
+/// else is ignored and the instruction stepped over.  Returns false when the
+/// CPU gave no instruction length.
+unsafe fn handle_io(frame: *mut u64) -> bool {
+    let mut qual = 0u64;
+    // SAFETY: the current VMCS is loaded.
+    let _ = unsafe { cact_vmread(VMCS_EXIT_QUALIFICATION, &mut qual) };
+    let port = ((qual >> 16) & 0xFFFF) as u16;
+    let size = (qual & 0x7) as u32;
+    let is_in = (qual & 0x8) != 0;
+
+    // The fixture uses byte accesses (size 0) to COM1; a wider or foreign
+    // access is stepped over without emulation.
+    if size == 0 && port >= COM1_BASE && port <= COM1_BASE + 7 {
+        let reg = (port - COM1_BASE) as u32;
+        // SAFETY: frame[0] is RAX — AL holds the byte-sized I/O operand.
+        let rax = unsafe { core::ptr::read_volatile(frame) };
+        if is_in {
+            let v = if reg == 5 { 0x60u64 } else { 0x00 }; // LSR: THRE|TEMT
+            unsafe { core::ptr::write_volatile(frame, (rax & !0xFF) | v) };
+        } else if reg == 0 {
+            // SAFETY: relays the guest's byte to the host's real COM1.
+            unsafe { serial_putc((rax & 0xFF) as c_char) };
+        }
+    }
+    // SAFETY: single-threaded counter.
+    unsafe { IO_EXITS += 1 };
+    // SAFETY: the current VMCS is loaded; the I/O exit carries its length.
+    unsafe { advance_rip() }
+}
+
+/// Remember the EPT violation the current exit reports, for the run's summary.
+/// The violation is a resumable hook now, so it is no longer the final exit.
+unsafe fn record_ept() {
+    let mut gpa = 0u64;
+    let mut qual = 0u64;
+    let mut gla = 0u64;
+    // SAFETY: the current VMCS is loaded.
+    unsafe {
+        let _ = cact_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &mut gpa);
+        let _ = cact_vmread(VMCS_EXIT_QUALIFICATION, &mut qual);
+        let _ = cact_vmread(VMCS_GUEST_LINEAR_ADDRESS, &mut gla);
+        LAST_GPA = gpa;
+        LAST_QUAL = qual;
+        LAST_GLA = gla;
+        SAW_EPT = true;
+    }
 }
 
 /// Run the model's guest on demand; called from the `/dev/chv` device.
@@ -410,7 +553,9 @@ pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
 }
 
 /// VM-exit reasons this model handles (Intel SDM Vol. 3C, Appendix C).
+const EXIT_CPUID: u64 = 10;
 const EXIT_HLT: u64 = 12;
+const EXIT_IO: u64 = 30;
 const EXIT_EPT_VIOLATION: u64 = 48;
 
 /// Copy `bytes` into the code page at `at`, advancing it.
@@ -428,22 +573,39 @@ unsafe fn pte(table: *mut u8, index: usize, value: u64) {
     unsafe { core::ptr::write_volatile((table as *mut u64).add(index), value) };
 }
 
-/// The guest program (Phase H4):
+/// The guest program (Phase H5.1):
+///   mov edx, 0x3F8
+///   per line byte: mov al, b ; out dx, al   ; I/O exit -> host relays the byte
+///   mov eax, 1 ; xor ecx, ecx ; cpuid       ; CPUID exit -> results written back
 ///   mov eax, 0xdeadbeef
-///   mov [GVA_DATA], eax     ; mapped: EPT translates it, guest continues
-///   mov [GVA_TRAP], eax     ; guest paging maps it, EPT does not -> exit 48
-///   hlt                     ; not reached while the trap stays in place
+///   mov [GVA_DATA], eax    ; mapped: EPT translates it, guest continues
+///   mov [GVA_TRAP], eax    ; guest paging maps it, EPT does not -> exit 48,
+///                          ; the handler skips it and the guest runs on
+///   hlt                    ; exit 12 -> the run ends
 ///
-/// The absolute `mov` uses the SIB/no-base form (`89 04 25 disp32`), which is
-/// absolute in 64-bit mode and needs no address-size prefix for a sub-4 GiB
-/// address.  The stores are emitted from the GVA constants so code and layout
-/// cannot drift apart.
+/// COM1 is port 0x3F8, above 0xFF, so DX is set once and each data byte goes
+/// through `out dx, al` (`EE`) — one I/O exit per byte.  The port move is the
+/// 32-bit form (`BA`, `mov edx, 0x3F8`), not `mov dx, imm16`: the latter needs a
+/// `0x66` operand-size prefix (`66 BA iw`), and a bare `BA iw` would decode as
+/// `mov edx, imm32` and swallow the following two bytes — the first byte of the
+/// guest's line among them.  The absolute `mov` uses the SIB/no-base form
+/// (`89 04 25 disp32`), which is absolute in 64-bit mode and needs no
+/// address-size prefix for a sub-4 GiB address.
 unsafe fn emit_guest_program(code: *mut u8) {
     let mut at = 0usize;
     // SAFETY: `code` is a live page; every write stays inside it.
     unsafe {
-        emit(code, &mut at, &[0xB8, 0xEF, 0xBE, 0xAD, 0xDE]); // mov eax, magic
-        emit(code, &mut at, &[0x89, 0x04, 0x25]);             // mov [disp32], eax
+        emit(code, &mut at, &[0xBA]);                          // mov edx, imm32
+        emit(code, &mut at, &(COM1_BASE as u32).to_le_bytes());
+        for &b in GUEST_LINE {
+            emit(code, &mut at, &[0xB0, b]);                   // mov al, imm8
+            emit(code, &mut at, &[0xEE]);                      // out dx, al
+        }
+        emit(code, &mut at, &[0xB8, 0x01, 0x00, 0x00, 0x00]);  // mov eax, 1
+        emit(code, &mut at, &[0x31, 0xC9]);                    // xor ecx, ecx
+        emit(code, &mut at, &[0x0F, 0xA2]);                    // cpuid
+        emit(code, &mut at, &[0xB8, 0xEF, 0xBE, 0xAD, 0xDE]);  // mov eax, magic
+        emit(code, &mut at, &[0x89, 0x04, 0x25]);              // mov [disp32], eax
         emit(code, &mut at, &(GVA_DATA as u32).to_le_bytes());
         emit(code, &mut at, &[0x89, 0x04, 0x25]);
         emit(code, &mut at, &(GVA_TRAP as u32).to_le_bytes());
@@ -467,14 +629,15 @@ unsafe fn build_guest_tables(pml4: *mut u8, pdpt: *mut u8, pd: *mut u8, pt: *mut
     }
 }
 
-/// Build the VMCS for the model's one guest and run it under EPT (Phase H4).
-/// Returns 0 once the guest has exited.
+/// Build the VMCS for the model's one guest and run it under EPT (Phases H4,
+/// H5.1).  Returns 0 once the guest has halted.
 ///
-/// The guest stores a magic value through a mapped GPA; the host then reads it
-/// back out of the *host* frame that GPA names — which is the proof that EPT
-/// translated the access (the guest never named that physical address).  The
-/// second store goes through a GPA the guest's own paging maps but EPT does
-/// not, and must come back as an EPT violation carrying that GPA.
+/// The guest prints a line over the emulated COM1 (I/O exits, relayed to the
+/// host's serial port), executes a CPUID (exit, passed through), stores a magic
+/// value through a mapped GPA and then through one EPT leaves unmapped.  The
+/// host reads the magic back out of the *host* frame the mapped GPA names —
+/// proof that EPT translated the access (the guest never named that physical
+/// address) — and the trap store is reported as a skipped EPT violation.
 unsafe fn run_guest() -> i32 {
     // SAFETY: every step below is guarded; pointers are live kalloc pages.
     unsafe {
@@ -495,6 +658,11 @@ unsafe fn run_guest() -> i32 {
         /* pml4/pdpt/pd/pt are the guest's own page tables (the other four are
          * the VMCS, code, data and TSS pages). */
         GUEST_PTABLE_PAGES = 4;
+
+        /* Fresh tallies for this run. */
+        IO_EXITS = 0;
+        CPUID_EXITS = 0;
+        SAW_EPT = false;
 
         let vmcs_phys = vmm_v2p(vmcs);
         let code_phys = vmm_v2p(code);
@@ -563,7 +731,10 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_PIN_BASED_VM_EXEC_CTRL, ctl(IA32_VMX_PINBASED_CTLS, 0));
         vmw(VMCS_PRIMARY_PROC_BASED_CTRL, ctl(
             IA32_VMX_PROCBASED_CTLS,
-            CPU_BASED_HLT_EXITING | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
+            CPU_BASED_HLT_EXITING
+                | CPU_BASED_CPUID_EXITING
+                | CPU_BASED_UNCOND_IO_EXITING
+                | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
         ));
         let secondary = ctl(IA32_VMX_PROCBASED_CTLS2, SECONDARY_EXEC_ENABLE_EPT);
         if secondary & SECONDARY_EXEC_ENABLE_EPT == 0 {
@@ -699,14 +870,15 @@ unsafe fn run_guest() -> i32 {
             return 1;
         }
 
-        let mut qual = 0u64;
-        let mut gpa = 0u64;
-        let mut gla = 0u64;
-        let _ = cact_vmread(VMCS_EXIT_QUALIFICATION, &mut qual);
-        let _ = cact_vmread(VMCS_GUEST_PHYSICAL_ADDRESS, &mut gpa);
-        let _ = cact_vmread(VMCS_GUEST_LINEAR_ADDRESS, &mut gla);
-
         notice_hex("hv: guest ran, VM-exit reason ", EXIT_REASON);
+        notice_hex("hv: guest I/O exits ", IO_EXITS);
+        notice_hex("hv: guest CPUID exits ", CPUID_EXITS);
+
+        /* The fixture's line went out as COM1 data writes; its length is how
+         * many data-register exits we expect to have relayed. */
+        if IO_EXITS >= GUEST_LINE.len() as u64 {
+            notice("hv: guest spoke over emulated COM1 (I/O exits relayed)");
+        }
 
         /* The store through the mapped GPA must have landed in the *host* frame
          * that GPA names — the guest never wrote that physical address, so
@@ -718,14 +890,16 @@ unsafe fn run_guest() -> i32 {
             notice_hex("hv: EPT translation FAILED — host frame holds ", stored as u64);
         }
 
-        if EXIT_REASON == EXIT_EPT_VIOLATION {
-            notice_hex("hv: EPT violation: guest-physical ", gpa);
-            notice_hex("hv:   qualification ", qual);
-            notice_hex("hv:   guest-linear  ", gla);
-            if gpa == GPA_TRAP && (qual & 0x2) != 0 {
+        if SAW_EPT {
+            notice_hex("hv: EPT violation (skipped as MMIO): guest-physical ", LAST_GPA);
+            notice_hex("hv:   qualification ", LAST_QUAL);
+            notice_hex("hv:   guest-linear  ", LAST_GLA);
+            if LAST_GPA == GPA_TRAP && (LAST_QUAL & 0x2) != 0 {
                 notice("hv: EPT violation names the unmapped trap GPA on a write, as intended");
             }
-        } else if EXIT_REASON == EXIT_HLT {
+        }
+
+        if EXIT_REASON == EXIT_HLT {
             notice("hv: guest hlt -> exit reason 12 (HLT)");
         }
 

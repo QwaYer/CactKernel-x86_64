@@ -42,7 +42,21 @@ __asm__(
 "    movq %rsp, %rdi\n"
 "    subq $8, %rsp\n"          /* keep the call site 16-byte aligned */
 "    call hv_vmx_exit_entry\n"
+"    addq $8, %rsp\n"
+"    testl %eax, %eax\n"
+"    je 1f\n"                  /* 0 -> the model is done with the guest */
+/* Non-zero: the model handled the exit and asked to continue.  The frame is
+ * live, so pop it back (the handler may have edited it, e.g. CPUID results or
+ * an IN value) and re-enter the guest with VMRESUME.  VM exits land here again
+ * on HOST_RIP/HOST_RSP, so this is a loop, not a one-shot. */
+"    popq %rax\n    popq %rbx\n    popq %rcx\n    popq %rdx\n"
+"    popq %rsi\n    popq %rdi\n    popq %rbp\n    popq %r8\n"
+"    popq %r9\n     popq %r10\n    popq %r11\n    popq %r12\n"
+"    popq %r13\n    popq %r14\n    popq %r15\n"
+"    vmresume\n"
+/* VMRESUME reaches here only on failure (VMfail); fall through and finish. */
 /* Return to cact_vmx_launch's caller as if it had returned 0. */
+"1:\n"
 "    movq g_hv_launch_rsp(%rip), %rsp\n"
 "    pushq g_hv_launch_rflags(%rip)\n"
 "    popfq\n"

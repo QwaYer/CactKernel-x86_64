@@ -12,8 +12,13 @@
  * `cact_vmx_launch` runs VMLAUNCH on the current VMCS.  VMLAUNCH never returns
  * normally on success: the first VMLAUNCH exit is a VM exit, which the CPU
  * delivers to HOST_RIP (the stub below) on HOST_RSP.  The stub saves the guest
- * GPRs, calls the model's `hv_vmx_exit_entry()`, and then returns to
- * `cact_vmx_launch`'s caller as if the launch had returned 0.
+ * GPRs, calls the model's `hv_vmx_exit_entry()`, and acts on its verdict:
+ *
+ *   0 — the run is over; return to `cact_vmx_launch`'s caller as if the launch
+ *       had returned 0.
+ *   1 — the exit was handled and the guest is to continue; restore the (possibly
+ *       edited) GPR frame and re-enter with VMRESUME.  The next VM exit lands on
+ *       the same HOST_RIP/HOST_RSP, so one VMLAUNCH drives a whole run.
  */
 
 /* Run the guest.  Returns 0 once a VM exit has been handled and the model
