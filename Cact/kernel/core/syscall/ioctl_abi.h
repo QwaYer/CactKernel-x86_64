@@ -506,6 +506,11 @@ typedef struct cact_recvfrom6_arg {
 #define CACT_NETCTL_FW_POLICY_SET  0x3425 // arg=cact_fw_policy_arg_t* (root): set a chain's default policy
 #define CACT_NETCTL_FW_POLICY_GET  0x3426 // arg=cact_fw_chain_arg_t*: read a chain's default policy
 #define CACT_NETCTL_FW_RESET       0x3427 // no arg (root): flush every chain, reset every policy
+// Connection tracking (stateful firewall).  Configuration is root-only except
+// the read paths (COUNT / GET).
+#define CACT_NETCTL_FW_CONN_COUNT  0x3428 // no arg: number of live tracked flows
+#define CACT_NETCTL_FW_CONN_GET    0x3429 // arg=cact_fw_conn_get_arg_t*: read one tracked flow
+#define CACT_NETCTL_FW_CONN_FLUSH  0x342A // no arg (root): forget every tracked flow
 
 // Interface name as the driver registered it ("eth0", "wlan0").  A separate
 // ioctl rather than a field in cact_netcfg_get_t so that binaries built against
@@ -723,6 +728,32 @@ typedef struct cact_fw_chain_arg { uint32_t chain; } cact_fw_chain_arg_t;
 typedef struct cact_fw_idx_arg { uint32_t chain; uint32_t index; } cact_fw_idx_arg_t;
 typedef struct cact_fw_get_arg { uint32_t chain; uint32_t index; cact_fw_rule_t rule; } cact_fw_get_arg_t;
 typedef struct cact_fw_policy_arg { uint32_t chain; uint32_t policy; } cact_fw_policy_arg_t;
+
+// A tracked connection (CACT_NETCTL_FW_CONN_GET).  The tuple is in the flow's
+// original direction; the `x*` fields are the NAT-translated tuple (all-zero =
+// not translated; filled once the NAT stage lands).  Byte-compatible with
+// `CactFwConn` in conntrack.rs (92 bytes).
+#define CACT_FW_CONN_MAX 256 // tracked-flow capacity (informational)
+typedef struct cact_fw_conn {
+    uint8_t  family;    // CACT_FW_FAMILY_*
+    uint8_t  proto;     // CACT_FW_PROTO_*
+    uint8_t  state;     // CACT_FW_STATE_*
+    uint8_t  flags;     // reserved (0)
+    uint8_t  src[16];   // original source
+    uint8_t  dst[16];   // original destination
+    uint16_t sport;
+    uint16_t dport;
+    uint8_t  xsrc[16];  // translated source (SNAT)
+    uint8_t  xdst[16];  // translated destination (DNAT)
+    uint16_t xsport;
+    uint16_t xdport;
+    uint32_t age_ms;    // ms since the flow was last seen
+    uint32_t ttl_ms;    // remaining lifetime
+    uint32_t packets;
+    uint32_t bytes;
+} cact_fw_conn_t;
+
+typedef struct cact_fw_conn_get_arg { uint32_t index; cact_fw_conn_t conn; } cact_fw_conn_get_arg_t;
 
 // ===========================================================================
 // /dev/sys control (privileged, root only). RANGE 0x3500.

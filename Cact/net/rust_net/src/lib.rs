@@ -38,6 +38,7 @@ extern crate alloc;
 
 pub mod arp;
 pub mod config;
+pub mod conntrack;
 pub mod dns_resolve;
 pub mod ffi;
 pub mod ffi_kernel;

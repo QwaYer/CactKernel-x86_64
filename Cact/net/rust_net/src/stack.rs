@@ -1050,6 +1050,10 @@ pub fn stack_poll() {
             crate::raw::sync_raw_from_smoltcp(slot, socks);
         }
     }
+    // Age out idle connection-tracking entries once per poll.  Safe here: the
+    // hooks that feed the table run under this same lock, and `age` takes no
+    // lock of its own.
+    crate::conntrack::age();
 }
 
 /// Copy one Ethernet frame from the driver's `Skb` into the current slot's RX queue

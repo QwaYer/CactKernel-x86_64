@@ -16,6 +16,7 @@
 //! still leaves neighbour resolution working.  A frame whose L3 header cannot be
 //! parsed is likewise accepted untouched.
 
+use crate::conntrack::{self, Key};
 use crate::stack::StackGuard;
 
 // ── ABI constants (mirror CACT_FW_* in ioctl_abi.h) ─────────────────────────
@@ -137,6 +138,7 @@ struct Pkt {
     family: u8,
     proto: u8,
     icmp_type: u8,
+    tcp_flags: u8,
     /// False when there is no usable L4 header (fragment, or an unparsed IPv6
     /// extension header), so port rules cannot match.
     has_l4: bool,
@@ -144,7 +146,10 @@ struct Pkt {
     dst: [u8; 16],
     sport: u16,
     dport: u16,
-    /// Length of the L3 datagram, for the byte counter.
+    /// Offset of the L4 header inside the frame (used to locate an ICMP error's
+    /// embedded packet).
+    l4: usize,
+    /// Length of the L3 datagram, for the byte counters.
     l3_len: u32,
 }
 
@@ -179,16 +184,19 @@ impl Pkt {
         // A non-first fragment carries no L4 header.
         let fragmented = u16::from_be_bytes([frame[20], frame[21]]) & 0x1FFF != 0;
         let l4 = 14 + ihl;
-        let (has_l4, sport, dport, icmp_type) = Self::parse_l4(frame, proto, l4, fragmented);
+        let (has_l4, sport, dport, icmp_type, tcp_flags) =
+            Self::parse_l4(frame, proto, l4, fragmented);
         Some(Pkt {
             family: FW_FAMILY_V4,
             proto,
             icmp_type,
+            tcp_flags,
             has_l4,
             src,
             dst,
             sport,
             dport,
+            l4,
             l3_len,
         })
     }
@@ -206,39 +214,54 @@ impl Pkt {
         // Extension headers are not walked: only a directly following L4 header
         // is parsed, so a rule with a port constraint simply does not match a
         // frame that carries one.
-        let (has_l4, sport, dport, icmp_type) = Self::parse_l4(frame, proto, 54, false);
+        let (has_l4, sport, dport, icmp_type, tcp_flags) =
+            Self::parse_l4(frame, proto, 54, false);
         Some(Pkt {
             family: FW_FAMILY_V6,
             proto,
             icmp_type,
+            tcp_flags,
             has_l4,
             src,
             dst,
             sport,
             dport,
+            l4: 54,
             l3_len,
         })
     }
 
-    /// Extract the sport/dport/icmp-type triple.  `no_l4` is set when the L3
-    /// header already says there is no L4 header (an IPv4 fragment).
-    fn parse_l4(frame: &[u8], proto: u8, l4: usize, no_l4: bool) -> (bool, u16, u16, u8) {
+    /// Extract the `(has_l4, sport, dport, icmp_type, tcp_flags)` tuple.  `no_l4`
+    /// is set when the L3 header already says there is no L4 header (an IPv4
+    /// fragment).
+    fn parse_l4(
+        frame: &[u8],
+        proto: u8,
+        l4: usize,
+        no_l4: bool,
+    ) -> (bool, u16, u16, u8, u8) {
         match proto {
             FW_PROTO_TCP | FW_PROTO_UDP => {
                 if no_l4 || l4 + 4 > frame.len() {
-                    return (false, 0, 0, FW_ICMP_ANY);
+                    return (false, 0, 0, FW_ICMP_ANY, 0);
                 }
                 let sport = u16::from_be_bytes([frame[l4], frame[l4 + 1]]);
                 let dport = u16::from_be_bytes([frame[l4 + 2], frame[l4 + 3]]);
-                (true, sport, dport, FW_ICMP_ANY)
+                // The TCP flags byte is the low byte of the 14th octet.
+                let flags = if proto == FW_PROTO_TCP && l4 + 14 <= frame.len() {
+                    frame[l4 + 13]
+                } else {
+                    0
+                };
+                (true, sport, dport, FW_ICMP_ANY, flags)
             }
             FW_PROTO_ICMP | FW_PROTO_ICMPV6 => {
                 if no_l4 || l4 >= frame.len() {
-                    return (false, 0, 0, FW_ICMP_ANY);
+                    return (false, 0, 0, FW_ICMP_ANY, 0);
                 }
-                (true, 0, 0, frame[l4])
+                (true, 0, 0, frame[l4], 0)
             }
-            _ => (false, 0, 0, FW_ICMP_ANY),
+            _ => (false, 0, 0, FW_ICMP_ANY, 0),
         }
     }
 }
@@ -272,12 +295,17 @@ fn port_match(port: u16, min: u16, max: u16) -> bool {
     port >= min && port <= if max == 0 { u16::MAX } else { max }
 }
 
-/// Whether rule `r` matches packet `p` arriving on interface `slot`.
-fn rule_matches(r: &FwRule, p: &Pkt, slot: usize) -> bool {
+/// Whether rule `r` matches packet `p` (with conntrack state `state`) arriving
+/// on interface `slot`.
+fn rule_matches(r: &FwRule, p: &Pkt, slot: usize, state: u8) -> bool {
     if r.family != 0 && r.family != p.family {
         return false;
     }
     if r.proto != FW_PROTO_ANY && r.proto != p.proto {
+        return false;
+    }
+    // A non-zero state mask selects only the listed connection states.
+    if r.state_mask != 0 && (r.state_mask & state) == 0 {
         return false;
     }
     if r.in_iface != FW_IFACE_ANY && r.in_iface as usize != slot {
@@ -318,6 +346,81 @@ fn configured() -> bool {
     counts.iter().any(|&c| c != 0)
 }
 
+/// The original packet embedded in an ICMP/ICMPv6 error, as a flow key, so a
+/// conntrack lookup can mark the error `RELATED`.  `None` when the frame is not
+/// an ICMP error or the embedded header is too short to read.
+fn related_key(frame: &[u8], p: &Pkt) -> Option<Key> {
+    let is_error = match (p.family, p.proto, p.icmp_type) {
+        (FW_FAMILY_V4, FW_PROTO_ICMP, t) => t == 3 || t == 11 || t == 12,
+        (FW_FAMILY_V6, FW_PROTO_ICMPV6, t) => t == 1 || t == 2 || t == 3 || t == 4,
+        _ => false,
+    };
+    if !is_error {
+        return None;
+    }
+    // The 8-byte ICMP header is followed by the offending packet's IP header and
+    // at least its first 8 payload bytes.
+    let emb = p.l4.checked_add(8)?;
+    if p.family == FW_FAMILY_V4 {
+        if emb + 20 > frame.len() {
+            return None;
+        }
+        let ihl = (frame[emb] & 0x0F) as usize * 4;
+        if ihl < 20 || emb + ihl > frame.len() {
+            return None;
+        }
+        let proto = frame[emb + 9];
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src[..4].copy_from_slice(&frame[emb + 12..emb + 16]);
+        dst[..4].copy_from_slice(&frame[emb + 16..emb + 20]);
+        let (sport, dport) = embedded_ports(frame, emb + ihl, proto);
+        Some(Key {
+            family: FW_FAMILY_V4,
+            proto,
+            src,
+            dst,
+            sport,
+            dport,
+        })
+    } else {
+        if emb + 40 > frame.len() {
+            return None;
+        }
+        let proto = frame[emb + 6];
+        let mut src = [0u8; 16];
+        let mut dst = [0u8; 16];
+        src.copy_from_slice(&frame[emb + 8..emb + 24]);
+        dst.copy_from_slice(&frame[emb + 24..emb + 40]);
+        let (sport, dport) = embedded_ports(frame, emb + 40, proto);
+        Some(Key {
+            family: FW_FAMILY_V6,
+            proto,
+            src,
+            dst,
+            sport,
+            dport,
+        })
+    }
+}
+
+/// The ports of a TCP/UDP header at `off`, or `(0, 0)` for another protocol (or
+/// when the frame is too short, which an 8-byte payload still covers).
+fn embedded_ports(frame: &[u8], off: usize, proto: u8) -> (u16, u16) {
+    match proto {
+        FW_PROTO_TCP | FW_PROTO_UDP => {
+            if off + 4 > frame.len() {
+                return (0, 0);
+            }
+            (
+                u16::from_be_bytes([frame[off], frame[off + 1]]),
+                u16::from_be_bytes([frame[off + 2], frame[off + 3]]),
+            )
+        }
+        _ => (0, 0),
+    }
+}
+
 /// Evaluate chain `chain` against one frame.  Returns the decided action
 /// (`FW_ACTION_ACCEPT` / `FW_ACTION_DROP`); a frame that is not IP is accepted.
 fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
@@ -326,6 +429,19 @@ fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
         Some(p) => p,
         None => return FW_ACTION_ACCEPT,
     };
+    // Classify the packet against the connection table before any rule sees it,
+    // so a state rule can tell a fresh connection from its replies.  Runs under
+    // `STACK_LOCK` (the hooks do), which `conntrack::track` requires.
+    let key = Key {
+        family: p.family,
+        proto: p.proto,
+        src: p.src,
+        dst: p.dst,
+        sport: p.sport,
+        dport: p.dport,
+    };
+    let related = related_key(frame, &p);
+    let state = crate::conntrack::track(&key, p.tcp_flags, p.l3_len, related.as_ref());
     // SAFETY: the tables are only mutated under `STACK_LOCK`; every call site
     // holds it (the poll path and the TX token), so this read cannot race a
     // configuration change.
@@ -337,7 +453,7 @@ fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
     let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
     for i in 0..count as usize {
         let r = &mut rules[ch][i];
-        if rule_matches(r, &p, slot) {
+        if rule_matches(r, &p, slot, state) {
             r.packets = r.packets.wrapping_add(1);
             r.bytes = r.bytes.wrapping_add(p.l3_len as u64);
             return r.action;
@@ -376,8 +492,8 @@ fn chain_is_filter(chain: u32) -> bool {
 // ── Configuration entry points (`CACT_NETCTL_FW_*`) ─────────────────────────
 
 /// Append `*rule` to its chain.  Returns 0 on success, -1 on a bad argument:
-/// null pointer, unknown chain, a reserved (NAT) chain, an unknown action, a
-/// non-zero state mask (conntrack is a later stage), or a full table.
+/// null pointer, unknown chain, a reserved (NAT) chain, an unknown action, an
+/// unknown connection-state bit, or a full table.
 ///
 /// # Safety
 ///
@@ -398,9 +514,9 @@ pub unsafe extern "C" fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
     if r.action != FW_ACTION_ACCEPT && r.action != FW_ACTION_DROP {
         return -1;
     }
-    // State matching arrives with conntrack; reject it now rather than silently
-    // ignoring it, so a rule never means more than it says.
-    if r.state_mask != 0 {
+    // A state mask may only name defined connection states; an unknown bit is an
+    // error rather than a silently ignored constraint.
+    if r.state_mask & !conntrack::STATE_MASK != 0 {
         return -1;
     }
     let ch = r.chain as usize;
@@ -550,3 +666,4 @@ pub extern "C" fn rust_net_fw_reset() -> i32 {
     unsafe { *core::ptr::addr_of_mut!(POLICY) = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT] };
     0
 }
+

@@ -108,6 +108,14 @@ int rust_net_fw_policy_set(uint32_t chain, uint32_t policy);
 int rust_net_fw_policy_get(uint32_t chain);
 int rust_net_fw_reset(void);
 
+/* Connection tracking (see cact_fw_conn_t in ioctl_abi.h).  COUNT returns the
+   number of live flows; GET fills *out with the idx-th one (0 on success, -1
+   when out is NULL or idx is out of range); FLUSH forgets every flow. */
+struct cact_fw_conn; /* defined in ioctl_abi.h */
+int rust_net_fw_conn_count(void);
+int rust_net_fw_conn_get(uint32_t idx, struct cact_fw_conn* out);
+int rust_net_fw_conn_flush(void);
+
 /*
  * ── TLS (rustls, in-kernel) ──────────────────────────────────────────────
  * Operates over an already-connected TCP socket (socket index from tcp_socket()).

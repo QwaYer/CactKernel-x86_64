@@ -577,6 +577,24 @@ static int _net_ioctl(void *p, uint32_t cmd, void *arg) {
         return rust_net_fw_reset();
     }
 
+    case CACT_NETCTL_FW_CONN_COUNT: {
+        return rust_net_fw_conn_count();
+    }
+
+    case CACT_NETCTL_FW_CONN_GET: {
+        cact_fw_conn_get_arg_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (rust_net_fw_conn_get(a.index, &a.conn) != 0) return -ENODEV;
+        return copy_to_user(arg, &a, sizeof(a));
+    }
+
+    case CACT_NETCTL_FW_CONN_FLUSH: {
+        int r = _root_only();
+        if (r) return r;
+        return rust_net_fw_conn_flush();
+    }
+
     default:
         return -EINVAL;
     }
