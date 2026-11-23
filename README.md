@@ -569,7 +569,7 @@ CLOSED → LISTEN → SYN_SENT → SYN_RECEIVED
        → CLOSE_WAIT → LAST_ACK → CLOSED
 ```
 
-`stack_poll()` drives the iface, **`rust_net_set_ipv4_config`** applies the address/gateway/DNS chosen by userspace, **`CACT_NETCTL_DNS_RESOLVE`** performs a blocking **A-record** query over UDP/53 (with one retransmission before giving up), and **`CACT_NETCTL_PING` / `CACT_NETCTL_PING_WAIT`** send an ICMP echo request and optionally wait for its reply. A periodic `net_timer_task` wakes the poll loop so smoltcp timers (TCP retransmit, timeouts) advance even without RX traffic.
+`stack_poll()` drives the iface, **`rust_net_set_ipv4_config`** / **`rust_net_set_ipv6_config`** apply the address/gateway/DNS chosen by userspace, **`CACT_NETCTL_DNS_RESOLVE`** / **`CACT_NETCTL_DNS_RESOLVE_AAAA`** perform a blocking **A** / **AAAA** query over UDP/53 (with one retransmission before giving up), and **`CACT_NETCTL_PING` / `CACT_NETCTL_PING_WAIT`** (v4) and **`CACT_NETCTL_PING6` / `CACT_NETCTL_PING_WAIT6`** (v6) send an ICMP/ICMPv6 echo request and optionally wait for its reply. A periodic `net_timer_task` wakes the poll loop so smoltcp timers (TCP retransmit, timeouts) advance even without RX traffic.
 
 Full socket API (the libc wrappers over **`CACT_SOCKCTL_*`**): `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `sendto`, `recvfrom`, `shutdown`, `setsockopt`, `getsockopt`, `getsockname`, `getpeername`.
 
