@@ -190,11 +190,16 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t width, uint32_t height, uint3
     if (fb_bytespp == 4) {
         /* 4-byte pixels: fill each row with one REP STOSL instead of a store
          * per pixel.  clear_screen() and scroll()'s bottom band come through
-         * here, and those are whole-screen writes. */
+         * here, and those are whole-screen writes.
+         *
+         * The copy runs through a local cursor: REP advances EDI by 4*width
+         * bytes, and letting that reach `row` would add it on top of the
+         * pitch advance, shoving every later scanline off the intended row. */
         for (uint32_t r = 0; r < height; r++) {
             uint32_t n = width;
+            uint8_t* dst = row;
             __asm__ __volatile__("rep stosl"
-                : "+D"(row), "+c"(n)
+                : "+D"(dst), "+c"(n)
                 : "a"(px)
                 : "memory");
             row += fb_pitch;
