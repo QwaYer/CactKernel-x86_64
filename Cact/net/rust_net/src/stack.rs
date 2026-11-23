@@ -73,6 +73,9 @@ pub(crate) const LOOPBACK_IFNAME: &[u8] = b"lo";
 /// The prefix length of an IPv6 link-local address (`fe80::/64`).
 const LINK_LOCAL_PREFIX: u8 = 64;
 
+/// The prefix length of the IPv6 loopback address (`::1/128`).
+const IPV6_LOOPBACK_PREFIX: u8 = 128;
+
 /// ff02::1, the IPv6 all-nodes link-local multicast group.  Every IPv6 host
 /// joins it so Router Advertisements (sent there) are delivered.
 const ALL_NODES_MULTICAST: Ipv6Addr = Ipv6Addr::new(0xff02, 0, 0, 0, 0, 0, 0, 1);
@@ -264,7 +267,10 @@ fn ipv6_dst_is_offlink_global(frame: &[u8]) -> bool {
     let dst = &frame[38..54];
     let is_multicast = dst[0] == 0xff;
     let is_link_local = dst[0] == 0xfe && (dst[1] & 0xc0) == 0x80;
-    !(is_multicast || is_link_local)
+    // `::1` is the host's own loopback, not an off-link destination, so it must
+    // pass this gate to reach the loopback staging in `TxToken::consume`.
+    let is_loopback = dst == &config::IPV6_LOOPBACK[..];
+    !(is_multicast || is_link_local || is_loopback)
 }
 
 /// Push slot `slot`'s IPv4 and IPv6 addressing and routes into its smoltcp
@@ -311,6 +317,16 @@ pub(crate) fn sync_iface_addrs_from_config(iface: &mut Interface, slot: usize, m
             ));
         }
         let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(ll), LINK_LOCAL_PREFIX));
+        // The IPv6 loopback goes on-link just as `127.0.0.1/8` does above, so
+        // smoltcp routes to `::1` and accepts frames addressed to it.  It is last
+        // so it is never the initial source-address candidate; RFC 6724 selection
+        // still passes it over for every other destination (it is not a candidate
+        // source for a link-local destination, and it never wins the scope or
+        // prefix rules for a global one).
+        let _ = addrs.push(IpCidr::new(
+            IpAddress::Ipv6(Ipv6Addr::from(config::IPV6_LOOPBACK)),
+            IPV6_LOOPBACK_PREFIX,
+        ));
     });
     iface.routes_mut().remove_default_ipv4_route();
     iface.routes_mut().remove_default_ipv6_route();
@@ -465,15 +481,65 @@ static mut ICMP_TX_META: [[icmp::PacketMetadata; 4]; NET_IF_MAX] =
     [[icmp::PacketMetadata::EMPTY; 4]; NET_IF_MAX];
 static mut ICMP_TX_PAYLOAD: [[u8; 512]; NET_IF_MAX] = [[0; 512]; NET_IF_MAX];
 
-/// True when an Ethernet frame belongs to a 127/8 exchange and must be looped back
-/// by the slot's PHY rather than transmitted.
+/// The solicited-node multicast address of `addr` (RFC 4291 § 2.7.1):
+/// `ff02::1:ff00:0/104` with the low 24 bits of `addr`, matching smoltcp's own
+/// `Ipv6Address::solicited_node`.  A Neighbor Solicitation is the only thing ever
+/// addressed to this group, so matching it is what keeps our own resolution
+/// probes local.
+fn solicited_node(addr: &[u8; 16]) -> [u8; 16] {
+    let mut o = [0u8; 16];
+    o[0] = 0xff;
+    o[1] = 0x02;
+    o[11] = 0x01;
+    o[12] = 0xff;
+    o[13] = addr[13];
+    o[14] = addr[14];
+    o[15] = addr[15];
+    o
+}
+
+/// True when an IPv6 frame is addressed to an address the slot itself owns — the
+/// loopback `::1`, its link-local, or its configured global — or to that
+/// address's solicited-node multicast group.
+///
+/// Such a frame is meant for us, not the wire.  Neighbour resolution for our own
+/// address would otherwise never finish: the solicitation goes out and nothing
+/// answers.  Looping the *solicitation* back is what completes it — `process_ndisc`
+/// learns the solicitation's source address and link-layer address *before* it
+/// decides whether to answer — and every frame that follows then returns the same
+/// way.
+fn ipv6_is_self_addressed(frame: &[u8], slot: usize) -> bool {
+    if frame.len() < 54 {
+        return false;
+    }
+    let dst = &frame[38..54];
+    for own in [
+        config::IPV6_LOOPBACK,
+        config::ipv6_addr_of(slot),
+        config::ipv6_link_local_of(slot),
+    ] {
+        if own == [0u8; 16] {
+            continue;
+        }
+        let sn = solicited_node(&own);
+        if dst == &own[..] || dst == &sn[..] {
+            return true;
+        }
+    }
+    false
+}
+
+/// True when an Ethernet frame belongs to a loopback exchange and must be looped
+/// back by the slot's PHY rather than transmitted.
 ///
 /// IPv4 frames match on the source *or* destination being in 127/8: the
 /// destination covers the request leg, and the source covers the reply leg when a
 /// socket's local address was pinned to 127.0.0.1 while its peer is a 127/8
 /// address.  ARP frames match on the sender or target protocol address, because
 /// smoltcp resolves a 127/8 peer with ARP even though the exchange stays local.
-fn frame_involves_loopback(frame: &[u8]) -> bool {
+/// IPv6 frames match on `::1` on either side, or on the destination being one of
+/// the slot's own addresses ([`ipv6_is_self_addressed`]).
+fn frame_involves_loopback(frame: &[u8], slot: usize) -> bool {
     if frame.len() < 14 {
         return false;
     }
@@ -490,7 +556,8 @@ fn frame_involves_loopback(frame: &[u8]) -> bool {
         0x86DD => {
             frame.len() >= 54
                 && (frame[22..38] == config::IPV6_LOOPBACK
-                    || frame[38..54] == config::IPV6_LOOPBACK)
+                    || frame[38..54] == config::IPV6_LOOPBACK
+                    || ipv6_is_self_addressed(frame, slot))
         }
         _ => false,
     }
@@ -544,6 +611,9 @@ struct CactTxToken<'a> {
     lo_tail: &'a mut usize,
     lo_dropped: &'a mut u32,
     drv: *mut NetDriver,
+    /// Interface slot this token transmits for; the loopback check needs its own
+    /// addresses to recognise a self-addressed IPv6 frame.
+    slot: usize,
     unconfigured: bool,
     unconfigured_v6: bool,
 }
@@ -589,7 +659,7 @@ impl TxToken for CactTxToken<'_> {
         if this.unconfigured_v6 && ipv6_dst_is_offlink_global(&this.buf[..len]) {
             return r;
         }
-        if frame_involves_loopback(&this.buf[..len]) {
+        if frame_involves_loopback(&this.buf[..len], this.slot) {
             this.push_loopback(len);
             return r;
         }
@@ -679,6 +749,7 @@ impl Device for SlotDev<'_> {
                 lo_tail: &mut phy.lo_tail,
                 lo_dropped: &mut phy.lo_dropped,
                 drv,
+                slot: self.slot,
                 unconfigured,
                 unconfigured_v6,
             },
@@ -698,6 +769,7 @@ impl Device for SlotDev<'_> {
             lo_tail: &mut phy.lo_tail,
             lo_dropped: &mut phy.lo_dropped,
             drv,
+            slot: self.slot,
             unconfigured,
             unconfigured_v6,
         })
