@@ -656,28 +656,28 @@ typedef struct cact_arp_get_arg {
 } cact_arp_get_arg_t;
 
 // ===========================================================================
-// Firewall (packet filter) — see rust_net/src/fw.rs.
+// Firewall (packet filter + NAT) — see rust_net/src/fw.rs.
 //
 // A chain holds ordered rules plus a default policy; the first rule that matches
 // a frame decides its verdict and, with no match, the policy applies.  The
-// default policy is ACCEPT, so an unconfigured kernel behaves as before.  Only
-// the INPUT / OUTPUT / FORWARD chains take rules in this build; PREROUTING /
-// POSTROUTING are reserved for NAT.  Byte-compatible with `FwRule` in fw.rs.
+// default policy is ACCEPT, so an unconfigured kernel behaves as before.  The
+// filter chains (INPUT/OUTPUT/FORWARD) take ACCEPT/DROP; the NAT chains take
+// their translation actions (PREROUTING: DNAT/REDIRECT, POSTROUTING:
+// SNAT/MASQUERADE).  Byte-compatible with `FwRule` in fw.rs.
 // ===========================================================================
 #define CACT_FW_CHAIN_INPUT       0  // frames delivered to the local stack
 #define CACT_FW_CHAIN_OUTPUT      1  // frames emitted by the local stack
 #define CACT_FW_CHAIN_FORWARD     2  // frames routed through the box
-#define CACT_FW_CHAIN_PREROUTING  3  // reserved (DNAT)
-#define CACT_FW_CHAIN_POSTROUTING 4  // reserved (SNAT)
+#define CACT_FW_CHAIN_PREROUTING  3  // DNAT / REDIRECT, before the routing decision
+#define CACT_FW_CHAIN_POSTROUTING 4  // SNAT / MASQUERADE, after the routing decision
 #define CACT_FW_CHAIN_COUNT       5
 
 #define CACT_FW_ACTION_ACCEPT     0
 #define CACT_FW_ACTION_DROP       1
-// NAT actions (reserved; accepted once the NAT stage lands).
-#define CACT_FW_ACTION_SNAT       2
-#define CACT_FW_ACTION_DNAT       3
-#define CACT_FW_ACTION_MASQUERADE 4
-#define CACT_FW_ACTION_REDIRECT   5
+#define CACT_FW_ACTION_SNAT       2  // rewrite the source (POSTROUTING)
+#define CACT_FW_ACTION_DNAT       3  // rewrite the destination (PREROUTING)
+#define CACT_FW_ACTION_MASQUERADE 4  // source = the egress interface's address
+#define CACT_FW_ACTION_REDIRECT   5  // destination = the local host
 
 #define CACT_FW_FAMILY_ANY  0
 #define CACT_FW_FAMILY_V4   4

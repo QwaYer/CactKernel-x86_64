@@ -15,7 +15,17 @@
 //! L2 and belongs to a bridge, not to an IP firewall — so an INPUT `DROP` policy
 //! still leaves neighbour resolution working.  A frame whose L3 header cannot be
 //! parsed is likewise accepted untouched.
+//!
+//! On top of the filter there is NAT.  The PREROUTING and POSTROUTING chains hold
+//! translation rules (`SNAT`/`MASQUERADE`/`DNAT`/`REDIRECT`); when one matches,
+//! the frame is rewritten in place — addresses, ports and the affected checksums
+//! — and the translation is recorded in the flow's conntrack entry so the reply
+//! leg is translated back.  NAT here applies to flows the box terminates or
+//! originates (a `DNAT`/`REDIRECT` to a local address, an `SNAT`/`MASQUERADE` of
+//! the box's own traffic); routing packets *between* interfaces needs a
+//! forwarding layer the stack does not have yet.
 
+use crate::config;
 use crate::conntrack::{self, Key};
 use crate::stack::StackGuard;
 
@@ -27,17 +37,19 @@ pub const FW_CHAIN_INPUT: u8 = 0;
 pub const FW_CHAIN_OUTPUT: u8 = 1;
 /// Frame routed through the box (reserved for the forwarding path).
 pub const FW_CHAIN_FORWARD: u8 = 2;
-/// DNAT hook, before the routing decision (reserved for the NAT stage).
-#[allow(dead_code)]
+/// DNAT/redirect hook, before the routing decision.
 pub const FW_CHAIN_PREROUTING: u8 = 3;
-/// SNAT hook, after the routing decision (reserved for the NAT stage).
-#[allow(dead_code)]
+/// SNAT/masquerade hook, after the routing decision.
 pub const FW_CHAIN_POSTROUTING: u8 = 4;
 /// Number of chains; must match `CACT_FW_CHAIN_COUNT`.
 pub const FW_CHAIN_COUNT: usize = 5;
 
 pub const FW_ACTION_ACCEPT: u8 = 0;
 pub const FW_ACTION_DROP: u8 = 1;
+const FW_ACTION_SNAT: u8 = 2;
+const FW_ACTION_DNAT: u8 = 3;
+const FW_ACTION_MASQUERADE: u8 = 4;
+const FW_ACTION_REDIRECT: u8 = 5;
 
 const FW_FAMILY_V4: u8 = 4;
 const FW_FAMILY_V6: u8 = 6;
@@ -421,27 +433,10 @@ fn embedded_ports(frame: &[u8], off: usize, proto: u8) -> (u16, u16) {
     }
 }
 
-/// Evaluate chain `chain` against one frame.  Returns the decided action
-/// (`FW_ACTION_ACCEPT` / `FW_ACTION_DROP`); a frame that is not IP is accepted.
-fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
+/// Evaluate filter chain `chain` against an already-classified packet.  Returns
+/// the decided action; with no matching rule the chain's default policy applies.
+fn eval_chain(chain: u8, p: &Pkt, slot: usize, state: u8) -> u8 {
     let ch = chain as usize;
-    let p = match Pkt::parse(frame) {
-        Some(p) => p,
-        None => return FW_ACTION_ACCEPT,
-    };
-    // Classify the packet against the connection table before any rule sees it,
-    // so a state rule can tell a fresh connection from its replies.  Runs under
-    // `STACK_LOCK` (the hooks do), which `conntrack::track` requires.
-    let key = Key {
-        family: p.family,
-        proto: p.proto,
-        src: p.src,
-        dst: p.dst,
-        sport: p.sport,
-        dport: p.dport,
-    };
-    let related = related_key(frame, &p);
-    let state = crate::conntrack::track(&key, p.tcp_flags, p.l3_len, related.as_ref());
     // SAFETY: the tables are only mutated under `STACK_LOCK`; every call site
     // holds it (the poll path and the TX token), so this read cannot race a
     // configuration change.
@@ -453,7 +448,7 @@ fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
     let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
     for i in 0..count as usize {
         let r = &mut rules[ch][i];
-        if rule_matches(r, &p, slot, state) {
+        if rule_matches(r, p, slot, state) {
             r.packets = r.packets.wrapping_add(1);
             r.bytes = r.bytes.wrapping_add(p.l3_len as u64);
             return r.action;
@@ -463,37 +458,368 @@ fn eval(chain: u8, frame: &[u8], slot: usize) -> u8 {
     unsafe { (*core::ptr::addr_of!(POLICY))[ch] }
 }
 
-/// Filter an inbound frame for interface `slot`.  Returns `true` when it may be
-/// delivered to the stack, `false` when the INPUT chain drops it.
-pub(crate) fn hook_input(frame: &[u8], slot: usize) -> bool {
+/// The conntrack key that identifies one frame.
+fn key_of_pkt(p: &Pkt) -> Key {
+    Key {
+        family: p.family,
+        proto: p.proto,
+        src: p.src,
+        dst: p.dst,
+        sport: p.sport,
+        dport: p.dport,
+    }
+}
+
+/// Handle an inbound frame for interface `slot`: PREROUTING (DNAT, or the
+/// reverse of an outbound translation) then the INPUT filter.  Returns `true`
+/// when the stack may have the frame.  Runs under `STACK_LOCK`.
+pub(crate) fn hook_input(frame: &mut [u8], slot: usize) -> bool {
     if !configured() {
         return true;
     }
-    eval(FW_CHAIN_INPUT, frame, slot) == FW_ACTION_ACCEPT
+    let Some(mut p) = Pkt::parse(frame) else {
+        return true;
+    };
+    let key = key_of_pkt(&p);
+    let related = related_key(frame, &p);
+    let t = conntrack::track(&key, p.tcp_flags, p.l3_len, related.as_ref());
+    if t.rev {
+        nat_reverse(frame, &mut p, t.idx);
+    } else {
+        nat_forward(frame, &mut p, slot, t.state, t.idx, FW_CHAIN_PREROUTING);
+    }
+    eval_chain(FW_CHAIN_INPUT, &p, slot, t.state) == FW_ACTION_ACCEPT
 }
 
-/// Filter an outbound frame produced by interface `slot`.  Returns `true` when
-/// it may leave the stack, `false` when the OUTPUT chain drops it.
-pub(crate) fn hook_output(frame: &[u8], slot: usize) -> bool {
+/// Handle an outbound frame produced by interface `slot`: the OUTPUT filter then
+/// POSTROUTING (SNAT, or the reverse of an inbound translation).  Returns `true`
+/// when the frame may leave.  Runs under `STACK_LOCK`.
+pub(crate) fn hook_output(frame: &mut [u8], slot: usize) -> bool {
     if !configured() {
         return true;
     }
-    eval(FW_CHAIN_OUTPUT, frame, slot) == FW_ACTION_ACCEPT
+    let Some(mut p) = Pkt::parse(frame) else {
+        return true;
+    };
+    let key = key_of_pkt(&p);
+    let related = related_key(frame, &p);
+    let t = conntrack::track(&key, p.tcp_flags, p.l3_len, related.as_ref());
+    // The OUTPUT filter sees the packet before POSTROUTING rewrites it.
+    if eval_chain(FW_CHAIN_OUTPUT, &p, slot, t.state) == FW_ACTION_DROP {
+        return false;
+    }
+    if t.rev {
+        nat_reverse(frame, &mut p, t.idx);
+    } else {
+        nat_forward(frame, &mut p, slot, t.state, t.idx, FW_CHAIN_POSTROUTING);
+    }
+    true
 }
 
-/// Whether `chain` may hold rules in this build (the NAT chains are reserved
-/// until the NAT stage).
-fn chain_is_filter(chain: u32) -> bool {
-    chain == FW_CHAIN_INPUT as u32
+// ── NAT ─────────────────────────────────────────────────────────────────────
+
+/// The interface `slot`'s own address in `family`, for MASQUERADE.
+fn egress_addr(slot: usize, family: u8) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    if family == FW_FAMILY_V4 {
+        let h = config::ip_host_of(slot);
+        out[0] = (h >> 24) as u8;
+        out[1] = (h >> 16) as u8;
+        out[2] = (h >> 8) as u8;
+        out[3] = h as u8;
+    } else {
+        let g = config::ipv6_addr_of(slot);
+        out = if g != [0u8; 16] {
+            g
+        } else {
+            config::ipv6_link_local_of(slot)
+        };
+    }
+    out
+}
+
+/// The loopback address in `family`, for REDIRECT.
+fn loopback_addr(family: u8) -> [u8; 16] {
+    let mut out = [0u8; 16];
+    if family == FW_FAMILY_V4 {
+        out[..4].copy_from_slice(&[127, 0, 0, 1]);
+    } else {
+        out = config::IPV6_LOOPBACK;
+    }
+    out
+}
+
+/// Byte offset of the source or destination address within a frame.
+fn addr_off(p: &Pkt, src: bool) -> usize {
+    match (p.family == FW_FAMILY_V4, src) {
+        (true, true) => 26,
+        (true, false) => 30,
+        (_, true) => 22,
+        (_, false) => 38,
+    }
+}
+
+/// Byte offset of a TCP/UDP source or destination port.
+fn port_off(p: &Pkt, src: bool) -> usize {
+    if src {
+        p.l4
+    } else {
+        p.l4 + 2
+    }
+}
+
+/// Write address `addr` into a frame's source or destination field.
+fn write_addr(frame: &mut [u8], p: &Pkt, src: bool, addr: &[u8; 16]) {
+    let off = addr_off(p, src);
+    let n = if p.family == FW_FAMILY_V4 { 4 } else { 16 };
+    if off + n <= frame.len() {
+        frame[off..off + n].copy_from_slice(&addr[..n]);
+    }
+}
+
+/// Write `port` into a frame's TCP/UDP source or destination field.
+fn write_port(frame: &mut [u8], p: &Pkt, src: bool, port: u16) {
+    let off = port_off(p, src);
+    if off + 2 <= frame.len() {
+        frame[off..off + 2].copy_from_slice(&port.to_be_bytes());
+    }
+}
+
+/// Forward translation of flow `idx`: evaluate NAT chain `chain` (PREROUTING for
+/// inbound, POSTROUTING for outbound), record the translation and rewrite the
+/// frame in place.  Running on later packets of the same flow re-derives the same
+/// `xlate`, so it is idempotent.
+fn nat_forward(frame: &mut [u8], p: &mut Pkt, slot: usize, state: u8, idx: u32, chain: u8) {
+    if idx == conntrack::NO_ENTRY {
+        return;
+    }
+    let key = conntrack::key_of(idx);
+    let mut xlate = key;
+    let ch = chain as usize;
+    // SAFETY: as in `eval_chain`; this runs under `STACK_LOCK`.
+    let count = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] };
+    // SAFETY: `RULES` is only touched under `STACK_LOCK`, held here.
+    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    for i in 0..count as usize {
+        let r = &mut rules[ch][i];
+        if !rule_matches(r, p, slot, state) {
+            continue;
+        }
+        r.packets = r.packets.wrapping_add(1);
+        r.bytes = r.bytes.wrapping_add(p.l3_len as u64);
+        match r.action {
+            FW_ACTION_SNAT => {
+                xlate.src = r.nat_addr;
+                if r.nat_port != 0 {
+                    xlate.sport = r.nat_port;
+                }
+            }
+            FW_ACTION_MASQUERADE => {
+                xlate.src = egress_addr(slot, p.family);
+                if r.nat_port != 0 {
+                    xlate.sport = r.nat_port;
+                }
+            }
+            FW_ACTION_DNAT => {
+                xlate.dst = r.nat_addr;
+                if r.nat_port != 0 {
+                    xlate.dport = r.nat_port;
+                }
+            }
+            FW_ACTION_REDIRECT => {
+                xlate.dst = loopback_addr(p.family);
+                if r.nat_port != 0 {
+                    xlate.dport = r.nat_port;
+                }
+            }
+            _ => {}
+        }
+        break;
+    }
+    conntrack::set_xlate(idx, xlate);
+    if xlate == key {
+        return;
+    }
+    let mut changed = false;
+    if xlate.src != key.src {
+        write_addr(frame, p, true, &xlate.src);
+        p.src = xlate.src;
+        changed = true;
+    }
+    if p.has_l4 && xlate.sport != key.sport {
+        write_port(frame, p, true, xlate.sport);
+        p.sport = xlate.sport;
+        changed = true;
+    }
+    if xlate.dst != key.dst {
+        write_addr(frame, p, false, &xlate.dst);
+        p.dst = xlate.dst;
+        changed = true;
+    }
+    if p.has_l4 && xlate.dport != key.dport {
+        write_port(frame, p, false, xlate.dport);
+        p.dport = xlate.dport;
+        changed = true;
+    }
+    if changed {
+        fix_checksums(frame, p);
+    }
+}
+
+/// Undo the NAT of flow `idx` on a reply packet: the reply's source is the
+/// translation's destination and its destination the translation's source, so
+/// both are restored to the original tuple.
+fn nat_reverse(frame: &mut [u8], p: &mut Pkt, idx: u32) {
+    if idx == conntrack::NO_ENTRY {
+        return;
+    }
+    let key = conntrack::key_of(idx);
+    let xlate = conntrack::xlate_of(idx);
+    // An endpoint may differ in address or in port alone, so compare both.
+    let src_translated = xlate.src != key.src || xlate.sport != key.sport;
+    let dst_translated = xlate.dst != key.dst || xlate.dport != key.dport;
+    if !src_translated && !dst_translated {
+        return;
+    }
+    let mut changed = false;
+    if dst_translated {
+        // The reply's source is the translation's destination.
+        write_addr(frame, p, true, &key.dst);
+        p.src = key.dst;
+        changed = true;
+        if p.has_l4 {
+            write_port(frame, p, true, key.dport);
+            p.sport = key.dport;
+        }
+    }
+    if src_translated {
+        // The reply's destination is the translation's source.
+        write_addr(frame, p, false, &key.src);
+        p.dst = key.src;
+        changed = true;
+        if p.has_l4 {
+            write_port(frame, p, false, key.sport);
+            p.dport = key.sport;
+        }
+    }
+    if changed {
+        fix_checksums(frame, p);
+    }
+}
+
+// ── Checksums ───────────────────────────────────────────────────────────────
+
+/// Recompute the L3/L4 checksums a rewrite invalidated.
+fn fix_checksums(frame: &mut [u8], p: &Pkt) {
+    if p.family == FW_FAMILY_V4 {
+        let ihl = (frame[14] & 0x0F) as usize * 4;
+        if 14 + ihl <= frame.len() {
+            frame[24] = 0;
+            frame[25] = 0;
+            let be = (!fold(byte_sum(&frame[14..14 + ihl]))).to_be_bytes();
+            frame[24] = be[0];
+            frame[25] = be[1];
+        }
+        let l4len = (p.l3_len as usize).saturating_sub(ihl);
+        if p.proto == FW_PROTO_TCP || p.proto == FW_PROTO_UDP {
+            fix_l4(frame, p, l4len, p.l4 + 16);
+        }
+    } else if p.family == FW_FAMILY_V6 {
+        let l4len = (p.l3_len as usize).saturating_sub(40);
+        if p.proto == FW_PROTO_TCP || p.proto == FW_PROTO_UDP {
+            fix_l4(frame, p, l4len, p.l4 + 16);
+        } else if p.proto == FW_PROTO_ICMPV6 {
+            fix_l4(frame, p, l4len, p.l4 + 2);
+        }
+    }
+}
+
+/// Zero the checksum field at `ck_off`, recompute the TCP/UDP/ICMPv6 checksum
+/// (pseudo-header + segment) and store it back.
+fn fix_l4(frame: &mut [u8], p: &Pkt, l4len: usize, ck_off: usize) {
+    if ck_off + 2 > frame.len() {
+        return;
+    }
+    frame[ck_off] = 0;
+    frame[ck_off + 1] = 0;
+    let be = (!fold(l4_sum(frame, p, l4len))).to_be_bytes();
+    frame[ck_off] = be[0];
+    frame[ck_off + 1] = be[1];
+}
+
+/// One's-complement sum of `bytes` (an odd trailing byte is padded with zero).
+fn byte_sum(bytes: &[u8]) -> u32 {
+    let mut sum = 0u32;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        sum += u16::from_be_bytes([bytes[i], bytes[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < bytes.len() {
+        sum += (bytes[i] as u32) << 8;
+    }
+    sum
+}
+
+/// Fold a 32-bit one's-complement accumulator down to 16 bits.
+fn fold(mut sum: u32) -> u16 {
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    sum as u16
+}
+
+/// One's-complement sum of the TCP/UDP/ICMPv6 pseudo-header plus the L4 segment
+/// (whose checksum field the caller has zeroed).
+fn l4_sum(frame: &[u8], p: &Pkt, l4len: usize) -> u32 {
+    let mut sum = 0u32;
+    if p.family == FW_FAMILY_V4 {
+        sum += u16::from_be_bytes([p.src[0], p.src[1]]) as u32;
+        sum += u16::from_be_bytes([p.src[2], p.src[3]]) as u32;
+        sum += u16::from_be_bytes([p.dst[0], p.dst[1]]) as u32;
+        sum += u16::from_be_bytes([p.dst[2], p.dst[3]]) as u32;
+        sum += p.proto as u32;
+        sum += (l4len & 0xFFFF) as u32;
+    } else {
+        let mut i = 0;
+        while i < 16 {
+            sum += u16::from_be_bytes([p.src[i], p.src[i + 1]]) as u32;
+            sum += u16::from_be_bytes([p.dst[i], p.dst[i + 1]]) as u32;
+            i += 2;
+        }
+        sum += (l4len >> 16) as u32;
+        sum += (l4len & 0xFFFF) as u32;
+        sum += p.proto as u32;
+    }
+    let end = (p.l4 + l4len).min(frame.len());
+    if p.l4 < end {
+        sum += byte_sum(&frame[p.l4..end]);
+    }
+    sum
+}
+
+/// Whether `chain` accepts `action`: the filter chains take ACCEPT/DROP, the NAT
+/// chains their own translation actions.
+fn chain_accepts_action(chain: u32, action: u32) -> bool {
+    let is_filter = chain == FW_CHAIN_INPUT as u32
         || chain == FW_CHAIN_OUTPUT as u32
-        || chain == FW_CHAIN_FORWARD as u32
+        || chain == FW_CHAIN_FORWARD as u32;
+    if is_filter {
+        action == FW_ACTION_ACCEPT as u32 || action == FW_ACTION_DROP as u32
+    } else if chain == FW_CHAIN_PREROUTING as u32 {
+        action == FW_ACTION_DNAT as u32 || action == FW_ACTION_REDIRECT as u32
+    } else if chain == FW_CHAIN_POSTROUTING as u32 {
+        action == FW_ACTION_SNAT as u32 || action == FW_ACTION_MASQUERADE as u32
+    } else {
+        false
+    }
 }
 
 // ── Configuration entry points (`CACT_NETCTL_FW_*`) ─────────────────────────
 
 /// Append `*rule` to its chain.  Returns 0 on success, -1 on a bad argument:
-/// null pointer, unknown chain, a reserved (NAT) chain, an unknown action, an
-/// unknown connection-state bit, or a full table.
+/// null pointer, unknown chain, an action the chain does not take, an unknown
+/// connection-state bit, or a full table.
 ///
 /// # Safety
 ///
@@ -508,10 +834,7 @@ pub unsafe extern "C" fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
     // SAFETY: the caller contract (see # Safety) makes `rule` a live, aligned
     // `FwRule`; the borrow ends before the table is touched below.
     let r = unsafe { &*rule };
-    if !chain_is_filter(r.chain as u32) {
-        return -1;
-    }
-    if r.action != FW_ACTION_ACCEPT && r.action != FW_ACTION_DROP {
+    if !chain_accepts_action(r.chain as u32, r.action as u32) {
         return -1;
     }
     // A state mask may only name defined connection states; an unknown bit is an
@@ -666,4 +989,5 @@ pub extern "C" fn rust_net_fw_reset() -> i32 {
     unsafe { *core::ptr::addr_of_mut!(POLICY) = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT] };
     0
 }
+
 

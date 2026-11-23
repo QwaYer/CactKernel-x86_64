@@ -57,6 +57,18 @@ pub struct Key {
 }
 
 impl Key {
+    /// A zeroed key (no flow).
+    const fn zero() -> Key {
+        Key {
+            family: 0,
+            proto: 0,
+            src: [0; 16],
+            dst: [0; 16],
+            sport: 0,
+            dport: 0,
+        }
+    }
+
     /// The key with source and destination swapped.
     fn reverse(&self) -> Key {
         Key {
@@ -74,6 +86,9 @@ impl Key {
 struct Conn {
     used: bool,
     key: Key,
+    /// The tuple as it appears on the wire in the forward direction once NAT has
+    /// rewritten it; equal to `key` for an untranslated flow.
+    xlate: Key,
     state: u8,
     /// `timer_ticks_get()` value at the last packet of this flow.
     last_tick: u32,
@@ -86,6 +101,14 @@ impl Conn {
         Self {
             used: false,
             key: Key {
+                family: 0,
+                proto: 0,
+                src: [0; 16],
+                dst: [0; 16],
+                sport: 0,
+                dport: 0,
+            },
+            xlate: Key {
                 family: 0,
                 proto: 0,
                 src: [0; 16],
@@ -144,16 +167,17 @@ fn timeout_secs(proto: u8, state: u8) -> u32 {
 }
 
 /// Index and direction of the entry matching `key` (`rev` is true when the
-/// packet runs opposite to the stored flow).
+/// packet runs opposite to the stored flow).  A hit may be on the original tuple
+/// or on its NAT translation, so a translated reply finds its flow.
 fn find(table: &[Conn; CONN_MAX], key: &Key) -> Option<(usize, bool)> {
     for (i, c) in table.iter().enumerate() {
         if !c.used {
             continue;
         }
-        if c.key == *key {
+        if c.key == *key || c.xlate == *key {
             return Some((i, false));
         }
-        if c.key == key.reverse() {
+        if c.key.reverse() == *key || c.xlate.reverse() == *key {
             return Some((i, true));
         }
     }
@@ -191,18 +215,36 @@ pub(crate) fn known(key: &Key) -> bool {
     find(table, key).is_some()
 }
 
-/// Classify one packet and update the table, returning its [`STATE_*`] value.
+/// The outcome of classifying one packet with [`track`].
+pub(crate) struct Tracked {
+    /// The packet's [`STATE_*`] value.
+    pub state: u8,
+    /// True when the packet runs opposite to the stored flow.
+    pub rev: bool,
+    /// The flow's entry index, for [`key_of`] / [`xlate_of`] / [`set_xlate`];
+    /// [`NO_ENTRY`] for a RELATED packet, which matches no entry of its own.
+    pub idx: u32,
+}
+
+/// `Tracked::idx` value meaning "no table entry" (a RELATED ICMP error).
+pub(crate) const NO_ENTRY: u32 = u32::MAX;
+
+/// Classify one packet and update the table.
 ///
 /// `tcp_flags` is the TCP flags byte (0 for non-TCP); `len` is the L3 length for
 /// the byte counter; `related` is the embedded packet of an ICMP error, when the
 /// caller could extract one.
 ///
 /// The caller must hold the stack lock.
-pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -> u8 {
+pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -> Tracked {
     // An ICMP error that names a live flow is RELATED, whatever its own tuple.
     if let Some(rk) = related {
         if known(rk) {
-            return STATE_RELATED;
+            return Tracked {
+                state: STATE_RELATED,
+                rev: false,
+                idx: NO_ENTRY,
+            };
         }
     }
     // SAFETY: `CONNS` is only touched under the stack lock, which the caller
@@ -220,12 +262,21 @@ pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -
         if c.key.proto == 6 && tcp_flags & TCP_RST != 0 {
             // A reset tears the flow down; report the closing packet and forget it.
             c.used = false;
-            return STATE_ESTABLISHED;
+            return Tracked {
+                state: STATE_ESTABLISHED,
+                rev,
+                idx: i as u32,
+            };
         }
         if c.state == STATE_NEW && (rev || (c.key.proto == 6 && tcp_flags & TCP_ACK != 0)) {
             c.state = STATE_ESTABLISHED;
         }
-        return c.state;
+        let state = c.state;
+        return Tracked {
+            state,
+            rev,
+            idx: i as u32,
+        };
     }
 
     let slot = free_slot(table, now);
@@ -233,12 +284,58 @@ pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -
     *c = Conn {
         used: true,
         key: *key,
+        xlate: *key,
         state: STATE_NEW,
         last_tick: now,
         packets: 1,
         bytes: len,
     };
-    STATE_NEW
+    Tracked {
+        state: STATE_NEW,
+        rev: false,
+        idx: slot as u32,
+    }
+}
+
+/// The original tuple of flow `idx`.
+///
+/// The caller must hold the stack lock.
+pub(crate) fn key_of(idx: u32) -> Key {
+    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
+    // holds; the borrow is shared and dead before returning.
+    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
+    if (idx as usize) < CONN_MAX && table[idx as usize].used {
+        table[idx as usize].key
+    } else {
+        Key::zero()
+    }
+}
+
+/// The wire (translated) tuple of flow `idx`; equals the original key when the
+/// flow is not translated.
+///
+/// The caller must hold the stack lock.
+pub(crate) fn xlate_of(idx: u32) -> Key {
+    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
+    // holds; the borrow is shared and dead before returning.
+    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
+    if (idx as usize) < CONN_MAX && table[idx as usize].used {
+        table[idx as usize].xlate
+    } else {
+        Key::zero()
+    }
+}
+
+/// Record that flow `idx` is translated to `xlate` in the forward direction.
+///
+/// The caller must hold the stack lock.
+pub(crate) fn set_xlate(idx: u32, xlate: Key) {
+    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
+    // holds; the borrow ends before returning.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
+    if (idx as usize) < CONN_MAX && table[idx as usize].used {
+        table[idx as usize].xlate = xlate;
+    }
 }
 
 /// Drop every flow idle for longer than its protocol/state timeout.  Called once
@@ -310,10 +407,18 @@ pub unsafe extern "C" fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) ->
             dst.dst = c.key.dst;
             dst.sport = c.key.sport;
             dst.dport = c.key.dport;
-            dst.xsrc = [0; 16];
-            dst.xdst = [0; 16];
-            dst.xsport = 0;
-            dst.xdport = 0;
+            // Report the translation only when the flow actually is translated.
+            if c.xlate != c.key {
+                dst.xsrc = c.xlate.src;
+                dst.xdst = c.xlate.dst;
+                dst.xsport = c.xlate.sport;
+                dst.xdport = c.xlate.dport;
+            } else {
+                dst.xsrc = [0; 16];
+                dst.xdst = [0; 16];
+                dst.xsport = 0;
+                dst.xdport = 0;
+            }
             dst.age_ms = age_ticks * 10;
             dst.ttl_ms = ttl.saturating_sub(age_ticks) * 10;
             dst.packets = c.packets;

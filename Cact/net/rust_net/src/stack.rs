@@ -661,7 +661,7 @@ impl TxToken for CactTxToken<'_> {
         }
         // The OUTPUT chain sees every frame the stack emits, before it is looped
         // back or handed to the NIC.
-        if !crate::fw::hook_output(&this.buf[..len], this.slot) {
+        if !crate::fw::hook_output(&mut this.buf[..len], this.slot) {
             return r;
         }
         if frame_involves_loopback(&this.buf[..len], this.slot) {
@@ -742,7 +742,7 @@ impl Device for SlotDev<'_> {
             // The INPUT chain sees every frame before the stack does, including
             // frames looped back from our own egress.  A dropped frame is simply
             // skipped; the next one in the ring is considered in its place.
-            if !crate::fw::hook_input(&phy.rx[slot][..n], self.slot) {
+            if !crate::fw::hook_input(&mut phy.rx[slot][..n], self.slot) {
                 continue;
             }
             // Learn the neighbor from any ARP frame before smoltcp consumes it, so

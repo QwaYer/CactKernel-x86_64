@@ -93,11 +93,11 @@ int rust_net_arp_count(void);
 int rust_net_arp_get(uint32_t idx, struct cact_arp_entry* out);
 int rust_net_dns_resolve_a(const char* name, uint32_t* out_ip_host);
 
-/* ── Firewall / packet filter (see cact_fw_rule_t in ioctl_abi.h) ──
-   Ordered filter rules with a per-chain default policy; the first rule that
-   matches a frame decides its verdict.  The config calls return 0 on success
-   and -1 on a bad argument (unknown chain, a reserved NAT chain/action, a full
-   table, a null pointer).  Reads return the value, or -1 on error. */
+/* ── Firewall / packet filter + NAT (see cact_fw_rule_t in ioctl_abi.h) ──
+   Ordered rules with a per-chain default policy; the first rule that matches a
+   frame decides its verdict.  The config calls return 0 on success and -1 on a
+   bad argument (unknown chain, an action the chain does not take, a full table,
+   a null pointer).  Reads return the value, or -1 on error. */
 struct cact_fw_rule; /* defined in ioctl_abi.h */
 int rust_net_fw_rule_add(const struct cact_fw_rule* rule);
 int rust_net_fw_rule_del(uint32_t chain, uint32_t index);
