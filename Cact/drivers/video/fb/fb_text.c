@@ -46,6 +46,11 @@ void fb_draw_char_scaled(char c, int px, int py, uint32_t fg, uint32_t bg) {
     const uint32_t out_w = fw * scale;
     const uint32_t out_h = fh * scale;
 
+    /* scanline[] below is sized for CONSOLE_FONT_MAX_WIDTH; the PSF2 parser
+     * enforces that limit, but a wider active font would otherwise overflow
+     * the stack buffer here. */
+    if (unlikely(fw > CONSOLE_FONT_MAX_WIDTH)) return;
+
     if (unlikely(px < 0 || py < 0))              return;
     if (unlikely((uint32_t)px + out_w > fb_width))  return;
     if (unlikely((uint32_t)py + out_h > fb_height)) return;
@@ -179,7 +184,10 @@ static void _console_emit(const char* message, uint32_t len, uint32_t color,
             int params[4], np = 0, val = 0, has_val = 0;
             while (i < len && message[i]) {
                 if (message[i] >= '0' && message[i] <= '9') {
-                    val = val * 10 + (message[i] - '0');
+                    if (to_serial) serial_putc(message[i]);
+                    /* Cap the accumulator: a long digit run would otherwise
+                     * overflow int before the parameter is clamped below. */
+                    if (val < 100000) val = val * 10 + (message[i] - '0');
                     has_val = 1;
                     i++;
                 } else if (message[i] == ';') {
@@ -196,6 +204,12 @@ static void _console_emit(const char* message, uint32_t len, uint32_t color,
                     if (to_serial) serial_putc(message[i]);
 
                     if (message[i] == 'm') {
+                        /* A bare ESC[m carries no parameter and is SGR 0
+                         * (reset) per ANSI; treat it like an explicit 0. */
+                        if (np == 0) {
+                            current_fb_color = color;
+                            reverse = 0;
+                        }
                         for (int p = 0; p < np; p++) {
                             if (params[p] >= 30 && params[p] <= 37)
                                 current_fb_color = ansi_colors[params[p] - 30];
@@ -211,12 +225,20 @@ static void _console_emit(const char* message, uint32_t len, uint32_t color,
                             }
                         }
                     } else if (message[i] == 'H') {
-                        int row = (np > 0) ? params[0] : 1;
-                        int col = (np > 1) ? params[1] : 1;
+                        int row = (np > 0 && params[0] > 0) ? params[0] : 1;
+                        int col = (np > 1 && params[1] > 0) ? params[1] : 1;
+                        /* Clamp to the last on-screen cell BEFORE the multiply:
+                         * (row-1)*cellh overflows int for a hostile row, and a
+                         * cursor parked past the screen can never be drawn back
+                         * into view. */
+                        uint32_t rows = h / cellh;
+                        uint32_t cols = w / cellw;
+                        if (rows == 0) rows = 1;
+                        if (cols == 0) cols = 1;
+                        if ((uint32_t)row > rows) row = (int)rows;
+                        if ((uint32_t)col > cols) col = (int)cols;
                         cursor_y = (row - 1) * (int)cellh;
                         cursor_x = (col - 1) * (int)cellw;
-                        if (cursor_y < 0) cursor_y = 0;
-                        if (cursor_x < 0) cursor_x = 0;
                     } else if (message[i] == 'J') {
                         int mode = (np > 0) ? params[0] : 0;
                         if (mode == 2) {
