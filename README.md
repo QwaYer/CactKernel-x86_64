@@ -529,6 +529,14 @@ Addressing is per interface (`NET_CFG[slot]`). Userspace sets any NIC's address 
 
 smoltcp keeps its neighbour cache private, so `cact_net` shadows it: `arp.rs` learns mappings passively from the ARP traffic seen in the PHY RX path (`ARP_TABLE_MAX` 16 entries, 60 s lifetime), exposed via `CACT_NETCTL_ARP_COUNT` (`0x340B`) / `CACT_NETCTL_ARP_GET` (`0x340C`) and `cact_arp_entry_t`.
 
+### Firewall — packet filter, conntrack and NAT (`cact_net::fw`)
+
+A small **netfilter** lives in `fw.rs` (+ `conntrack.rs`): ordered rules per chain with a per-chain default policy, the first match deciding the frame's fate and the policy applying otherwise. Chains are **INPUT**/**OUTPUT**/**FORWARD** (filter: `ACCEPT`/`DROP`) and **PREROUTING**/**POSTROUTING** (NAT: `DNAT`/`REDIRECT` and `SNAT`/`MASQUERADE`). A rule matches on family (v4/v6), protocol (tcp/udp/icmp/icmpv6), source/destination **address with a prefix**, a **port range**, the ingress interface slot, the ICMP type and the connection **state**. The default policy is `ACCEPT`, so an unconfigured kernel is unchanged (a `configured()` fast path skips even the parse). ARP is never filtered — it is L2.
+
+Hooks sit where the stack meets the wire and run under `STACK_LOCK`: **INPUT** sees every frame pulled off a slot's receive ring (IPv4/IPv6, including frames looped back from our own egress), **OUTPUT** every frame the stack is about to emit. **`conntrack.rs`** keeps a 256-entry table of bidirectional flows (original 5-tuple + the wire/translated tuple), tagging each packet **NEW**/**ESTABLISHED**/**RELATED**, so a default-`DROP` input policy still admits the replies to connections the box opened (RELATED is an ICMP error whose embedded packet names a live flow). **NAT** rewrites the frame in place — addresses, ports and the affected checksums — and records the translation on the flow so the reply leg is translated back: incoming `PREROUTING` (DNAT) then `INPUT`, outgoing `OUTPUT` then `POSTROUTING` (SNAT). `MASQUERADE` sources from the egress interface's address, `REDIRECT` sends to the local host. NAT applies to flows the box **terminates or originates**; routing packets *between* interfaces (`FORWARD`, transit masquerade) needs a forwarding layer the stack does not have yet.
+
+Userspace drives it through `/dev/net` `CACT_NETCTL_FW_*` (`0x3420`–`0x342A`: rule add/del/list/flush, policy set/get, conntrack list/flush; config is root-only) with `cact_fw_rule_t` / `cact_fw_conn_t`. The **`fw`** tool (CactUserBins) is the front end — `fw add input drop -p tcp --dport 80`, `fw add input accept --state established,related`, `fw policy input drop`, `fw show`, `fw conn`, and `fw load` applying `/etc/fw.conf` (same syntax, one command per line).
+
 ### Wi-Fi — in-kernel 802.11 engine (`cact80211`)
 
 The Linux-shaped split, with the **mac80211-equivalent in the kernel** (Rust crate `cact80211`, `Cact/net/wireless`) and the Wi-Fi driver reduced to a **dumb radio**:
