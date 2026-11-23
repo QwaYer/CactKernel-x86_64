@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-//! Blocking DNS A-record resolution over UDP port 53 using a dedicated smoltcp UDP socket.
+//! Blocking DNS A/AAAA resolution over UDP port 53 using a dedicated smoltcp UDP
+//! socket.
+//!
+//! The query goes to whichever resolver userspace configured: the interface's
+//! IPv4 server when the IPv4 stack is up, otherwise its IPv6 server (`ip6_dns`,
+//! which `dhcpd -6` fills from a Router Advertisement's RDNSS option or from
+//! stateful DHCPv6).  The IPv6 server is queried over UDP/IPv6 — the only
+//! transport that can work on an interface with no IPv4 address at all.
 
 use core::ffi::{c_char, c_int};
-use core::net::Ipv4Addr;
+use core::net::{Ipv4Addr, Ipv6Addr};
 
 use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::udp;
@@ -119,21 +126,76 @@ pub(crate) fn parse_ipv4_literal(host: &[u8]) -> Option<u32> {
     Some((a << 24) | (b << 16) | (c << 8) | d)
 }
 
-/// Resolve `host` (already known not to be an IPv4 literal) to a host-order
-/// IPv4 address using the configured DNS server. Returns None on failure.
+/// The resolver a query is sent to — and therefore the transport it uses.
+#[derive(Clone, Copy)]
+enum DnsServer {
+    /// An IPv4 server, queried over UDP/IPv4: needs a configured IPv4 address
+    /// and mask, because the query is sourced from it.
+    V4(u32),
+    /// An IPv6 server (`ip6_dns`), queried over UDP/IPv6.  Needs no IPv4 at all:
+    /// the query is sourced from the interface's own IPv6 address.
+    V6([u8; 16]),
+}
+
+impl DnsServer {
+    /// The UDP endpoint the query goes to (port 53 on the server).
+    fn endpoint(self) -> (IpAddress, u16) {
+        match self {
+            DnsServer::V4(a) => (IpAddress::Ipv4(Ipv4Addr::from_bits(a)), DNS_PORT),
+            DnsServer::V6(a) => (IpAddress::Ipv6(Ipv6Addr::from(a)), DNS_PORT),
+        }
+    }
+
+    /// True when `addr` is this server — the only source a reply is accepted
+    /// from, so an unrelated datagram cannot be mistaken for the answer.
+    fn is_source(self, addr: IpAddress) -> bool {
+        match (self, addr) {
+            (DnsServer::V4(a), IpAddress::Ipv4(b)) => ipv4_host_from_smoltcp_v4(b) == a,
+            (DnsServer::V6(a), IpAddress::Ipv6(b)) => b.octets() == a,
+            _ => false,
+        }
+    }
+}
+
+/// The resolvers to try, in order: the IPv4 server (only when an IPv4 address,
+/// mask and resolver are all configured, since the query is sourced from them),
+/// then the IPv6 one.  The IPv6 entry is what lets a name resolve on an
+/// interface that has no IPv4 address at all — `ping -6 <name>` on a box whose
+/// only addressing is SLAAC.
+fn dns_servers() -> [Option<DnsServer>; 2] {
+    let v4 = if crate::config::dns_host() != 0
+        && crate::config::ip_host() != 0
+        && crate::config::netmask_host() != 0
+    {
+        Some(DnsServer::V4(crate::config::dns_host()))
+    } else {
+        None
+    };
+    // The shared resolver socket lives on interface slot 0, so that is the slot
+    // whose IPv6 resolver it can reach (same as the IPv4 server above, which
+    // `dns_host()` reports for slot 0).
+    let d6 = crate::config::ipv6_dns_of(0);
+    let v6 = if d6 != [0u8; 16] {
+        Some(DnsServer::V6(d6))
+    } else {
+        None
+    };
+    [v4, v6]
+}
+
+/// Resolve `host` (already known not to be an IPv4 literal) to an address using
+/// the configured resolvers.  Returns None when none of them answered.
 fn resolve_host(host: &[u8], qtype: u16) -> Option<DnsAnswer> {
-    let dns = crate::config::dns_host();
-    if dns == 0 {
-        return None;
-    }
-    if crate::config::ip_host() == 0 || crate::config::netmask_host() == 0 {
-        return None;
-    }
     let Ok(name_str) = core::str::from_utf8(host) else {
         return None;
     };
     let mut buf = [0u8; 512];
-    resolve_once(name_str, dns, &mut buf, qtype)
+    for server in dns_servers().into_iter().flatten() {
+        if let Some(answer) = resolve_once(name_str, server, &mut buf, qtype) {
+            return Some(answer);
+        }
+    }
+    None
 }
 
 /// Resolve a hostname or IPv4 literal to a host-order IPv4 address.
@@ -147,9 +209,9 @@ pub(crate) fn resolve_a(host: &[u8]) -> Option<u32> {
     }
 }
 
-/// Resolve `host` to an IPv6 address (AAAA).  DNS itself runs over IPv4, so the
-/// IPv4 stack must be up and a resolver configured — same prerequisites as
-/// `resolve_host`.
+/// Resolve `host` to an IPv6 address (AAAA) through the configured resolver —
+/// either transport (see [`dns_servers`]), so an AAAA name resolves without any
+/// IPv4 addressing.
 pub(crate) fn resolve_aaaa(host: &[u8]) -> Option<[u8; 16]> {
     match resolve_host(host, QTYPE_AAAA)? {
         DnsAnswer::Aaaa(a) => Some(a),
@@ -285,7 +347,7 @@ fn parse_dns_response(pkt: &[u8], expect_id: u16, qtype: u16) -> Option<DnsAnswe
 
 fn try_recv_dns_reply(
     socks: &mut SocketSet<'static>,
-    dns_host: u32,
+    server: DnsServer,
     id: u16,
     qtype: u16,
 ) -> Option<DnsAnswer> {
@@ -294,12 +356,10 @@ fn try_recv_dns_reply(
     let h = unsafe { DNS_HANDLE }?;
     let s = socks.get_mut::<udp::Socket>(h);
     let (data, meta) = s.recv().ok()?;
-    // DNS runs over IPv4 at this stage; a datagram whose source is not IPv4 is
-    // not an answer to this resolver's query.
-    let IpAddress::Ipv4(src_v4) = meta.endpoint.addr else {
-        return None;
-    };
-    if ipv4_host_from_smoltcp_v4(src_v4) != dns_host {
+    // Only a datagram from the server we queried, on port 53, can be its answer —
+    // and the source must be in the queried family (an IPv4 server never answers
+    // from an IPv6 address, and vice versa).
+    if !server.is_source(meta.endpoint.addr) {
         return None;
     }
     if meta.endpoint.port != DNS_PORT {
@@ -313,7 +373,7 @@ fn try_recv_dns_reply(
 /// a previous, timed-out lookup.  Only the first send of a lookup flushes, so a
 /// retransmission cannot throw away the reply that is already on its way back.
 /// Returns false when the socket is gone or the query could not be queued.
-fn send_query(query: &[u8], dns_ip: Ipv4Addr, flush: bool) -> bool {
+fn send_query(query: &[u8], server: DnsServer, flush: bool) -> bool {
     stack::with_iface_sockets(|_iface, socks| {
         // SAFETY: this closure runs under `with_iface_sockets` (stack lock held), the
         // same lock every writer of `DNS_HANDLE` takes; the `Option` read cannot tear.
@@ -331,13 +391,14 @@ fn send_query(query: &[u8], dns_ip: Ipv4Addr, flush: bool) -> bool {
                 return false;
             }
         }
-        s.send_slice(query, (dns_ip, DNS_PORT)).is_ok()
+        // The one socket carries both families: the endpoint decides which source
+        // address smoltcp picks when it emits the datagram.
+        s.send_slice(query, server.endpoint()).is_ok()
     })
     .unwrap_or(false)
 }
 
-fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8], qtype: u16) -> Option<DnsAnswer> {
-    let dns_ip = Ipv4Addr::from_bits(dns_host);
+fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16) -> Option<DnsAnswer> {
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let id = (unsafe { ffi_kernel::timer_ticks_get() } as u16) ^ 0xa5a5;
@@ -365,7 +426,7 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8], qtype: u16) -> 
     // `flush` drops anything still buffered — a stale answer to a query that
     // already timed out.  The retransmission below must not do it again, or it
     // could throw away the answer that arrived between the two sends.
-    if !send_query(&query_buf[..qlen], dns_ip, true) {
+    if !send_query(&query_buf[..qlen], server, true) {
         return None;
     }
 
@@ -392,7 +453,7 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8], qtype: u16) -> 
         let now = unsafe { ffi_kernel::timer_ticks_get() };
         if now >= next_wake {
             if let Some(ans) = stack::with_iface_sockets(|_iface, socks| {
-                try_recv_dns_reply(socks, dns_host, id, qtype)
+                try_recv_dns_reply(socks, server, id, qtype)
             })
             .flatten()
             {
@@ -403,7 +464,7 @@ fn resolve_once(name: &str, dns_host: u32, query_buf: &mut [u8], qtype: u16) -> 
         if now >= next_retry {
             // Schedule no further retries; the deadline ends the wait.
             next_retry = deadline;
-            let _ = send_query(&query_buf[..qlen], dns_ip, false);
+            let _ = send_query(&query_buf[..qlen], server, false);
         }
         // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
         // count; it takes no pointers and is callable from task context.

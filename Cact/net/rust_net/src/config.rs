@@ -44,7 +44,9 @@ struct NetCfg6 {
     prefix: u8,
     /// Default-route next hop (a router's link-local or global address).
     gateway: [u8; 16],
-    /// Resolver (AAAA) server address.
+    /// Resolver reached over IPv6 (from a Router Advertisement's RDNSS option or
+    /// from stateful DHCPv6); used for lookups when the IPv4 resolver is not
+    /// usable, and the reason a name can resolve on a v6-only interface.
     dns: [u8; 16],
     /// Link-local address the stack derives from the NIC MAC (EUI-64, fe80::/64).
     /// Userspace never sets it; all-zero until a NIC binds to the slot.  It is
@@ -274,7 +276,7 @@ pub fn route_slot(dst_ip_host: u32) -> usize {
 // Same shape as the IPv4 block above, with sixteen-octet addresses.  The stack
 // additionally fills `link_local` from the NIC MAC (see
 // `stack::link_local_from_mac`); userspace sets only the global address and its
-// prefix, the default-route next hop and the AAAA resolver.
+// prefix, the default-route next hop and the IPv6 resolver.
 
 /// `::1`, the IPv6 loopback address.
 pub const IPV6_LOOPBACK: [u8; 16] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1];

@@ -36,7 +36,8 @@ pub struct CactIfaceInfo {
     pub ip6_link_local: [u8; 16],
     /// IPv6 default-route next hop (all-zero = none).
     pub ip6_gateway: [u8; 16],
-    /// AAAA resolver (all-zero = none).
+    /// IPv6 resolver (all-zero = none).  Queried over IPv6, so a name can resolve
+    /// on an interface that has no IPv4 address.
     pub ip6_dns: [u8; 16],
 }
 
