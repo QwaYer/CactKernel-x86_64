@@ -108,7 +108,9 @@ pub unsafe fn ping_wait_host(
 
 /// ICMPv6 counterpart of [`ping_wait_host`]: send one echo request to `addr`
 /// (sixteen big-endian octets) and wait for its reply.  Returns the round-trip
-/// time in microseconds, or -1 on timeout/failure.  On success `src_addr_out`
+/// time in microseconds, or <0: `-1` on timeout/failure, `-2` (the caller should
+/// report "no route/address") when the kernel has no IPv6 path to `addr` at all,
+/// `-4` when a pending signal interrupted the wait.  On success `src_addr_out`
 /// receives the responder's address (16 octets) and `bytes_out` the message size.
 ///
 /// # Safety
@@ -124,6 +126,13 @@ pub unsafe fn ping_wait6_host(
     src_addr_out: *mut u8,
     bytes_out: *mut u32,
 ) -> c_int {
+    // Refuse up front when the kernel has no path to this destination (no global
+    // address to source from, or no route): the TX path would otherwise drop the
+    // echo silently and the caller would report a plain timeout — the same output
+    // as a packet lost on the wire.
+    if !crate::stack::ipv6_probe_reachable(addr) {
+        return -2;
+    }
     if send_echo_request6_host(addr, id, seq) != 0 {
         return -1;
     }

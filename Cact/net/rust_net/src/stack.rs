@@ -18,11 +18,11 @@
 use core::net::{Ipv4Addr, Ipv6Addr};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet, SocketStorage};
+use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::icmp;
 use smoltcp::time::Instant;
-use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr};
+use smoltcp::wire::{EthernetAddress, HardwareAddress, IpAddress, IpCidr, Ipv6Cidr};
 
 use crate::config;
 use crate::ffi_kernel;
@@ -273,6 +273,64 @@ fn ipv6_dst_is_offlink_global(frame: &[u8]) -> bool {
     !(is_multicast || is_link_local || is_loopback)
 }
 
+/// Per-slot flag: an off-link IPv6 drop has already been reported for the slot's
+/// current addressing (see [`note_v6_offlink_drop`]).  Cleared by
+/// [`sync_iface_addrs_from_config`], which is what can make the drop avoidable.
+static mut V6_DROP_LOGGED: [bool; NET_IF_MAX] = [false; NET_IF_MAX];
+
+/// Report — once per slot and addressing change — that an off-link IPv6 frame was
+/// dropped because the slot carries no global IPv6 address to source it from.
+///
+/// Without this the loss is completely silent: the frame never reaches the wire,
+/// so `ping -6 <global>` merely times out and cannot be told apart from a lost
+/// packet.  Called from the TX path, which runs under `STACK_LOCK`.
+fn note_v6_offlink_drop(slot: usize) {
+    if slot >= NET_IF_MAX {
+        return;
+    }
+    // SAFETY: only the TX path (under `STACK_LOCK`, held by `iface.poll`) and
+    // `sync_iface_addrs_from_config` (whose callers hold it) touch this static, so
+    // this borrow is exclusive; `slot` is bounds-checked above.
+    let logged = unsafe { &mut (*core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot] };
+    if *logged {
+        return;
+    }
+    *logged = true;
+    ffi_kernel::klog_static(
+        ffi_kernel::LOG_WARN,
+        b"net: dropping off-link IPv6 frame - no global IPv6 address on the interface\0",
+    );
+}
+
+/// True when an ICMPv6 probe to `addr` has a path out of the box.
+///
+/// `ping6` asks this before sending, so a destination the kernel cannot reach is
+/// reported as "no route/address" instead of being dropped and merely showing up
+/// as packet loss.  Multicast and link-local destinations are always on-link; a
+/// global one needs both a global address to source from (the TX gate in
+/// `TxToken::consume` refuses off-link global IPv6 otherwise) and either a route
+/// inside the slot's own prefix or a default route.
+pub(crate) fn ipv6_probe_reachable(addr: [u8; 16]) -> bool {
+    if addr == config::IPV6_LOOPBACK {
+        return true; // delivered by the slot's own `::1/128` loopback route
+    }
+    if addr == [0u8; 16] {
+        return false;
+    }
+    if addr[0] == 0xff {
+        return true; // multicast: never routed
+    }
+    if addr[0] == 0xfe && (addr[1] & 0xc0) == 0x80 {
+        return true; // link-local: always on the slot's own link
+    }
+    let slot = config::route_slot_v6(addr);
+    if !config::ipv6_configured_of(slot) {
+        return false;
+    }
+    config::v6_prefix_match(addr, config::ipv6_addr_of(slot), config::ipv6_prefix_of(slot))
+        || config::ipv6_gateway_of(slot) != [0u8; 16]
+}
+
 /// Push slot `slot`'s IPv4 and IPv6 addressing and routes into its smoltcp
 /// interface.  `mac` is the interface's hardware address, from which the IPv6
 /// link-local is derived (and cached in `config` for the routing paths).
@@ -317,16 +375,9 @@ pub(crate) fn sync_iface_addrs_from_config(iface: &mut Interface, slot: usize, m
             ));
         }
         let _ = addrs.push(IpCidr::new(IpAddress::Ipv6(ll), LINK_LOCAL_PREFIX));
-        // The IPv6 loopback goes on-link just as `127.0.0.1/8` does above, so
-        // smoltcp routes to `::1` and accepts frames addressed to it.  It is last
-        // so it is never the initial source-address candidate; RFC 6724 selection
-        // still passes it over for every other destination (it is not a candidate
-        // source for a link-local destination, and it never wins the scope or
-        // prefix rules for a global one).
-        let _ = addrs.push(IpCidr::new(
-            IpAddress::Ipv6(Ipv6Addr::from(config::IPV6_LOOPBACK)),
-            IPV6_LOOPBACK_PREFIX,
-        ));
+        // NOTE: the IPv6 loopback is deliberately *not* an address here — it is
+        // reached through a `::1/128` route instead (see below).  As an address it
+        // poisoned smoltcp's RFC 6724 source selection.
     });
     iface.routes_mut().remove_default_ipv4_route();
     iface.routes_mut().remove_default_ipv6_route();
@@ -363,6 +414,48 @@ pub(crate) fn sync_iface_addrs_from_config(iface: &mut Interface, slot: usize, m
             .routes_mut()
             .add_default_ipv6_route(Ipv6Addr::from(gw6));
     }
+
+    // `::1` is reached locally, but **not** by being an interface address.
+    // smoltcp's RFC 6724 source selection gives an address with the "Unknown"
+    // scope (0xFF) a *higher* scope than `Global` (0x0E); `Unknown` is anything
+    // that is neither global-unicast `2000::/3`, link-local nor ULA — which
+    // includes `::1` *and* any site-local address such as the `fec0::/64` that
+    // QEMU/slirp advertises.  Because `::1` used to be the last entry in
+    // `ip_addrs`, Rule 2 (`else if addr.scope > dst.scope { candidate = addr }`)
+    // and Rule 8 (longest common prefix — `::1` shares 2 bits with `2a00::`,
+    // the site-local address none) both made it the source for every off-link
+    // destination.  Such a frame then carried `src = ::1`, and
+    // [`frame_involves_loopback`] staged it on the loopback ring instead of the
+    // wire: `ping -6 <global>` timed out with nothing on the wire at all.
+    //
+    // A `::1/128` route gives the loopback its local delivery without making it a
+    // candidate source: smoltcp resolves `::1` as the neighbour of the slot's own
+    // link-local (whose solicited-node group the PHY loops back, so the
+    // solicitation never leaves the box), and the frame is then diverted by
+    // [`frame_involves_loopback`] exactly as before.  Ingress needs nothing extra:
+    // smoltcp accepts a packet addressed to a loopback address on its own.
+    {
+        let lo = Ipv6Addr::from(config::IPV6_LOOPBACK);
+        iface.routes_mut().update(|routes| {
+            // Replace any previous loopback route (this runs on every resync).
+            routes.retain(|r| {
+                !matches!(r.cidr, IpCidr::Ipv6(c)
+                    if c.address() == lo && c.prefix_len() == IPV6_LOOPBACK_PREFIX)
+            });
+            let _ = routes.push(Route {
+                cidr: IpCidr::Ipv6(Ipv6Cidr::new(lo, IPV6_LOOPBACK_PREFIX)),
+                via_router: IpAddress::Ipv6(ll),
+                preferred_until: None,
+                expires_at: None,
+            });
+        });
+    }
+
+    // The slot's addressing just changed, so an off-link IPv6 drop it reported
+    // before may now be avoidable — let the next one be logged again.
+    // SAFETY: `V6_DROP_LOGGED` is only touched under `STACK_LOCK` (this function's
+    // callers all hold it), like the TX path that reads it.
+    unsafe { (*core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot] = false; }
 
     // Join ff02::1 (all-nodes) so Router Advertisements reach the interface and
     // userspace can run SLAAC/DHCPv6.  Joining is idempotent; the solicited-node
@@ -655,8 +748,11 @@ impl TxToken for CactTxToken<'_> {
         // An interface that owns only a link-local IPv6 address must not emit
         // off-link global IPv6 sourced from that link-local (a router would drop
         // it); drop it so the failure is honest, as for IPv4 above.  Link-local
-        // and multicast destinations are still allowed through.
+        // and multicast destinations are still allowed through.  The drop is
+        // reported once (see `note_v6_offlink_drop`) — otherwise the frame simply
+        // disappears and userspace sees only a timeout.
         if this.unconfigured_v6 && ipv6_dst_is_offlink_global(&this.buf[..len]) {
+            note_v6_offlink_drop(this.slot);
             return r;
         }
         // The OUTPUT chain sees every frame the stack emits, before it is looped

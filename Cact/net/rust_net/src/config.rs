@@ -384,7 +384,7 @@ pub fn slot_owning_ipv6(addr: [u8; 16]) -> Option<usize> {
 
 /// True when `dst` falls inside `net`/`prefix` (`prefix` leading bits compared,
 /// big-endian octets).
-fn v6_prefix_match(dst: [u8; 16], net: [u8; 16], prefix: u8) -> bool {
+pub(crate) fn v6_prefix_match(dst: [u8; 16], net: [u8; 16], prefix: u8) -> bool {
     let mut bits = prefix.min(128) as usize;
     let mut i = 0usize;
     while bits >= 8 {
