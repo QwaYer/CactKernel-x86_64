@@ -10,6 +10,14 @@
 uint64_t g_hv_launch_rsp;
 uint64_t g_hv_launch_rflags;
 
+/* Host callee-saved registers, stashed by cact_vmx_launch_regs: loading the
+ * guest's GPRs clobbers them, so a failed VMLAUNCH restores them before
+ * returning (the guest GPRs are the host's own registers at VM entry — VMX
+ * does not save GPRs anywhere else).  Non-static: the asm block references them
+ * by name. */
+uint64_t g_hv_saved_rbx, g_hv_saved_rbp;
+uint64_t g_hv_saved_r12, g_hv_saved_r13, g_hv_saved_r14, g_hv_saved_r15;
+
 extern int  hv_vmx_exit_entry(void *regs);
 extern void vmx_exit_stub(void);
 
@@ -23,12 +31,66 @@ __asm__(
 "    pushfq\n"
 "    popq %rax\n"
 "    movq %rax, g_hv_launch_rflags(%rip)\n"
+"    movq %rbx, g_hv_saved_rbx(%rip)\n"
+"    movq %rbp, g_hv_saved_rbp(%rip)\n"
+"    movq %r12, g_hv_saved_r12(%rip)\n"
+"    movq %r13, g_hv_saved_r13(%rip)\n"
+"    movq %r14, g_hv_saved_r14(%rip)\n"
+"    movq %r15, g_hv_saved_r15(%rip)\n"
 "    vmlaunch\n"
 /* VMLAUNCH reaches here only on failure (VMfailInvalid/Valid). */
 "    setna %al\n"
 "    movzbl %al, %eax\n"
 "    ret\n"
 ".size cact_vmx_launch, .-cact_vmx_launch\n"
+"\n"
+/* VMLAUNCH with the guest's initial GPRs loaded from an array (rdi).  VMX does
+ * not save GPRs, so the guest runs on the host's registers: this loads them
+ * right before entry.  RIP/RSP/RFLAGS come from the VMCS. */
+".globl cact_vmx_launch_regs\n"
+".type cact_vmx_launch_regs, @function\n"
+"cact_vmx_launch_regs:\n"
+"    movq %rsp, g_hv_launch_rsp(%rip)\n"
+"    pushfq\n"
+"    popq %rax\n"
+"    movq %rax, g_hv_launch_rflags(%rip)\n"
+/* Stash the host's callee-saved GPRs: we clobber them below, and a failed
+ * VMLAUNCH returns to the caller, which expects them intact. */
+"    movq %rbx, g_hv_saved_rbx(%rip)\n"
+"    movq %rbp, g_hv_saved_rbp(%rip)\n"
+"    movq %r12, g_hv_saved_r12(%rip)\n"
+"    movq %r13, g_hv_saved_r13(%rip)\n"
+"    movq %r14, g_hv_saved_r14(%rip)\n"
+"    movq %r15, g_hv_saved_r15(%rip)\n"
+/* Array layout: rax,rbx,rcx,rdx,rsi,rdi,rbp,r8..r15.  rdi holds the base, so
+ * it is loaded last (each mov reads its source before writing its target). */
+"    movq   0(%rdi), %rax\n"
+"    movq   8(%rdi), %rbx\n"
+"    movq  16(%rdi), %rcx\n"
+"    movq  24(%rdi), %rdx\n"
+"    movq  32(%rdi), %rsi\n"
+"    movq  48(%rdi), %rbp\n"
+"    movq  56(%rdi), %r8\n"
+"    movq  64(%rdi), %r9\n"
+"    movq  72(%rdi), %r10\n"
+"    movq  80(%rdi), %r11\n"
+"    movq  88(%rdi), %r12\n"
+"    movq  96(%rdi), %r13\n"
+"    movq 104(%rdi), %r14\n"
+"    movq 112(%rdi), %r15\n"
+"    movq  40(%rdi), %rdi\n"
+"    vmlaunch\n"
+/* VMLAUNCH reaches here only on failure (VMfailInvalid/Valid). */
+"    movq g_hv_saved_rbx(%rip), %rbx\n"
+"    movq g_hv_saved_rbp(%rip), %rbp\n"
+"    movq g_hv_saved_r12(%rip), %r12\n"
+"    movq g_hv_saved_r13(%rip), %r13\n"
+"    movq g_hv_saved_r14(%rip), %r14\n"
+"    movq g_hv_saved_r15(%rip), %r15\n"
+"    setna %al\n"
+"    movzbl %al, %eax\n"
+"    ret\n"
+".size cact_vmx_launch_regs, .-cact_vmx_launch_regs\n"
 "\n"
 ".globl vmx_exit_stub\n"
 ".type vmx_exit_stub, @function\n"
@@ -55,8 +117,17 @@ __asm__(
 "    popq %r13\n    popq %r14\n    popq %r15\n"
 "    vmresume\n"
 /* VMRESUME reaches here only on failure (VMfail); fall through and finish. */
-/* Return to cact_vmx_launch's caller as if it had returned 0. */
+/* Return to the launch caller as if it had returned 0.  The guest ran on the
+ * host's own registers, so put the callee-saved ones back (the launch stashed
+ * them) before returning — otherwise the caller's rbx/rbp/r12-r15 hold whatever
+ * the guest left there. */
 "1:\n"
+"    movq g_hv_saved_rbx(%rip), %rbx\n"
+"    movq g_hv_saved_rbp(%rip), %rbp\n"
+"    movq g_hv_saved_r12(%rip), %r12\n"
+"    movq g_hv_saved_r13(%rip), %r13\n"
+"    movq g_hv_saved_r14(%rip), %r14\n"
+"    movq g_hv_saved_r15(%rip), %r15\n"
 "    movq g_hv_launch_rsp(%rip), %rsp\n"
 "    pushq g_hv_launch_rflags(%rip)\n"
 "    popfq\n"

@@ -26,6 +26,12 @@
  * and the reason is in the VMCS VM-instruction-error field). */
 int cact_vmx_launch(void);
 
+/* Like cact_vmx_launch(), but first loads the guest's initial general-purpose
+ * registers from `regs`, an array of 15 uint64_t in the order
+ *   rax, rbx, rcx, rdx, rsi, rdi, rbp, r8, r9, r10, r11, r12, r13, r14, r15
+ * (RSP and the rest come from the VMCS).  Same return contract. */
+int cact_vmx_launch_regs(const uint64_t *regs);
+
 /* Address of the VM-exit stub, for HOST_RIP. */
 uint64_t cact_vmx_exit_stub_addr(void);
 

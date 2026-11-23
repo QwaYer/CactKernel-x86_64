@@ -29,6 +29,17 @@
 //! a Linux guest will need.  The EPT violation is now a resumable hook too (the
 //! MMIO shape H4 left open): the model reports it and skips the access, and the
 //! guest runs on to `hlt`.
+//!
+//! Phase H7.1 exposes the vCPU to userspace (`/dev/chv`): the model owns one
+//! persistent `Vcpu` (GPRs, RIP/RFLAGS, system registers, a small MSR set) and
+//! the `hv_{get,set}_{regs,sregs,msrs}` / `hv_inject_irq` entry points read and
+//! write it.  `run_guest()` seeds the VMCS from that state (its default
+//! reproduces the fixture, so a RUN with no SET is unchanged) and folds the
+//! exit state back; a queued external interrupt is delivered through the
+//! VM-entry interruption-information field.  The fixture grew a GDT, an IDT and
+//! a stack so an injected vector can actually land: it runs the 'I' handler,
+//! every other vector parks ('P'), and delivery needs a real GDT (CS comes from
+//! it, not the IDT).
 
 #![no_std]
 
@@ -45,7 +56,7 @@ extern "C" {
     fn cact_vmwrite(field: u64, value: u64) -> i32;
     fn cact_vmclear(phys: u64) -> i32;
     fn cact_vmptrld(phys: u64) -> i32;
-    fn cact_vmx_launch() -> i32;
+    fn cact_vmx_launch_regs(gprs: *const u64) -> i32;
     fn cact_vmx_exit_stub_addr() -> u64;
     fn cact_cpu_state_snapshot(out: *mut u64);
     fn vmx_host_enable() -> i32;
@@ -68,6 +79,255 @@ struct VmxEptMap {
     gpa: u64,
     hpa: u64,
     flags: u32,
+}
+
+/* ---- the vCPU state and its uAPI (mirror ioctl_abi.h, chv.c) ------------ */
+
+/// `cact_chv_regs_t`: the GPR file plus RIP/RFLAGS (KVM order — RSP/RBP sit
+/// among the GPRs).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvRegs {
+    pub rax: u64, pub rbx: u64, pub rcx: u64, pub rdx: u64,
+    pub rsi: u64, pub rdi: u64, pub rsp: u64, pub rbp: u64,
+    pub r8: u64, pub r9: u64, pub r10: u64, pub r11: u64,
+    pub r12: u64, pub r13: u64, pub r14: u64, pub r15: u64,
+    pub rip: u64, pub rflags: u64,
+}
+
+/// `cact_chv_seg_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvSeg {
+    pub base: u64,
+    pub limit: u32,
+    pub selector: u32,
+    pub ar: u32,
+    pub reserved: u32,
+}
+
+/// `cact_chv_sregs_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvSregs {
+    pub cs: ChvSeg, pub ss: ChvSeg, pub ds: ChvSeg,
+    pub es: ChvSeg, pub fs: ChvSeg, pub gs: ChvSeg,
+    pub gdtr_base: u64, pub idtr_base: u64,
+    pub cr0: u64, pub cr2: u64, pub cr3: u64, pub cr4: u64,
+    pub dr0: u64, pub dr1: u64, pub dr2: u64, pub dr3: u64,
+    pub dr6: u64, pub dr7: u64,
+    pub gdtr_limit: u32, pub idtr_limit: u32, pub reserved: u32,
+}
+
+/// `cact_chv_msr_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvMsr {
+    pub index: u32,
+    pub reserved: u32,
+    pub value: u64,
+}
+
+/// `cact_chv_msrs_t`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvMsrs {
+    pub count: u32,
+    pub reserved: u32,
+    pub entries: [ChvMsr; 16],
+}
+
+/* The MSR set the model tracks.  A guest RDMSR/WRMSR is not intercepted yet
+ * (no MSR bitmap, no MSR-exit handler), so these are the values the model
+ * *seeds* the guest with and reports back; EFER, FS_BASE and GS_BASE also reach
+ * the guest state (the VMCS). */
+const MSR_EFER: u32 = 0xC000_0080;
+const MSR_STAR: u32 = 0xC000_0081;
+const MSR_LSTAR: u32 = 0xC000_0082;
+const MSR_FMASK: u32 = 0xC000_0084;
+const MSR_FS_BASE: u32 = 0xC000_0100;
+const MSR_GS_BASE: u32 = 0xC000_0101;
+const MSR_KERNEL_GS_BASE: u32 = 0xC000_0102;
+const MSR_SYSENTER_CS: u32 = 0x174;
+const MSR_SYSENTER_ESP: u32 = 0x175;
+const MSR_SYSENTER_EIP: u32 = 0x176;
+const MSR_PAT: u32 = 0x277;
+const MSR_APIC_BASE: u32 = 0x1B;
+
+const MSR_COUNT: usize = 12;
+const MSR_SLOT_EFER: usize = 0;
+const MSR_SLOT_FS_BASE: usize = 4;
+const MSR_SLOT_GS_BASE: usize = 5;
+
+const MSR_INDEX: [u32; MSR_COUNT] = [
+    MSR_EFER, MSR_STAR, MSR_LSTAR, MSR_FMASK, MSR_FS_BASE, MSR_GS_BASE,
+    MSR_KERNEL_GS_BASE, MSR_SYSENTER_CS, MSR_SYSENTER_ESP, MSR_SYSENTER_EIP,
+    MSR_PAT, MSR_APIC_BASE,
+];
+
+/// Slot of `index` in `MSR_INDEX`, or None when the model does not track it.
+fn msr_slot(index: u32) -> Option<usize> {
+    let mut i = 0;
+    while i < MSR_COUNT {
+        if MSR_INDEX[i] == index {
+            return Some(i);
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The model's one vCPU.  `pending_irq` is a queued external interrupt (< 0 for
+/// none) delivered at the next entry.
+#[derive(Clone, Copy)]
+struct Vcpu {
+    regs: ChvRegs,
+    sregs: ChvSregs,
+    msrs: [u64; MSR_COUNT],
+    pending_irq: i32,
+}
+
+const fn vcpu_default_msrs() -> [u64; MSR_COUNT] {
+    let mut m = [0u64; MSR_COUNT];
+    m[MSR_SLOT_EFER] = GUEST_EFER;
+    m
+}
+
+/// Defaults reproduce the H4/H5 fixture exactly, so a RUN with no preceding SET
+/// ioctl behaves as before.
+const VCPU_DEFAULT: Vcpu = Vcpu {
+    regs: ChvRegs {
+        rax: 0, rbx: 0, rcx: 0, rdx: 0, rsi: 0, rdi: 0,
+        rsp: GVA_STACK + 0x800, rbp: 0,
+        r8: 0, r9: 0, r10: 0, r11: 0, r12: 0, r13: 0, r14: 0, r15: 0,
+        rip: GVA_CODE, rflags: 0x2,
+    },
+    sregs: ChvSregs {
+        cs: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x08, ar: AR_CODE64 as u32, reserved: 0 },
+        ss: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x10, ar: AR_DATA as u32, reserved: 0 },
+        ds: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x10, ar: AR_DATA as u32, reserved: 0 },
+        es: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x10, ar: AR_DATA as u32, reserved: 0 },
+        fs: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x10, ar: AR_DATA as u32, reserved: 0 },
+        gs: ChvSeg { base: 0, limit: 0xFFFF_FFFF, selector: 0x10, ar: AR_DATA as u32, reserved: 0 },
+        gdtr_base: GVA_GDT, idtr_base: GVA_IDT,
+        cr0: GUEST_CR0, cr2: 0, cr3: GPA_PML4, cr4: GUEST_CR4,
+        dr0: 0, dr1: 0, dr2: 0, dr3: 0, dr6: 0, dr7: 0x400,
+        gdtr_limit: 0x17, idtr_limit: 0xFFF,   // 3 GDT / 256 IDT entries
+        reserved: 0,
+    },
+    msrs: vcpu_default_msrs(),
+    pending_irq: -1,
+};
+
+static mut VCPU: Vcpu = VCPU_DEFAULT;
+
+/* ---- the vCPU uAPI entry points (called from chv.c) -------------------- */
+
+#[no_mangle]
+pub extern "C" fn hv_get_regs(out: *mut ChvRegs) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    // SAFETY: chv.c passes a valid kernel struct.
+    unsafe { *out = VCPU.regs };
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn hv_set_regs(inp: *const ChvRegs) -> i32 {
+    if inp.is_null() {
+        return 1;
+    }
+    // SAFETY: as above.
+    unsafe { VCPU.regs = *inp };
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn hv_get_sregs(out: *mut ChvSregs) -> i32 {
+    if out.is_null() {
+        return 1;
+    }
+    // SAFETY: as above.
+    unsafe { *out = VCPU.sregs };
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn hv_set_sregs(inp: *const ChvSregs) -> i32 {
+    if inp.is_null() {
+        return 1;
+    }
+    // SAFETY: as above.
+    unsafe { VCPU.sregs = *inp };
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn hv_get_msrs(io: *mut ChvMsrs) -> i32 {
+    if io.is_null() {
+        return 1;
+    }
+    // SAFETY: as above; `count` is clamped to the fixed array size.
+    unsafe {
+        let mut n = (*io).count;
+        if n > 16 {
+            n = 16;
+        }
+        let mut i = 0u32;
+        while i < n {
+            let idx = (*io).entries[i as usize].index;
+            match msr_slot(idx) {
+                Some(s) => {
+                    (*io).entries[i as usize].value = VCPU.msrs[s];
+                    (*io).entries[i as usize].reserved = 0;
+                }
+                None => {
+                    (*io).entries[i as usize].value = 0;
+                    (*io).entries[i as usize].reserved = 1;
+                }
+            }
+            i += 1;
+        }
+        (*io).count = n;
+    }
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn hv_set_msrs(io: *const ChvMsrs) -> i32 {
+    if io.is_null() {
+        return 1;
+    }
+    let mut rc = 0;
+    // SAFETY: as above.
+    unsafe {
+        let mut n = (*io).count;
+        if n > 16 {
+            n = 16;
+        }
+        let mut i = 0u32;
+        while i < n {
+            let idx = (*io).entries[i as usize].index;
+            match msr_slot(idx) {
+                Some(s) => VCPU.msrs[s] = (*io).entries[i as usize].value,
+                None => rc = 1,
+            }
+            i += 1;
+        }
+    }
+    rc
+}
+
+#[no_mangle]
+pub extern "C" fn hv_inject_irq(vector: u32) -> i32 {
+    if vector > 255 {
+        return 1;
+    }
+    // SAFETY: single-threaded model state (the /dev/chv lock serialises this
+    // with RUN).
+    unsafe { VCPU.pending_irq = vector as i32 };
+    0
 }
 
 /* ---- model-specific registers ------------------------------------------ */
@@ -228,13 +488,19 @@ const GPA_PD: u64 = 0x3000;
 const GPA_PT: u64 = 0x4000;
 const GPA_CODE: u64 = 0x5000;
 const GPA_DATA: u64 = 0x6000;
+const GPA_IDT: u64 = 0xA000;
+const GPA_STACK: u64 = 0xB000;
+const GPA_GDT: u64 = 0xC000;
 const GPA_TRAP: u64 = 0x9000;
 
 /* Guest virtual addresses the program touches.  All sit in PML4/PDPT index 0
- * and PDE index 2, so one PT page reaches all three. */
+ * and PDE index 2, so one PT page reaches all six. */
 const GVA_CODE: u64 = 0x40_0000;
 const GVA_DATA: u64 = 0x40_1000;
 const GVA_TRAP: u64 = 0x40_2000;
+const GVA_IDT: u64 = 0x40_3000;
+const GVA_STACK: u64 = 0x40_4000;
+const GVA_GDT: u64 = 0x40_5000;
 
 /* Guest constants.  VMX requires the guest CR4 to carry every CR4_FIXED0 bit —
  * and on a CPU that supports VMX that includes CR4.VMXE — plus PAE for a
@@ -253,6 +519,12 @@ const COM1_BASE: u16 = 0x3F8;
 
 /* The line the fixture guest prints over the emulated COM1. */
 const GUEST_LINE: &[u8] = b"\r\n[guest] hello over emulated COM1\r\n";
+
+/* Guest GDT descriptors: a 64-bit code segment at selector 0x08 and a
+ * read/write data segment at 0x10.  Interrupt delivery loads the handler's CS
+ * from the GDT, so the guest needs a real one for the injected vector to land. */
+const GDT_CODE: u64 = 0x00AF_9A00_0000_FFFF;
+const GDT_DATA: u64 = 0x00CF_9200_0000_FFFF;
 
 /* The exit reason the last handled VM exit reported. */
 static mut EXIT_REASON: u64 = 0;
@@ -409,6 +681,9 @@ pub extern "C" fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
     let _ = unsafe { cact_vmread(VMCS_VM_EXIT_REASON, &mut reason) };
     // SAFETY: single-threaded bring-up probe.
     unsafe { EXIT_REASON = reason };
+    // SAFETY: `regs` is the live GPR frame; fold the guest's state back into
+    // the vCPU so GET_REGS/GET_SREGS read the last exit.
+    unsafe { capture_vcpu(regs) };
 
     match reason {
         // SAFETY: `regs` is the live GPR frame the stub handed us, and each
@@ -425,6 +700,39 @@ pub extern "C" fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
             if unsafe { advance_rip() } { 1 } else { 0 }
         }
         _ => 0, // HLT and anything unhandled end the run
+    }
+}
+
+/// Fold the guest's state at the current exit back into the vCPU: the GPR frame
+/// the stub saved (`frame[k]` = RAX..R15) plus RSP/RIP/RFLAGS, which live in
+/// the VMCS.
+unsafe fn capture_vcpu(frame: *mut u64) {
+    // SAFETY: `frame` is the live 15-entry GPR frame; the current VMCS is
+    // loaded.
+    unsafe {
+        VCPU.regs.rax = core::ptr::read_volatile(frame);
+        VCPU.regs.rbx = core::ptr::read_volatile(frame.add(1));
+        VCPU.regs.rcx = core::ptr::read_volatile(frame.add(2));
+        VCPU.regs.rdx = core::ptr::read_volatile(frame.add(3));
+        VCPU.regs.rsi = core::ptr::read_volatile(frame.add(4));
+        VCPU.regs.rdi = core::ptr::read_volatile(frame.add(5));
+        VCPU.regs.rbp = core::ptr::read_volatile(frame.add(6));
+        VCPU.regs.r8  = core::ptr::read_volatile(frame.add(7));
+        VCPU.regs.r9  = core::ptr::read_volatile(frame.add(8));
+        VCPU.regs.r10 = core::ptr::read_volatile(frame.add(9));
+        VCPU.regs.r11 = core::ptr::read_volatile(frame.add(10));
+        VCPU.regs.r12 = core::ptr::read_volatile(frame.add(11));
+        VCPU.regs.r13 = core::ptr::read_volatile(frame.add(12));
+        VCPU.regs.r14 = core::ptr::read_volatile(frame.add(13));
+        VCPU.regs.r15 = core::ptr::read_volatile(frame.add(14));
+
+        let mut x = 0u64;
+        let _ = cact_vmread(VMCS_GUEST_RSP, &mut x);
+        VCPU.regs.rsp = x;
+        let _ = cact_vmread(VMCS_GUEST_RIP, &mut x);
+        VCPU.regs.rip = x;
+        let _ = cact_vmread(VMCS_GUEST_RFLAGS, &mut x);
+        VCPU.regs.rflags = x;
     }
 }
 
@@ -591,7 +899,13 @@ unsafe fn pte(table: *mut u8, index: usize, value: u64) {
 /// guest's line among them.  The absolute `mov` uses the SIB/no-base form
 /// (`89 04 25 disp32`), which is absolute in 64-bit mode and needs no
 /// address-size prefix for a sub-4 GiB address.
-unsafe fn emit_guest_program(code: *mut u8) {
+///
+/// The code page also carries two interrupt-entry stubs: the injected-interrupt
+/// handler (writes 'I', then `hlt`) and a parking handler (writes 'P', then
+/// `hlt`) that every other IDT vector points at, so a stray event reports and
+/// halts instead of triple-faulting.  The function returns their offsets
+/// `(handler_off, park_off)`, relative to GVA_CODE.
+unsafe fn emit_guest_program(code: *mut u8) -> (usize, usize) {
     let mut at = 0usize;
     // SAFETY: `code` is a live page; every write stays inside it.
     unsafe {
@@ -610,10 +924,32 @@ unsafe fn emit_guest_program(code: *mut u8) {
         emit(code, &mut at, &[0x89, 0x04, 0x25]);
         emit(code, &mut at, &(GVA_TRAP as u32).to_le_bytes());
         emit(code, &mut at, &[0xF4]);                          // hlt
+
+        /* Injected-interrupt handler: entered with fresh registers (delivery
+         * sets none), so it re-loads DX, writes 'I' over the emulated COM1 and
+         * halts — the marker that the interrupt arrived. */
+        let handler_off = at;
+        emit(code, &mut at, &[0xBA]);                          // mov edx, imm32
+        emit(code, &mut at, &(COM1_BASE as u32).to_le_bytes());
+        emit(code, &mut at, &[0xB0, b'I']);                    // mov al, 'I'
+        emit(code, &mut at, &[0xEE]);                          // out dx, al
+        emit(code, &mut at, &[0xF4]);                          // hlt
+
+        /* Parking handler: every other IDT vector points here, so a stray event
+         * (e.g. a host interrupt delivered to the guest) reports and halts
+         * instead of triple-faulting. */
+        let park_off = at;
+        emit(code, &mut at, &[0xBA]);                          // mov edx, imm32
+        emit(code, &mut at, &(COM1_BASE as u32).to_le_bytes());
+        emit(code, &mut at, &[0xB0, b'P']);                    // mov al, 'P'
+        emit(code, &mut at, &[0xEE]);                          // out dx, al
+        emit(code, &mut at, &[0xF4]);                          // hlt
+
+        (handler_off, park_off)
     }
 }
 
-/// The guest's own 4-level page tables: one PT page reaches all three GVAs
+/// The guest's own 4-level page tables: one PT page reaches all five GVAs
 /// (they share PML4/PDPT index 0 and PDE index 2).  Entries name *GPAs*, which
 /// is what EPT then translates — including the trap GPA, which EPT leaves out.
 unsafe fn build_guest_tables(pml4: *mut u8, pdpt: *mut u8, pd: *mut u8, pt: *mut u8) {
@@ -626,6 +962,43 @@ unsafe fn build_guest_tables(pml4: *mut u8, pdpt: *mut u8, pd: *mut u8, pt: *mut
         pte(pt, idx(GVA_CODE, 12), GPA_CODE | 0x3);
         pte(pt, idx(GVA_DATA, 12), GPA_DATA | 0x3);
         pte(pt, idx(GVA_TRAP, 12), GPA_TRAP | 0x3);
+        pte(pt, idx(GVA_IDT, 12), GPA_IDT | 0x3);
+        pte(pt, idx(GVA_STACK, 12), GPA_STACK | 0x3);
+        pte(pt, idx(GVA_GDT, 12), GPA_GDT | 0x3);
+    }
+}
+
+/// Write the guest's GDT page: null, a 64-bit code segment (selector 0x08) and
+/// a read/write data segment (0x10).  Interrupt delivery loads CS from here.
+unsafe fn build_gdt(gdt: *mut u8) {
+    // SAFETY: `gdt` is a live page; three 8-byte descriptors stay inside it.
+    unsafe {
+        let g = gdt as *mut u64;
+        core::ptr::write_volatile(g, 0);
+        core::ptr::write_volatile(g.add(1), GDT_CODE);
+        core::ptr::write_volatile(g.add(2), GDT_DATA);
+    }
+}
+
+/// Write the guest's 256-entry IDT: every vector points at the parking handler,
+/// except `armed` (when >= 0), which points at the injected-interrupt handler —
+/// both are guest-linear addresses.
+unsafe fn build_idt(idt: *mut u8, handler_gva: u64, park_gva: u64, armed: i32) {
+    // SAFETY: `idt` is a live 4 KiB page; each 16-byte entry stays inside it.
+    unsafe {
+        let mut v = 0usize;
+        while v < 256 {
+            let target = if armed >= 0 && v == armed as usize { handler_gva } else { park_gva };
+            let e = idt.add(v * 16);
+            core::ptr::write_volatile(e as *mut u16, (target & 0xFFFF) as u16);
+            core::ptr::write_volatile(e.add(2) as *mut u16, 0x0008); // CS selector (RPL0)
+            core::ptr::write_volatile(e.add(4), 0u8);                // IST = 0
+            core::ptr::write_volatile(e.add(5), 0x8Eu8);             // P | DPL0 | 64-bit interrupt gate
+            core::ptr::write_volatile(e.add(6) as *mut u16, ((target >> 16) & 0xFFFF) as u16);
+            core::ptr::write_volatile(e.add(8) as *mut u32, (target >> 32) as u32);
+            core::ptr::write_volatile(e.add(12) as *mut u32, 0u32);
+            v += 1;
+        }
     }
 }
 
@@ -644,19 +1017,22 @@ unsafe fn run_guest() -> i32 {
         let vmcs = page();
         let code = page();
         let data = page();
+        let idt = page();
+        let stack = page();
+        let gdt = page();
         let pml4 = page();
         let pdpt = page();
         let pd = page();
         let pt = page();
         let tss = page();
-        let guest_pages = [vmcs, code, data, pml4, pdpt, pd, pt, tss];
+        let guest_pages = [vmcs, code, data, idt, stack, gdt, pml4, pdpt, pd, pt, tss];
         if guest_pages.iter().any(|p| p.is_null()) {
             notice("hv: guest launch: out of memory");
             free_guest_pages(&guest_pages);
             return 1;
         }
-        /* pml4/pdpt/pd/pt are the guest's own page tables (the other four are
-         * the VMCS, code, data and TSS pages). */
+        /* pml4/pdpt/pd/pt are the guest's own page tables; the rest are the
+         * VMCS, code, data, IDT, stack, GDT and TSS pages. */
         GUEST_PTABLE_PAGES = 4;
 
         /* Fresh tallies for this run. */
@@ -667,14 +1043,28 @@ unsafe fn run_guest() -> i32 {
         let vmcs_phys = vmm_v2p(vmcs);
         let code_phys = vmm_v2p(code);
         let data_phys = vmm_v2p(data);
+        let idt_phys = vmm_v2p(idt);
+        let stack_phys = vmm_v2p(stack);
+        let gdt_phys = vmm_v2p(gdt);
         let pml4_phys = vmm_v2p(pml4);
         let pdpt_phys = vmm_v2p(pdpt);
         let pd_phys = vmm_v2p(pd);
         let pt_phys = vmm_v2p(pt);
         let tss_phys = vmm_v2p(tss);
 
-        emit_guest_program(code);
+        /* Build the program, its IDT and its GDT.  A queued interrupt
+         * (`pending_irq`) arms that one vector's gate with the 'I' handler;
+         * every other vector parks. */
+        let (handler_off, park_off) = emit_guest_program(code);
         build_guest_tables(pml4, pdpt, pd, pt);
+        build_gdt(gdt);
+        let armed = VCPU.pending_irq;
+        build_idt(
+            idt,
+            GVA_CODE + handler_off as u64,
+            GVA_CODE + park_off as u64,
+            armed,
+        );
 
         /* EPT: one mapping per guest page, each GPA naming a distinct host
          * frame.  GPA_TRAP is deliberately absent — that is the violation. */
@@ -691,6 +1081,9 @@ unsafe fn run_guest() -> i32 {
             VmxEptMap { gpa: GPA_PT,   hpa: pt_phys,   flags: rwx },
             VmxEptMap { gpa: GPA_CODE, hpa: code_phys, flags: rwx },
             VmxEptMap { gpa: GPA_DATA, hpa: data_phys, flags: rwx },
+            VmxEptMap { gpa: GPA_IDT,  hpa: idt_phys,  flags: rwx },
+            VmxEptMap { gpa: GPA_STACK, hpa: stack_phys, flags: rwx },
+            VmxEptMap { gpa: GPA_GDT,  hpa: gdt_phys,  flags: rwx },
         ];
         let eptp = vmx_ept_build(maps.as_ptr(), maps.len() as u32);
         if eptp == 0 {
@@ -755,7 +1148,6 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_VM_EXIT_MSR_STORE_COUNT, 0);
         vmw(VMCS_VM_EXIT_MSR_LOAD_COUNT, 0);
         vmw(VMCS_VM_ENTRY_MSR_LOAD_COUNT, 0);
-        vmw(VMCS_VM_ENTRY_INTR_INFO, 0);
         vmw(VMCS_VM_ENTRY_EXCEPTION_ERR, 0);
         vmw(VMCS_VM_ENTRY_INSTRUCTION_LEN, 0);
 
@@ -791,50 +1183,54 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_HOST_RIP, cact_vmx_exit_stub_addr());
         vmw(VMCS_HOST_IA32_EFER, cact_rdmsr(IA32_EFER));
 
-        /* Guest state: 64-bit mode, its CR3 naming a GPA, not a host frame. */
+        /* Guest state, seeded from the vCPU (`VCPU`).  Its default reproduces
+         * the fixture exactly, so a RUN with no preceding SET ioctl behaves as
+         * before.  The model still owns TR/LDTR (the TSS page) and CR3, so
+         * those come from the fixture's own layout rather than from `VCPU`. */
+        let v: Vcpu = VCPU;
         vmw(VMCS_VMCS_LINK_POINTER, 0xFFFF_FFFF_FFFF_FFFF);
-        vmw(VMCS_GUEST_IA32_EFER, GUEST_EFER);
-        vmw(VMCS_GUEST_CR0, GUEST_CR0);
-        vmw(VMCS_GUEST_CR3, GPA_PML4);
-        vmw(VMCS_GUEST_CR4, GUEST_CR4);
+        vmw(VMCS_GUEST_IA32_EFER, v.msrs[MSR_SLOT_EFER]);
+        vmw(VMCS_GUEST_CR0, v.sregs.cr0);
+        vmw(VMCS_GUEST_CR3, v.sregs.cr3);
+        vmw(VMCS_GUEST_CR4, v.sregs.cr4);
 
-        vmw(VMCS_GUEST_ES_SELECTOR, 0x10);
-        vmw(VMCS_GUEST_CS_SELECTOR, 0x08);
-        vmw(VMCS_GUEST_SS_SELECTOR, 0x10);
-        vmw(VMCS_GUEST_DS_SELECTOR, 0x10);
-        vmw(VMCS_GUEST_FS_SELECTOR, 0x10);
-        vmw(VMCS_GUEST_GS_SELECTOR, 0x10);
+        vmw(VMCS_GUEST_ES_SELECTOR, v.sregs.es.selector as u64);
+        vmw(VMCS_GUEST_CS_SELECTOR, v.sregs.cs.selector as u64);
+        vmw(VMCS_GUEST_SS_SELECTOR, v.sregs.ss.selector as u64);
+        vmw(VMCS_GUEST_DS_SELECTOR, v.sregs.ds.selector as u64);
+        vmw(VMCS_GUEST_FS_SELECTOR, v.sregs.fs.selector as u64);
+        vmw(VMCS_GUEST_GS_SELECTOR, v.sregs.gs.selector as u64);
         vmw(VMCS_GUEST_LDTR_SELECTOR, 0);
         vmw(VMCS_GUEST_TR_SELECTOR, 0x18);
 
-        vmw(VMCS_GUEST_ES_BASE, 0);
-        vmw(VMCS_GUEST_CS_BASE, 0);
-        vmw(VMCS_GUEST_SS_BASE, 0);
-        vmw(VMCS_GUEST_DS_BASE, 0);
-        vmw(VMCS_GUEST_FS_BASE, 0);
-        vmw(VMCS_GUEST_GS_BASE, 0);
+        vmw(VMCS_GUEST_ES_BASE, v.sregs.es.base);
+        vmw(VMCS_GUEST_CS_BASE, v.sregs.cs.base);
+        vmw(VMCS_GUEST_SS_BASE, v.sregs.ss.base);
+        vmw(VMCS_GUEST_DS_BASE, v.sregs.ds.base);
+        vmw(VMCS_GUEST_FS_BASE, v.msrs[MSR_SLOT_FS_BASE]);
+        vmw(VMCS_GUEST_GS_BASE, v.msrs[MSR_SLOT_GS_BASE]);
         vmw(VMCS_GUEST_LDTR_BASE, 0);
         vmw(VMCS_GUEST_TR_BASE, tss_phys);
-        vmw(VMCS_GUEST_GDTR_BASE, 0);
-        vmw(VMCS_GUEST_IDTR_BASE, 0);
+        vmw(VMCS_GUEST_GDTR_BASE, v.sregs.gdtr_base);
+        vmw(VMCS_GUEST_IDTR_BASE, v.sregs.idtr_base);
 
-        vmw(VMCS_GUEST_ES_LIMIT, 0xFFFF_FFFF);
-        vmw(VMCS_GUEST_CS_LIMIT, 0xFFFF_FFFF);
-        vmw(VMCS_GUEST_SS_LIMIT, 0xFFFF_FFFF);
-        vmw(VMCS_GUEST_DS_LIMIT, 0xFFFF_FFFF);
-        vmw(VMCS_GUEST_FS_LIMIT, 0xFFFF_FFFF);
-        vmw(VMCS_GUEST_GS_LIMIT, 0xFFFF_FFFF);
+        vmw(VMCS_GUEST_ES_LIMIT, v.sregs.es.limit as u64);
+        vmw(VMCS_GUEST_CS_LIMIT, v.sregs.cs.limit as u64);
+        vmw(VMCS_GUEST_SS_LIMIT, v.sregs.ss.limit as u64);
+        vmw(VMCS_GUEST_DS_LIMIT, v.sregs.ds.limit as u64);
+        vmw(VMCS_GUEST_FS_LIMIT, v.sregs.fs.limit as u64);
+        vmw(VMCS_GUEST_GS_LIMIT, v.sregs.gs.limit as u64);
         vmw(VMCS_GUEST_LDTR_LIMIT, 0);
         vmw(VMCS_GUEST_TR_LIMIT, 0x67);
-        vmw(VMCS_GUEST_GDTR_LIMIT, 0);
-        vmw(VMCS_GUEST_IDTR_LIMIT, 0);
+        vmw(VMCS_GUEST_GDTR_LIMIT, v.sregs.gdtr_limit as u64);
+        vmw(VMCS_GUEST_IDTR_LIMIT, v.sregs.idtr_limit as u64);
 
-        vmw(VMCS_GUEST_ES_AR, AR_DATA);
-        vmw(VMCS_GUEST_CS_AR, AR_CODE64);
-        vmw(VMCS_GUEST_SS_AR, AR_DATA);
-        vmw(VMCS_GUEST_DS_AR, AR_DATA);
-        vmw(VMCS_GUEST_FS_AR, AR_DATA);
-        vmw(VMCS_GUEST_GS_AR, AR_DATA);
+        vmw(VMCS_GUEST_ES_AR, v.sregs.es.ar as u64);
+        vmw(VMCS_GUEST_CS_AR, v.sregs.cs.ar as u64);
+        vmw(VMCS_GUEST_SS_AR, v.sregs.ss.ar as u64);
+        vmw(VMCS_GUEST_DS_AR, v.sregs.ds.ar as u64);
+        vmw(VMCS_GUEST_FS_AR, v.sregs.fs.ar as u64);
+        vmw(VMCS_GUEST_GS_AR, v.sregs.gs.ar as u64);
         vmw(VMCS_GUEST_LDTR_AR, 0x1_0000); // unusable (required in IA-32e mode)
         vmw(VMCS_GUEST_TR_AR, 0x8B);       // busy 32-bit TSS
 
@@ -844,23 +1240,45 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_GUEST_IA32_SYSENTER_ESP, 0);
         vmw(VMCS_GUEST_IA32_SYSENTER_EIP, 0);
         vmw(VMCS_GUEST_PENDING_DBG_EXC, 0);
-        vmw(VMCS_GUEST_DR7, 0x400);
-        vmw(VMCS_GUEST_RSP, 0);
-        vmw(VMCS_GUEST_RIP, GVA_CODE);
-        vmw(VMCS_GUEST_RFLAGS, 0x2);
+        vmw(VMCS_GUEST_DR7, v.sregs.dr7);
+        vmw(VMCS_GUEST_RSP, v.regs.rsp);
+        vmw(VMCS_GUEST_RIP, v.regs.rip);
+        vmw(VMCS_GUEST_RFLAGS, v.regs.rflags);
+
+        /* A queued external interrupt (INJECT_IRQ, type 0) is delivered at this
+         * entry.  The guest must be able to take it, so enable IF for this run;
+         * every IDT vector has a handler, so a stray host event cannot
+         * triple-fault — it parks and halts. */
+        if v.pending_irq >= 0 {
+            vmw(VMCS_GUEST_RFLAGS, v.regs.rflags | 0x200);
+            vmw(VMCS_VM_ENTRY_INTR_INFO,
+                (1u64 << 31) | ((v.pending_irq as u64) & 0xFF));
+        } else {
+            vmw(VMCS_VM_ENTRY_INTR_INFO, 0);
+        }
 
         /* The guest owns CR0/CR4, so no CR access causes an exit. */
         vmw(VMCS_CR0_GUEST_HOST_MASK, 0);
         vmw(VMCS_CR4_GUEST_HOST_MASK, 0);
-        vmw(VMCS_CR0_READ_SHADOW, GUEST_CR0);
-        vmw(VMCS_CR4_READ_SHADOW, GUEST_CR4);
+        vmw(VMCS_CR0_READ_SHADOW, v.sregs.cr0);
+        vmw(VMCS_CR4_READ_SHADOW, v.sregs.cr4);
 
         if VMW_FAIL_FIELD != 0 {
             notice_hex("hv: guest launch: VMCS write rejected, field ", VMW_FAIL_FIELD);
         }
 
+        /* Guest GPRs are the host's at entry (VMX saves none), so load the
+         * vCPU's set right before VMLAUNCH; RSP/RIP/RFLAGS come from the VMCS.
+         * Order matches cact_vmx_launch_regs. */
+        let gpr = [
+            v.regs.rax, v.regs.rbx, v.regs.rcx, v.regs.rdx,
+            v.regs.rsi, v.regs.rdi, v.regs.rbp,
+            v.regs.r8, v.regs.r9, v.regs.r10, v.regs.r11,
+            v.regs.r12, v.regs.r13, v.regs.r14, v.regs.r15,
+        ];
+
         /* Launch.  On success this only returns after the guest has exited. */
-        if cact_vmx_launch() != 0 {
+        if cact_vmx_launch_regs(gpr.as_ptr()) != 0 {
             let mut err = 0u64;
             let _ = cact_vmread(VMCS_VM_INSTRUCTION_ERROR, &mut err);
             notice_hex("hv: guest launch: VMLAUNCH failed, instruction error ", err);
@@ -869,6 +1287,8 @@ unsafe fn run_guest() -> i32 {
             free_guest_pages(&guest_pages);
             return 1;
         }
+        /* The entry consumed the injected interrupt, if any. */
+        VCPU.pending_irq = -1;
 
         notice_hex("hv: guest ran, VM-exit reason ", EXIT_REASON);
         notice_hex("hv: guest I/O exits ", IO_EXITS);

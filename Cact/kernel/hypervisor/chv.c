@@ -26,6 +26,16 @@
 #define EINVAL 22
 #define EIO    5
 
+/* The uAPI structs are shared with userspace (CactLib mirrors ioctl_abi.h), so
+ * pin their sizes here: a layout drift has to be a build error, not a silent
+ * ABI break. */
+_Static_assert(sizeof(cact_chv_regs_t)  == 144, "cact_chv_regs_t ABI");
+_Static_assert(sizeof(cact_chv_seg_t)   == 24,  "cact_chv_seg_t ABI");
+_Static_assert(sizeof(cact_chv_sregs_t) == 256, "cact_chv_sregs_t ABI");
+_Static_assert(sizeof(cact_chv_msr_t)   == 16,  "cact_chv_msr_t ABI");
+_Static_assert(sizeof(cact_chv_msrs_t)  == 264, "cact_chv_msrs_t ABI");
+_Static_assert(sizeof(cact_chv_irq_t)   == 8,   "cact_chv_irq_t ABI");
+
 /* The model runs one guest on the calling CPU: `hv_run_guest()` enters VMX
  * root, launches, and leaves again.  The host state it uses (the VMXON region,
  * the current VMCS) is still a single instance, so two concurrent runs would
@@ -62,6 +72,63 @@ static int _chv_ioctl(void *p, uint32_t cmd, void *arg) {
 
         if (rc == 0) return 0;                 /* the guest ran */
         return (rc < 0) ? -ENODEV : -EIO;      /* no host mode / launch failed */
+    }
+
+    case CACT_CHVCTL_GET_REGS: {
+        cact_chv_regs_t *a = (cact_chv_regs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_regs_t out;
+        if (hv_get_regs(&out) != 0) return -EINVAL;
+        return copy_to_user(a, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
+    }
+
+    case CACT_CHVCTL_SET_REGS: {
+        cact_chv_regs_t *a = (cact_chv_regs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_regs_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        return hv_set_regs(&in) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_CHVCTL_GET_SREGS: {
+        cact_chv_sregs_t *a = (cact_chv_sregs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_sregs_t out;
+        if (hv_get_sregs(&out) != 0) return -EINVAL;
+        return copy_to_user(a, &out, sizeof(out)) == 0 ? 0 : -EFAULT;
+    }
+
+    case CACT_CHVCTL_SET_SREGS: {
+        cact_chv_sregs_t *a = (cact_chv_sregs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_sregs_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        return hv_set_sregs(&in) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_CHVCTL_GET_MSRS: {
+        cact_chv_msrs_t *a = (cact_chv_msrs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_msrs_t io;
+        if (copy_from_user(&io, a, sizeof(io)) != 0) return -EFAULT;
+        if (hv_get_msrs(&io) != 0) return -EINVAL;
+        return copy_to_user(a, &io, sizeof(io)) == 0 ? 0 : -EFAULT;
+    }
+
+    case CACT_CHVCTL_SET_MSRS: {
+        cact_chv_msrs_t *a = (cact_chv_msrs_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_msrs_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        return hv_set_msrs(&in) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_CHVCTL_INJECT_IRQ: {
+        cact_chv_irq_t *a = (cact_chv_irq_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_irq_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        return hv_inject_irq(in.vector) == 0 ? 0 : -EINVAL;
     }
 
     default:

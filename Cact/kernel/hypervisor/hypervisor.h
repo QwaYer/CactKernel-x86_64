@@ -5,6 +5,7 @@
 #define CACT_HYPERVISOR_H
 
 #include <stdint.h>
+#include "ioctl_abi.h"
 
 /*
  * CactOS as a hypervisor (host).
@@ -58,6 +59,22 @@ int hv_running_as_guest(void);
  * may be NULL).  Returns 0 once the guest exited, -1 when host mode is
  * unavailable.  Called on demand from the `/dev/chv` device — never at boot. */
 int hv_run_guest(uint64_t *out_exit_reason);
+
+/*
+ * The vCPU state, exposed to userspace (crate `cact_hv`, same door as
+ * hv_run_guest).  The model owns one persistent vCPU: `hv_get_*` fills the
+ * caller's struct from it, `hv_set_*` adopts the caller's, and the state is
+ * applied to the guest on the next RUN (and the guest's state is written back
+ * after each exit).  `hv_inject_irq` queues one external interrupt for the next
+ * entry.  All return 0 on success, non-zero on a bad argument.
+ */
+int hv_get_regs(cact_chv_regs_t *out);
+int hv_set_regs(const cact_chv_regs_t *in);
+int hv_get_sregs(cact_chv_sregs_t *out);
+int hv_set_sregs(const cact_chv_sregs_t *in);
+int hv_get_msrs(cact_chv_msrs_t *io);
+int hv_set_msrs(const cact_chv_msrs_t *in);
+int hv_inject_irq(uint32_t vector);
 
 /* Register the /dev/chv ("Cact Hypervisor") character device.  Called from
  * devfs_init() once the VFS is up; returns 0 on success, -1 if the node could
