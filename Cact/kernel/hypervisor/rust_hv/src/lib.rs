@@ -446,10 +446,24 @@ const CPU_BASED_HLT_EXITING: u64 = 1 << 7;
 const CPU_BASED_CPUID_EXITING: u64 = 1 << 10;
 const CPU_BASED_UNCOND_IO_EXITING: u64 = 1 << 24;
 
+/* Primary control bit 2: exit when the guest becomes ready to receive
+ * interrupts (RFLAGS.IF=1 and nothing is blocking them).  The model arms it on
+ * demand when it has a queued vector but the guest entered with IF=0 — the CPU
+ * then exits at the first moment the vector can be delivered (after an STI),
+ * and the handler hands the vector to the next entry.  Without it a queued
+ * interrupt aimed at an IF=0 guest would simply never arrive. */
+const CPU_BASED_INTR_WINDOW_EXITING: u64 = 1 << 2;
+
 /* Primary control bit 31: the secondary controls below take effect at all.
- * EPT lives in the secondary controls (bit 1). */
+ * EPT lives in the secondary controls (bit 1); unrestricted guest in bit 7. */
 const CPU_BASED_ACTIVATE_SECONDARY_CONTROLS: u64 = 1 << 31;
 const SECONDARY_EXEC_ENABLE_EPT: u64 = 1 << 1;
+
+/* Secondary control bit 7: unrestricted guest.  Lets the guest run with
+ * CR0.PE=0/CR0.PG=0 — 16-bit real mode — instead of the CPU forcing protected
+ * mode with paging on.  Requires EPT (already enabled).  This is what lets the
+ * model start a guest at the real-mode entry state a BIOS/bootloader would. */
+const SECONDARY_EXEC_UNRESTRICTED_GUEST: u64 = 1 << 7;
 
 /* VM-exit controls: the host is in 64-bit mode, and its EFER is reloaded on the
  * way out (the guest ran with its own EFER). */
@@ -464,6 +478,24 @@ const VM_ENTRY_LOAD_IA32_EFER: u64 = 1 << 15;
  * D/B=0); the data segments keep D/B=1. */
 const AR_CODE64: u64 = 0xA09B;
 const AR_DATA: u64 = 0xC093;
+
+/* Real-mode (PE=0) segment access rights: 16-bit (L=0, D/B=0), G=0, DPL0,
+ * present.  A real-mode 16-bit offset stays below 0x10000, so the limit is
+ * 0xFFFF and the base is 0 — the guest then addresses guest-physical memory
+ * directly, which EPT still translates. */
+const AR_CODE16: u64 = 0x009B;
+const AR_DATA16: u64 = 0x0093;
+
+/* CR0/CR4/EFER/RFLAGS bits the launch path reads or forces.  `NW`/`CD` are the
+ * bits the CPU always clears in a guest; `NE` is the one bit every VT-x guest
+ * CR0 must carry (unrestricted-guest CPUs pin nothing else). */
+const CR0_NE: u64 = 1 << 5;
+const CR0_NW: u64 = 1 << 29;
+const CR0_CD: u64 = 1 << 30;
+const CR0_PG: u64 = 1 << 31;
+const CR4_VMXE: u64 = 1 << 13;
+const EFER_LMA: u64 = 1 << 10;
+const RFLAGS_IF: u64 = 1 << 9;
 
 /* EPT leaf permissions (mirror vmx/ept.h). */
 const EPT_R: u32 = 0x1;
@@ -520,6 +552,18 @@ const COM1_BASE: u16 = 0x3F8;
 /* The line the fixture guest prints over the emulated COM1. */
 const GUEST_LINE: &[u8] = b"\r\n[guest] hello over emulated COM1\r\n";
 
+/* The real-mode fixture (unrestricted guest): a 16-bit program entered with
+ * CR0.PE=CR0.PG=0, CS.base=0.  Its offsets are therefore guest-physical
+ * addresses directly — the code sits at the start of GPA_CODE and the stack
+ * near the top of GPA_STACK (0xB800 < 0x10000).  It prints over the emulated
+ * COM1 (the same I/O exit the long-mode fixture uses), stores a 16-bit magic
+ * through the mapped GPA_DATA (the EPT translation proof), pokes the unmapped
+ * GPA_TRAP (the MMIO hook, now in real mode) and halts. */
+const RM_GUEST_LINE: &[u8] = b"\r\n[guest] real mode, unrestricted guest\r\n";
+const RM_MAGIC: u16 = 0xBEEF;
+const RM_ENTRY: u64 = GPA_CODE;
+const RM_STACK: u64 = GPA_STACK + 0x800;
+
 /* Guest GDT descriptors: a 64-bit code segment at selector 0x08 and a
  * read/write data segment at 0x10.  Interrupt delivery loads the handler's CS
  * from the GDT, so the guest needs a real one for the injected vector to land. */
@@ -529,10 +573,17 @@ const GDT_DATA: u64 = 0x00CF_9200_0000_FFFF;
 /* The exit reason the last handled VM exit reported. */
 static mut EXIT_REASON: u64 = 0;
 
+/* The primary processor-based control value the current run loaded.  The
+ * interrupt-window exit (reason 7) clears bit 2 out of it before resuming, so
+ * the handler needs the exact value that was written (ctl() may have added
+ * pinned bits). */
+static mut PRIMARY_CTRL: u64 = 0;
+
 /* Per-run tallies and the last EPT violation the handler saw (the violation is
  * now a resumable hook, so it is not the final exit any more). */
 static mut IO_EXITS: u64 = 0;
 static mut CPUID_EXITS: u64 = 0;
+static mut INTR_WINDOW_EXITS: u64 = 0;
 static mut SAW_EPT: bool = false;
 static mut LAST_GPA: u64 = 0;
 static mut LAST_QUAL: u64 = 0;
@@ -691,6 +742,9 @@ pub extern "C" fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
         // asking to resume.
         EXIT_CPUID => if unsafe { handle_cpuid(regs) } { 1 } else { 0 },
         EXIT_IO => if unsafe { handle_io(regs) } { 1 } else { 0 },
+        // Not caused by an instruction: the guest reached an interruptible
+        // point.  Hand the queued vector to the next entry and resume.
+        EXIT_INTERRUPT_WINDOW => { unsafe { handle_intr_window() }; 1 }
         EXIT_EPT_VIOLATION => {
             // SAFETY: as above.
             unsafe { record_ept() };
@@ -809,6 +863,29 @@ unsafe fn handle_io(frame: *mut u64) -> bool {
     unsafe { advance_rip() }
 }
 
+/// Interrupt-window exit (reason 7): the guest just became ready to receive
+/// interrupts while the window was armed for a queued vector.  Disarm the
+/// window and put the vector in the VM-entry interruption-information field;
+/// the stub then VMRESUMEs and the interrupt is delivered.  The exit is not
+/// caused by an instruction, so RIP is left alone.
+unsafe fn handle_intr_window() {
+    // SAFETY: the current VMCS is loaded; single-threaded model state.
+    unsafe {
+        let vector = VCPU.pending_irq;
+        vmw(VMCS_PRIMARY_PROC_BASED_CTRL, PRIMARY_CTRL & !CPU_BASED_INTR_WINDOW_EXITING);
+        if vector >= 0 {
+            vmw(VMCS_VM_ENTRY_INTR_INFO, (1u64 << 31) | ((vector as u64) & 0xFF));
+            VCPU.pending_irq = -1;
+        }
+        INTR_WINDOW_EXITS += 1;
+        if vector >= 0 {
+            notice_hex("hv: interrupt-window exit — guest ready, injecting vector ", vector as u64);
+        } else {
+            notice("hv: interrupt-window exit (no vector queued)");
+        }
+    }
+}
+
 /// Remember the EPT violation the current exit reports, for the run's summary.
 /// The violation is a resumable hook now, so it is no longer the final exit.
 unsafe fn record_ept() {
@@ -861,6 +938,7 @@ pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
 }
 
 /// VM-exit reasons this model handles (Intel SDM Vol. 3C, Appendix C).
+const EXIT_INTERRUPT_WINDOW: u64 = 7;
 const EXIT_CPUID: u64 = 10;
 const EXIT_HLT: u64 = 12;
 const EXIT_IO: u64 = 30;
@@ -889,6 +967,8 @@ unsafe fn pte(table: *mut u8, index: usize, value: u64) {
 ///   mov [GVA_DATA], eax    ; mapped: EPT translates it, guest continues
 ///   mov [GVA_TRAP], eax    ; guest paging maps it, EPT does not -> exit 48,
 ///                          ; the handler skips it and the guest runs on
+///   sti ; nop ; nop        ; with a queued vector + IF=0 the window opens
+///                          ; after the STI shadow -> exit 7 (vector injected)
 ///   hlt                    ; exit 12 -> the run ends
 ///
 /// COM1 is port 0x3F8, above 0xFF, so DX is set once and each data byte goes
@@ -923,6 +1003,17 @@ unsafe fn emit_guest_program(code: *mut u8) -> (usize, usize) {
         emit(code, &mut at, &(GVA_DATA as u32).to_le_bytes());
         emit(code, &mut at, &[0x89, 0x04, 0x25]);
         emit(code, &mut at, &(GVA_TRAP as u32).to_le_bytes());
+        /* Enable interrupts, then two NOPs, then halt.  With a queued vector
+         * and IF=0 at entry the model armed interrupt-window exiting; STI only
+         * opens the window after the STI "shadow" (the one instruction that
+         * follows STI still runs with interrupts blocked), so the NOPs give the
+         * CPU a boundary at which to take the window exit (reason 7) *before*
+         * the HLT.  The handler injects the vector, the guest takes it in the
+         * 'I' handler above and halts there.  With no queued vector nothing is
+         * armed and these bytes are inert. */
+        emit(code, &mut at, &[0xFB]);                          // sti
+        emit(code, &mut at, &[0x90]);                          // nop
+        emit(code, &mut at, &[0x90]);                          // nop
         emit(code, &mut at, &[0xF4]);                          // hlt
 
         /* Injected-interrupt handler: entered with fresh registers (delivery
@@ -946,6 +1037,35 @@ unsafe fn emit_guest_program(code: *mut u8) -> (usize, usize) {
         emit(code, &mut at, &[0xF4]);                          // hlt
 
         (handler_off, park_off)
+    }
+}
+
+/// The real-mode fixture's program (unrestricted guest).  It is 16-bit code:
+/// the default operand size is 16, so `mov dx, imm16` is a bare `BA iw` (no
+/// `0x66` prefix) and `mov [moffs16], ax` is `A3 iw`.  Offsets are
+/// guest-physical (CS.base=0), so the code runs from RM_ENTRY: it prints
+/// RM_GUEST_LINE over the emulated COM1, stores RM_MAGIC through the mapped
+/// GPA_DATA, pokes the unmapped GPA_TRAP (an EPT violation the handler skips)
+/// and halts.  No IDT is used — real-mode interrupt delivery would go through
+/// the IVT, which this fixture never exercises (the interrupt-window test runs
+/// on the long-mode fixture, which has an IDT).
+unsafe fn emit_real_mode_program(code: *mut u8) {
+    let mut at = 0usize;
+    // SAFETY: `code` is a live page; every write stays inside it.
+    unsafe {
+        emit(code, &mut at, &[0xBA]);                          // mov dx, imm16
+        emit(code, &mut at, &(COM1_BASE as u16).to_le_bytes());
+        for &b in RM_GUEST_LINE {
+            emit(code, &mut at, &[0xB0, b]);                   // mov al, imm8
+            emit(code, &mut at, &[0xEE]);                      // out dx, al
+        }
+        emit(code, &mut at, &[0xB8]);                          // mov ax, imm16
+        emit(code, &mut at, &RM_MAGIC.to_le_bytes());
+        emit(code, &mut at, &[0xA3]);                          // mov [moffs16], ax
+        emit(code, &mut at, &(GPA_DATA as u16).to_le_bytes());
+        emit(code, &mut at, &[0xA3]);                          // trap store -> exit 48
+        emit(code, &mut at, &(GPA_TRAP as u16).to_le_bytes());
+        emit(code, &mut at, &[0xF4]);                          // hlt
     }
 }
 
@@ -1038,7 +1158,15 @@ unsafe fn run_guest() -> i32 {
         /* Fresh tallies for this run. */
         IO_EXITS = 0;
         CPUID_EXITS = 0;
+        INTR_WINDOW_EXITS = 0;
         SAW_EPT = false;
+
+        /* The vCPU decides the launch mode.  With CR0.PG=1 the model runs its
+         * 64-bit fixture (the historical path); with CR0.PG=0 it starts a
+         * 16-bit real-mode guest — the unrestricted-guest case. */
+        let v: Vcpu = VCPU;
+        let real_mode = (v.sregs.cr0 & CR0_PG) == 0;
+        let long_mode = !real_mode;
 
         let vmcs_phys = vmm_v2p(vmcs);
         let code_phys = vmm_v2p(code);
@@ -1052,19 +1180,25 @@ unsafe fn run_guest() -> i32 {
         let pt_phys = vmm_v2p(pt);
         let tss_phys = vmm_v2p(tss);
 
-        /* Build the program, its IDT and its GDT.  A queued interrupt
-         * (`pending_irq`) arms that one vector's gate with the 'I' handler;
-         * every other vector parks. */
-        let (handler_off, park_off) = emit_guest_program(code);
+        /* Build the program, its IDT and its GDT.  The long-mode fixture has
+         * two interrupt-entry stubs; the real-mode one needs neither (real-mode
+         * delivery would use the IVT, which this fixture never touches).  A
+         * queued interrupt (`pending_irq`) arms that one vector's gate with the
+         * 'I' handler; every other vector parks. */
+        let armed = VCPU.pending_irq;
+        if real_mode {
+            emit_real_mode_program(code);
+        } else {
+            let (handler_off, park_off) = emit_guest_program(code);
+            build_idt(
+                idt,
+                GVA_CODE + handler_off as u64,
+                GVA_CODE + park_off as u64,
+                armed,
+            );
+        }
         build_guest_tables(pml4, pdpt, pd, pt);
         build_gdt(gdt);
-        let armed = VCPU.pending_irq;
-        build_idt(
-            idt,
-            GVA_CODE + handler_off as u64,
-            GVA_CODE + park_off as u64,
-            armed,
-        );
 
         /* EPT: one mapping per guest page, each GPA naming a distinct host
          * frame.  GPA_TRAP is deliberately absent — that is the violation. */
@@ -1120,18 +1254,42 @@ unsafe fn run_guest() -> i32 {
         }
 
         /* Controls.  EPT rides in the secondary controls, which only take
-         * effect once the primary "activate secondary controls" bit is set. */
+         * effect once the primary "activate secondary controls" bit is set.
+         * The interrupt-window bit is armed only when a vector is queued and
+         * the guest entered with IF=0; the unrestricted-guest bit lets a
+         * paging-off (real-mode) guest start at all. */
+        let if_set = (v.regs.rflags & RFLAGS_IF) != 0;
+        let pending = v.pending_irq;
+        let arm_window = pending >= 0 && !if_set;
+
         vmw(VMCS_PIN_BASED_VM_EXEC_CTRL, ctl(IA32_VMX_PINBASED_CTLS, 0));
-        vmw(VMCS_PRIMARY_PROC_BASED_CTRL, ctl(
-            IA32_VMX_PROCBASED_CTLS,
-            CPU_BASED_HLT_EXITING
-                | CPU_BASED_CPUID_EXITING
-                | CPU_BASED_UNCOND_IO_EXITING
-                | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS,
-        ));
-        let secondary = ctl(IA32_VMX_PROCBASED_CTLS2, SECONDARY_EXEC_ENABLE_EPT);
+        let mut primary_desired = CPU_BASED_HLT_EXITING
+            | CPU_BASED_CPUID_EXITING
+            | CPU_BASED_UNCOND_IO_EXITING
+            | CPU_BASED_ACTIVATE_SECONDARY_CONTROLS;
+        if arm_window {
+            primary_desired |= CPU_BASED_INTR_WINDOW_EXITING;
+        }
+        let primary = ctl(IA32_VMX_PROCBASED_CTLS, primary_desired);
+        vmw(VMCS_PRIMARY_PROC_BASED_CTRL, primary);
+        PRIMARY_CTRL = primary;
+        /* The window is only real if the CPU kept the bit (it is mandatory in
+         * practice; if it were refused we fall back to forcing IF below). */
+        let window_on = arm_window && (primary & CPU_BASED_INTR_WINDOW_EXITING) != 0;
+
+        let secondary = ctl(
+            IA32_VMX_PROCBASED_CTLS2,
+            SECONDARY_EXEC_ENABLE_EPT | SECONDARY_EXEC_UNRESTRICTED_GUEST,
+        );
         if secondary & SECONDARY_EXEC_ENABLE_EPT == 0 {
             notice("hv: guest launch: CPU refused the enable-EPT control");
+            let _ = cact_vmclear(vmcs_phys);
+            vmx_ept_free();
+            free_guest_pages(&guest_pages);
+            return 1;
+        }
+        if real_mode && secondary & SECONDARY_EXEC_UNRESTRICTED_GUEST == 0 {
+            notice("hv: real-mode launch needs unrestricted guest — unsupported on this CPU");
             let _ = cact_vmclear(vmcs_phys);
             vmx_ept_free();
             free_guest_pages(&guest_pages);
@@ -1140,7 +1298,13 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_SECONDARY_PROC_BASED_CTRL, secondary);
         vmw(VMCS_EPT_POINTER, eptp);
         vmw(VMCS_VM_EXIT_CTRLS, ctl(IA32_VMX_EXIT_CTLS, VM_EXIT_HOST_ADDR_SIZE | VM_EXIT_LOAD_IA32_EFER));
-        vmw(VMCS_VM_ENTRY_CTRLS, ctl(IA32_VMX_ENTRY_CTLS, VM_ENTRY_IA32E_MODE | VM_ENTRY_LOAD_IA32_EFER));
+        /* IA-32e mode only when the guest pages (long mode); a real-mode guest
+         * enters with the control clear so VM entry does not demand LMA. */
+        let mut entry_ctls = VM_ENTRY_LOAD_IA32_EFER;
+        if long_mode {
+            entry_ctls |= VM_ENTRY_IA32E_MODE;
+        }
+        vmw(VMCS_VM_ENTRY_CTRLS, ctl(IA32_VMX_ENTRY_CTLS, entry_ctls));
         vmw(VMCS_EXCEPTION_BITMAP, 0);
         vmw(VMCS_PF_ERROR_CODE_MASK, 0);
         vmw(VMCS_PF_ERROR_CODE_MATCH, 0);
@@ -1183,54 +1347,84 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_HOST_RIP, cact_vmx_exit_stub_addr());
         vmw(VMCS_HOST_IA32_EFER, cact_rdmsr(IA32_EFER));
 
-        /* Guest state, seeded from the vCPU (`VCPU`).  Its default reproduces
-         * the fixture exactly, so a RUN with no preceding SET ioctl behaves as
-         * before.  The model still owns TR/LDTR (the TSS page) and CR3, so
-         * those come from the fixture's own layout rather than from `VCPU`. */
-        let v: Vcpu = VCPU;
-        vmw(VMCS_VMCS_LINK_POINTER, 0xFFFF_FFFF_FFFF_FFFF);
-        vmw(VMCS_GUEST_IA32_EFER, v.msrs[MSR_SLOT_EFER]);
-        vmw(VMCS_GUEST_CR0, v.sregs.cr0);
-        vmw(VMCS_GUEST_CR3, v.sregs.cr3);
-        vmw(VMCS_GUEST_CR4, v.sregs.cr4);
+        /* Guest state, seeded from the vCPU (`v`).  Its default reproduces the
+         * fixture exactly, so a RUN with no preceding SET ioctl behaves as
+         * before.  In real mode the model owns the whole state: CS/DS/... are
+         * flat 16-bit segments (base 0) and RIP/RSP point into the mapped GPAs,
+         * so a 16-bit offset reaches CODE/DATA/STACK with no paging at all. */
+        let (g_cs, g_ds, g_es, g_fs, g_gs, g_ss) = if real_mode {
+            let code = ChvSeg { base: 0, limit: 0xFFFF, selector: 0, ar: AR_CODE16 as u32, reserved: 0 };
+            let data = ChvSeg { base: 0, limit: 0xFFFF, selector: 0, ar: AR_DATA16 as u32, reserved: 0 };
+            (code, data, data, data, data, data)
+        } else {
+            (v.sregs.cs, v.sregs.ds, v.sregs.es, v.sregs.fs, v.sregs.gs, v.sregs.ss)
+        };
+        let (guest_rip, guest_rsp) = if real_mode {
+            (RM_ENTRY, RM_STACK)
+        } else {
+            (v.regs.rip, v.regs.rsp)
+        };
+        let (fs_base, gs_base) = if real_mode {
+            (0u64, 0u64)
+        } else {
+            (v.msrs[MSR_SLOT_FS_BASE], v.msrs[MSR_SLOT_GS_BASE])
+        };
+        /* Guest CR0: clear the always-cleared NW/CD bits and pin NE (the one bit
+         * every VT-x guest CR0 carries).  CR4: pin VMXE.  A paging-off guest
+         * keeps PG=0 — exactly what unrestricted guest permits. */
+        let guest_cr0 = (v.sregs.cr0 & !(CR0_NW | CR0_CD)) | CR0_NE;
+        let guest_cr4 = v.sregs.cr4 | CR4_VMXE;
+        /* With paging off the guest is not in IA-32e mode, so EFER.LMA is
+         * cleared (VM entry rejects LMA=1 without the IA-32e mode control). */
+        let guest_efer = if long_mode {
+            v.msrs[MSR_SLOT_EFER]
+        } else {
+            v.msrs[MSR_SLOT_EFER] & !EFER_LMA
+        };
 
-        vmw(VMCS_GUEST_ES_SELECTOR, v.sregs.es.selector as u64);
-        vmw(VMCS_GUEST_CS_SELECTOR, v.sregs.cs.selector as u64);
-        vmw(VMCS_GUEST_SS_SELECTOR, v.sregs.ss.selector as u64);
-        vmw(VMCS_GUEST_DS_SELECTOR, v.sregs.ds.selector as u64);
-        vmw(VMCS_GUEST_FS_SELECTOR, v.sregs.fs.selector as u64);
-        vmw(VMCS_GUEST_GS_SELECTOR, v.sregs.gs.selector as u64);
+        vmw(VMCS_VMCS_LINK_POINTER, 0xFFFF_FFFF_FFFF_FFFF);
+        vmw(VMCS_GUEST_IA32_EFER, guest_efer);
+        vmw(VMCS_GUEST_CR0, guest_cr0);
+        vmw(VMCS_GUEST_CR3, v.sregs.cr3);
+        vmw(VMCS_GUEST_CR4, guest_cr4);
+
+        vmw(VMCS_GUEST_ES_SELECTOR, g_es.selector as u64);
+        vmw(VMCS_GUEST_CS_SELECTOR, g_cs.selector as u64);
+        vmw(VMCS_GUEST_SS_SELECTOR, g_ss.selector as u64);
+        vmw(VMCS_GUEST_DS_SELECTOR, g_ds.selector as u64);
+        vmw(VMCS_GUEST_FS_SELECTOR, g_fs.selector as u64);
+        vmw(VMCS_GUEST_GS_SELECTOR, g_gs.selector as u64);
         vmw(VMCS_GUEST_LDTR_SELECTOR, 0);
         vmw(VMCS_GUEST_TR_SELECTOR, 0x18);
 
-        vmw(VMCS_GUEST_ES_BASE, v.sregs.es.base);
-        vmw(VMCS_GUEST_CS_BASE, v.sregs.cs.base);
-        vmw(VMCS_GUEST_SS_BASE, v.sregs.ss.base);
-        vmw(VMCS_GUEST_DS_BASE, v.sregs.ds.base);
-        vmw(VMCS_GUEST_FS_BASE, v.msrs[MSR_SLOT_FS_BASE]);
-        vmw(VMCS_GUEST_GS_BASE, v.msrs[MSR_SLOT_GS_BASE]);
+        vmw(VMCS_GUEST_ES_BASE, g_es.base);
+        vmw(VMCS_GUEST_CS_BASE, g_cs.base);
+        vmw(VMCS_GUEST_SS_BASE, g_ss.base);
+        vmw(VMCS_GUEST_DS_BASE, g_ds.base);
+        vmw(VMCS_GUEST_FS_BASE, fs_base);
+        vmw(VMCS_GUEST_GS_BASE, gs_base);
         vmw(VMCS_GUEST_LDTR_BASE, 0);
         vmw(VMCS_GUEST_TR_BASE, tss_phys);
         vmw(VMCS_GUEST_GDTR_BASE, v.sregs.gdtr_base);
         vmw(VMCS_GUEST_IDTR_BASE, v.sregs.idtr_base);
 
-        vmw(VMCS_GUEST_ES_LIMIT, v.sregs.es.limit as u64);
-        vmw(VMCS_GUEST_CS_LIMIT, v.sregs.cs.limit as u64);
-        vmw(VMCS_GUEST_SS_LIMIT, v.sregs.ss.limit as u64);
-        vmw(VMCS_GUEST_DS_LIMIT, v.sregs.ds.limit as u64);
-        vmw(VMCS_GUEST_FS_LIMIT, v.sregs.fs.limit as u64);
-        vmw(VMCS_GUEST_GS_LIMIT, v.sregs.gs.limit as u64);
+        vmw(VMCS_GUEST_ES_LIMIT, g_es.limit as u64);
+        vmw(VMCS_GUEST_CS_LIMIT, g_cs.limit as u64);
+        vmw(VMCS_GUEST_SS_LIMIT, g_ss.limit as u64);
+        vmw(VMCS_GUEST_DS_LIMIT, g_ds.limit as u64);
+        vmw(VMCS_GUEST_FS_LIMIT, g_fs.limit as u64);
+        vmw(VMCS_GUEST_GS_LIMIT, g_gs.limit as u64);
         vmw(VMCS_GUEST_LDTR_LIMIT, 0);
         vmw(VMCS_GUEST_TR_LIMIT, 0x67);
         vmw(VMCS_GUEST_GDTR_LIMIT, v.sregs.gdtr_limit as u64);
         vmw(VMCS_GUEST_IDTR_LIMIT, v.sregs.idtr_limit as u64);
 
-        vmw(VMCS_GUEST_ES_AR, v.sregs.es.ar as u64);
-        vmw(VMCS_GUEST_CS_AR, v.sregs.cs.ar as u64);
-        vmw(VMCS_GUEST_SS_AR, v.sregs.ss.ar as u64);
-        vmw(VMCS_GUEST_DS_AR, v.sregs.ds.ar as u64);
-        vmw(VMCS_GUEST_FS_AR, v.sregs.fs.ar as u64);
-        vmw(VMCS_GUEST_GS_AR, v.sregs.gs.ar as u64);
+        vmw(VMCS_GUEST_ES_AR, g_es.ar as u64);
+        vmw(VMCS_GUEST_CS_AR, g_cs.ar as u64);
+        vmw(VMCS_GUEST_SS_AR, g_ss.ar as u64);
+        vmw(VMCS_GUEST_DS_AR, g_ds.ar as u64);
+        vmw(VMCS_GUEST_FS_AR, g_fs.ar as u64);
+        vmw(VMCS_GUEST_GS_AR, g_gs.ar as u64);
         vmw(VMCS_GUEST_LDTR_AR, 0x1_0000); // unusable (required in IA-32e mode)
         vmw(VMCS_GUEST_TR_AR, 0x8B);       // busy 32-bit TSS
 
@@ -1241,21 +1435,28 @@ unsafe fn run_guest() -> i32 {
         vmw(VMCS_GUEST_IA32_SYSENTER_EIP, 0);
         vmw(VMCS_GUEST_PENDING_DBG_EXC, 0);
         vmw(VMCS_GUEST_DR7, v.sregs.dr7);
-        vmw(VMCS_GUEST_RSP, v.regs.rsp);
-        vmw(VMCS_GUEST_RIP, v.regs.rip);
-        vmw(VMCS_GUEST_RFLAGS, v.regs.rflags);
+        vmw(VMCS_GUEST_RSP, guest_rsp);
+        vmw(VMCS_GUEST_RIP, guest_rip);
 
-        /* A queued external interrupt (INJECT_IRQ, type 0) is delivered at this
-         * entry.  The guest must be able to take it, so enable IF for this run;
-         * every IDT vector has a handler, so a stray host event cannot
-         * triple-fault — it parks and halts. */
-        if v.pending_irq >= 0 {
-            vmw(VMCS_GUEST_RFLAGS, v.regs.rflags | 0x200);
-            vmw(VMCS_VM_ENTRY_INTR_INFO,
-                (1u64 << 31) | ((v.pending_irq as u64) & 0xFF));
+        /* A queued external interrupt (INJECT_IRQ, type 0).  If the guest is
+         * already ready (IF=1) it is delivered at this entry through the
+         * VM-entry interruption-information field.  If IF=0 the model instead
+         * armed interrupt-window exiting above and leaves IF alone: the CPU
+         * exits (reason 7) at the first point the guest could take it, and the
+         * handler injects it there.  Should the CPU have refused the window
+         * control (mandatory in practice), fall back to forcing IF and
+         * delivering now — every IDT vector has a handler, so a stray host
+         * event parks and halts rather than triple-faulting. */
+        let mut entry_rflags = v.regs.rflags;
+        if pending >= 0 && (if_set || !window_on) {
+            if !if_set {
+                entry_rflags |= RFLAGS_IF;
+            }
+            vmw(VMCS_VM_ENTRY_INTR_INFO, (1u64 << 31) | ((pending as u64) & 0xFF));
         } else {
             vmw(VMCS_VM_ENTRY_INTR_INFO, 0);
         }
+        vmw(VMCS_GUEST_RFLAGS, entry_rflags);
 
         /* The guest owns CR0/CR4, so no CR access causes an exit. */
         vmw(VMCS_CR0_GUEST_HOST_MASK, 0);
@@ -1293,21 +1494,37 @@ unsafe fn run_guest() -> i32 {
         notice_hex("hv: guest ran, VM-exit reason ", EXIT_REASON);
         notice_hex("hv: guest I/O exits ", IO_EXITS);
         notice_hex("hv: guest CPUID exits ", CPUID_EXITS);
+        if INTR_WINDOW_EXITS > 0 {
+            notice_hex("hv: interrupt-window exits ", INTR_WINDOW_EXITS);
+        }
+        if real_mode {
+            notice("hv: guest launched in 16-bit real mode (unrestricted guest)");
+        }
 
         /* The fixture's line went out as COM1 data writes; its length is how
          * many data-register exits we expect to have relayed. */
-        if IO_EXITS >= GUEST_LINE.len() as u64 {
+        let line_len = if real_mode { RM_GUEST_LINE.len() } else { GUEST_LINE.len() };
+        if IO_EXITS >= line_len as u64 {
             notice("hv: guest spoke over emulated COM1 (I/O exits relayed)");
         }
 
         /* The store through the mapped GPA must have landed in the *host* frame
          * that GPA names — the guest never wrote that physical address, so
          * reading the magic back is the translation proof. */
-        let stored = core::ptr::read_volatile(data as *const u32);
-        if stored == GUEST_MAGIC {
-            notice("hv: EPT translation OK — mapped-GPA store reached the host frame");
+        if real_mode {
+            let stored = core::ptr::read_volatile(data as *const u16);
+            if stored == RM_MAGIC {
+                notice("hv: EPT translation OK — real-mode mapped-GPA store reached the host frame");
+            } else {
+                notice_hex("hv: EPT translation FAILED (real mode) — host frame holds ", stored as u64);
+            }
         } else {
-            notice_hex("hv: EPT translation FAILED — host frame holds ", stored as u64);
+            let stored = core::ptr::read_volatile(data as *const u32);
+            if stored == GUEST_MAGIC {
+                notice("hv: EPT translation OK — mapped-GPA store reached the host frame");
+            } else {
+                notice_hex("hv: EPT translation FAILED — host frame holds ", stored as u64);
+            }
         }
 
         if SAW_EPT {

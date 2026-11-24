@@ -196,6 +196,24 @@ COM1 несёт `[guest] hello over emulated COM1`, затем `guest ran, VM-ex
 0x9000 (skipped as MMIO), `hlt -> exit 12`. Обычная загрузка без запуска гостя
 доходит до шелла — без регрессий.
 
+**Сделано (Intel, 2026-11-24) — H5.2: старт в 16-битном real mode (unrestricted
+guest).** Включён secondary-контроль `UNRESTRICTED_GUEST` (bit 7; требует EPT) —
+без него CPU не даёт гостю `CR0.PG=0`. Режим запуска модель выбирает по `CR0.PG`:
+`PG=1` — прежний 64-битный фикстур, `PG=0` — 16-битный real-mode гость. Для
+real-mode модель владеет всем состоянием: плоские 16-битные сегменты (base 0,
+limit 0xFFFF, AR `0x009B`/`0x0093`), `EFER.LMA` сброшен, VM-entry без IA-32e
+контроля, а RIP/RSP указывают прямо в EPT-мапленные GPA (0x5000/0xB800 <
+0x10000) — пейджинга нет, линейный адрес и есть guest-physical. Отдельный
+16-битный фикстур печатает строку в эмулируемый COM1, кладёт 16-битную магию
+через маппленный GPA (доказательство EPT уже в real mode) и трогает `GPA_TRAP`
+(тот же MMIO-хук), затем `hlt`.
+
+**Проверено (KVM, nested, headless).** COM1 несёт `[guest] real mode,
+unrestricted guest`; модель — `guest launched in 16-bit real mode (unrestricted
+guest)`, `EPT translation OK — real-mode mapped-GPA store reached the host
+frame`, EPT violation 0x9000, `hlt -> exit 12`. Обычная загрузка — без
+регрессий.
+
 ### Фаза H6 — паритет бэкендов
 
 Доведение обоих бэкендов до одного множества сценариев; общий диспетчер exit-ов
@@ -237,6 +255,21 @@ rbx/rbp/r12–r15 — теперь гость стартует с наших GPR
 отдаёт заданное; `SET_MSRS{STAR}` и `SET_SREGS{cr2}` читаются назад; `INJECT_IRQ(0x80)`
 → COM1 несёт `I` (обработчик), exit HLT. Обычная загрузка без запуска гостя
 доходит до шелла — без регрессий.
+
+**Сделано (Intel, 2026-11-24) — H7.2: инжекция через interrupt-window exiting.**
+`INJECT_IRQ` больше не форсирует `RFLAGS.IF` в госте: если вектор есть, а `IF=0`,
+модель взводит primary-контроль `INTR_WINDOW_EXITING` (bit 2) и оставляет `IF`
+как есть. CPU выходит (reason 7) в первый момент, когда гость готов принять
+прерывание (после STI и его «тени»); обработчик снимает бит окна и кладёт вектор
+в VM-entry interruption-information, а stub делает `VMRESUME` — вектор
+доставляется. Если `IF` уже 1, вектор уходит на входе, как раньше. Фикстур
+обзавёлся `sti; nop; nop` перед `hlt` (окно открывается после STI-тени), так что
+`INJECT_IRQ(0x80)` по-прежнему даёт `I` на COM1.
+
+**Проверено (KVM, nested, headless).** `INJECT_IRQ(0x80)` + RUN с дефолтным
+гостем (`IF=0`): `interrupt-window exit — guest ready, injecting vector 0x…80`,
+`I` на COM1, `interrupt-window exits 0x1`, финальный exit HLT. Обычная загрузка —
+без регрессий.
 
 ## Сквозные потоки
 
