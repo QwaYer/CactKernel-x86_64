@@ -76,6 +76,18 @@ int hv_get_msrs(cact_chv_msrs_t *io);
 int hv_set_msrs(const cact_chv_msrs_t *in);
 int hv_inject_irq(uint32_t vector);
 
+/*
+ * Guest memory slots (the /dev/chv MAP/UNMAP_MEMORY uAPI).  `hv_add_memory_region`
+ * resolves [hva, hva+size) in the calling process's page tables (`pd`), pins the
+ * frames so swap cannot move them, and records them to be installed into the
+ * guest's EPT at `gpa` on the next RUN; a MAP with an existing slot id replaces
+ * it.  `hv_del_memory_region` unpins a slot (only `slot` matters).  Both return
+ * 0 on success, non-zero on a bad argument (bad alignment, overlap, or a page
+ * that cannot be backed).
+ */
+int hv_add_memory_region(const cact_chv_memory_t *in, uint64_t *pd);
+int hv_del_memory_region(const cact_chv_memory_t *in);
+
 /* Register the /dev/chv ("Cact Hypervisor") character device.  Called from
  * devfs_init() once the VFS is up; returns 0 on success, -1 if the node could
  * not be registered. */

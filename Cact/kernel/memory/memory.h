@@ -115,6 +115,14 @@ void*     vmm_p2v(uint64_t phys);
 uint32_t  vmm_pte_flags(uint64_t* pd, uint64_t virt);
 /* Clear the 4 KiB mapping for `virt`; returns the frame it named (0 if none). */
 uint64_t  vmm_unmap(uint64_t* pd, uint64_t virt);
+/* Pin the user pages covering [va, va+size) under `pd` (rust_mm
+ * page_fault_map.rs): materialise lazily mapped demand pages, take an extra
+ * reference on every frame so the swap reclaim path leaves it alone, and write
+ * the frames' physical addresses into `out_phys` (one u64 per 4 KiB page).
+ * Returns the number of pages pinned, or -1 (nothing left pinned). */
+int64_t   vmm_pin_range(uint64_t* pd, uint64_t va, uint64_t size, uint64_t* out_phys);
+/* Release frames pinned by vmm_pin_range(). */
+void      vmm_unpin_frames(const uint64_t* phys, uint64_t count);
 void      vmm_sync_kernel_mmio_mappings(uint64_t* pd);
 /* Resident user pages and page-table pages of one address space, in 4 KiB
  * pages (rust_mm vmm/stats.rs).  `proc` is the owning ProcMeta — its mmap table

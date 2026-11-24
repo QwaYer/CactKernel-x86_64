@@ -19,6 +19,7 @@
 #include "validate.h"
 #include "kernel.h"
 #include "sync.h"
+#include "task.h"
 #include "ioctl_abi.h"
 
 #define EFAULT 14
@@ -35,6 +36,7 @@ _Static_assert(sizeof(cact_chv_sregs_t) == 256, "cact_chv_sregs_t ABI");
 _Static_assert(sizeof(cact_chv_msr_t)   == 16,  "cact_chv_msr_t ABI");
 _Static_assert(sizeof(cact_chv_msrs_t)  == 264, "cact_chv_msrs_t ABI");
 _Static_assert(sizeof(cact_chv_irq_t)   == 8,   "cact_chv_irq_t ABI");
+_Static_assert(sizeof(cact_chv_memory_t) == 32, "cact_chv_memory_t ABI");
 
 /* The model runs one guest on the calling CPU: `hv_run_guest()` enters VMX
  * root, launches, and leaves again.  The host state it uses (the VMXON region,
@@ -129,6 +131,25 @@ static int _chv_ioctl(void *p, uint32_t cmd, void *arg) {
         cact_chv_irq_t in;
         if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
         return hv_inject_irq(in.vector) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_CHVCTL_MAP_MEMORY: {
+        cact_chv_memory_t *a = (cact_chv_memory_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_memory_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        /* The hypervisor resolves `hva` in the *caller's* address space: the
+         * frames it pins are the caller's own pages. */
+        uint64_t *pd = current_task ? current_task->page_directory : 0;
+        return hv_add_memory_region(&in, pd) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_CHVCTL_UNMAP_MEMORY: {
+        cact_chv_memory_t *a = (cact_chv_memory_t *)arg;
+        if (!validate_user_ptr(a, sizeof(*a))) return -EFAULT;
+        cact_chv_memory_t in;
+        if (copy_from_user(&in, a, sizeof(in)) != 0) return -EFAULT;
+        return hv_del_memory_region(&in) == 0 ? 0 : -EINVAL;
     }
 
     default:

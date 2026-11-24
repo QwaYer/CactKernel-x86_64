@@ -354,6 +354,17 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
                     flush_tlb(va as u64);
                 } else {
                     let phys = pte & !0xFFF;
+                    // A frame with more than one reference is either pinned (a
+                    // guest's memory, via `vmm_pin_range`) or COW-shared with
+                    // another mapping.  Evicting it would move a frame someone
+                    // still owns, so skip it and keep scanning.
+                    if crate::pmm::page_ref_get(p2v(phys) as *const u8) > 1 {
+                        va += PAGE_SIZE;
+                        if va >= USER_STACK_TOP {
+                            va = USER_SPACE_START;
+                        }
+                        continue;
+                    }
                     let mut slot: SwapSlot = 0;
                     // SAFETY: `phys` is the page-aligned frame selected by the scan
                     // and `slot` is a live local receiving the assigned swap slot.

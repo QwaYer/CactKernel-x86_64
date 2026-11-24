@@ -65,6 +65,8 @@ extern "C" {
     fn kalloc() -> *mut u8;
     fn free_page(ptr: *mut u8);
     fn vmm_v2p(ptr: *const u8) -> u64;
+    fn vmm_pin_range(pd: *mut u64, va: u64, size: u64, out_phys: *mut u64) -> i64;
+    fn vmm_unpin_frames(phys: *const u64, count: u64);
 
     fn vmx_ept_supported() -> i32;
     fn vmx_ept_build(maps: *const VmxEptMap, count: u32) -> u64;
@@ -75,11 +77,14 @@ extern "C" {
 /// One EPT leaf mapping, as `vmx/ept.h` declares it: guest-physical page ->
 /// host-physical page with the given permissions.
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct VmxEptMap {
     gpa: u64,
     hpa: u64,
     flags: u32,
 }
+
+const EPT_MAP_EMPTY: VmxEptMap = VmxEptMap { gpa: 0, hpa: 0, flags: 0 };
 
 /* ---- the vCPU state and its uAPI (mirror ioctl_abi.h, chv.c) ------------ */
 
@@ -135,6 +140,18 @@ pub struct ChvMsrs {
     pub count: u32,
     pub reserved: u32,
     pub entries: [ChvMsr; 16],
+}
+
+/// `cact_chv_memory_t`: one guest-memory slot — a userspace buffer `hva`
+/// backing guest-physical `[gpa, gpa+size)`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ChvMem {
+    pub slot: u32,
+    pub flags: u32,
+    pub gpa: u64,
+    pub hva: u64,
+    pub size: u64,
 }
 
 /* The MSR set the model tracks.  A guest RDMSR/WRMSR is not intercepted yet
@@ -327,6 +344,157 @@ pub extern "C" fn hv_inject_irq(vector: u32) -> i32 {
     // SAFETY: single-threaded model state (the /dev/chv lock serialises this
     // with RUN).
     unsafe { VCPU.pending_irq = vector as i32 };
+    0
+}
+
+/* ---- guest memory slots (the MAP/UNMAP_MEMORY uAPI) --------------------- */
+
+/// Max slots (mirror CACT_CHV_MEMORY_MAX).
+const CHV_MEMORY_MAX: usize = 8;
+/// Total guest-memory pages all slots may pin together (256 * 4 KiB = 1 MiB).
+const CHV_MEMORY_PAGES_MAX: usize = 256;
+/// The model's own guest pages occupy guest-physical [0x1000, 0xD000); a slot
+/// may not shadow them.
+const FIXTURE_GPA_LO: u64 = 0x1000;
+const FIXTURE_GPA_HI: u64 = 0xD000;
+
+/// One registered slot.  Its frames live at `MEM_SLOT_PHYS[off .. off+npages]`,
+/// each pinned by `vmm_pin_range` so swap cannot move it while mapped.
+#[derive(Clone, Copy)]
+struct MemSlot {
+    used: bool,
+    gpa: u64,
+    size: u64,
+    off: usize,
+    npages: usize,
+}
+const MEM_SLOT_EMPTY: MemSlot = MemSlot { used: false, gpa: 0, size: 0, off: 0, npages: 0 };
+
+static mut MEM_SLOTS: [MemSlot; CHV_MEMORY_MAX] = [MEM_SLOT_EMPTY; CHV_MEMORY_MAX];
+static mut MEM_SLOT_PHYS: [u64; CHV_MEMORY_PAGES_MAX] = [0; CHV_MEMORY_PAGES_MAX];
+static mut MEM_PAGES_USED: usize = 0;
+
+/* The EPT leaf array for one launch: the model's own pages plus every
+ * registered slot's pages.  Scratch, valid only while a run is in flight. */
+static mut EPT_MAPS: [VmxEptMap; 16 + CHV_MEMORY_PAGES_MAX] =
+    [EPT_MAP_EMPTY; 16 + CHV_MEMORY_PAGES_MAX];
+
+/// Half-open range overlap (sizes here are small, so the sums cannot wrap).
+fn ranges_overlap(a: u64, asz: u64, b: u64, bsz: u64) -> bool {
+    a < b + bsz && b < a + asz
+}
+
+/// Unpin a slot's frames and drop it, compacting the shared frame array so a
+/// later MAP can reuse the space.
+unsafe fn mem_slot_remove(s: usize) {
+    let sl = MEM_SLOTS[s];
+    if !sl.used {
+        return;
+    }
+    // SAFETY: `sl.off`/`sl.npages` bound this slot's slice of MEM_SLOT_PHYS;
+    // single-threaded model state.
+    unsafe {
+        vmm_unpin_frames(
+            core::ptr::addr_of!(MEM_SLOT_PHYS).cast::<u64>().add(sl.off),
+            sl.npages as u64,
+        );
+        let tail = sl.off + sl.npages;
+        let tail_len = MEM_PAGES_USED - tail;
+        let mut i = 0;
+        while i < tail_len {
+            MEM_SLOT_PHYS[sl.off + i] = MEM_SLOT_PHYS[tail + i];
+            i += 1;
+        }
+        MEM_PAGES_USED -= sl.npages;
+        let mut t = 0;
+        while t < CHV_MEMORY_MAX {
+            if MEM_SLOTS[t].used && t != s && MEM_SLOTS[t].off > sl.off {
+                MEM_SLOTS[t].off -= sl.npages;
+            }
+            t += 1;
+        }
+        MEM_SLOTS[s] = MEM_SLOT_EMPTY;
+    }
+}
+
+/// `MAP_MEMORY`: resolve the caller's buffer `[hva, hva+size)` (`pd` is the
+/// calling process's page map), pin its frames and record the slot for the next
+/// RUN.  Returns 0, or 1 on a bad argument (alignment, overlap, unsupported
+/// page, or out of slot space).
+#[no_mangle]
+pub extern "C" fn hv_add_memory_region(inp: *const ChvMem, pd: *mut u64) -> i32 {
+    if inp.is_null() {
+        return 1;
+    }
+    // SAFETY: chv.c passes a valid kernel struct and the caller's live page map.
+    let r = unsafe { *inp };
+    let slot = r.slot as usize;
+    if slot >= CHV_MEMORY_MAX || r.size == 0 {
+        return 1;
+    }
+    if r.size & 0xFFF != 0 || r.gpa & 0xFFF != 0 || r.hva & 0xFFF != 0 {
+        return 1;
+    }
+    // Reject ranges that wrap, so the overlap and EPT arithmetic below cannot
+    // be fooled by a huge (attacker-chosen) guest-physical base.
+    if r.gpa.checked_add(r.size).is_none() || r.hva.checked_add(r.size).is_none() {
+        return 1;
+    }
+    let npages = (r.size >> 12) as usize;
+    if npages == 0 || npages > CHV_MEMORY_PAGES_MAX {
+        return 1;
+    }
+    // SAFETY: single-threaded model state; the /dev/chv lock serialises slot
+    // changes against each other and against RUN.
+    unsafe {
+        if ranges_overlap(r.gpa, r.size, FIXTURE_GPA_LO, FIXTURE_GPA_HI - FIXTURE_GPA_LO) {
+            return 1;
+        }
+        let mut s = 0;
+        while s < CHV_MEMORY_MAX {
+            if s != slot && MEM_SLOTS[s].used
+                && ranges_overlap(r.gpa, r.size, MEM_SLOTS[s].gpa, MEM_SLOTS[s].size)
+            {
+                return 1;
+            }
+            s += 1;
+        }
+        if MEM_SLOTS[slot].used {
+            mem_slot_remove(slot);
+        }
+        if MEM_PAGES_USED + npages > CHV_MEMORY_PAGES_MAX {
+            return 1;
+        }
+        let off = MEM_PAGES_USED;
+        let base = core::ptr::addr_of_mut!(MEM_SLOT_PHYS).cast::<u64>();
+        // `vmm_pin_range` unpins whatever it pinned before returning -1/partial.
+        if vmm_pin_range(pd, r.hva, r.size, base.add(off)) != npages as i64 {
+            return 1;
+        }
+        MEM_SLOTS[slot] = MemSlot { used: true, gpa: r.gpa, size: r.size, off, npages };
+        MEM_PAGES_USED = off + npages;
+    }
+    0
+}
+
+/// `UNMAP_MEMORY`: unpin a slot's frames and drop it.  Only `slot` matters.
+#[no_mangle]
+pub extern "C" fn hv_del_memory_region(inp: *const ChvMem) -> i32 {
+    if inp.is_null() {
+        return 1;
+    }
+    // SAFETY: as above.
+    let r = unsafe { *inp };
+    if r.slot as usize >= CHV_MEMORY_MAX {
+        return 1;
+    }
+    // SAFETY: single-threaded model state.
+    unsafe {
+        if !MEM_SLOTS[r.slot as usize].used {
+            return 1;
+        }
+        mem_slot_remove(r.slot as usize);
+    }
     0
 }
 
@@ -1201,25 +1369,45 @@ unsafe fn run_guest() -> i32 {
         build_gdt(gdt);
 
         /* EPT: one mapping per guest page, each GPA naming a distinct host
-         * frame.  GPA_TRAP is deliberately absent — that is the violation. */
+         * frame.  GPA_TRAP is deliberately absent — that is the violation.
+         * The model's own fixture pages come first, then every registered
+         * memory slot's pinned frames, one EPT leaf per page. */
         if vmx_ept_supported() == 0 {
             notice("hv: guest run needs EPT, unavailable on this CPU");
             free_guest_pages(&guest_pages);
             return 1;
         }
         let rwx = EPT_R | EPT_W | EPT_X;
-        let maps = [
-            VmxEptMap { gpa: GPA_PML4, hpa: pml4_phys, flags: rwx },
-            VmxEptMap { gpa: GPA_PDPT, hpa: pdpt_phys, flags: rwx },
-            VmxEptMap { gpa: GPA_PD,   hpa: pd_phys,   flags: rwx },
-            VmxEptMap { gpa: GPA_PT,   hpa: pt_phys,   flags: rwx },
-            VmxEptMap { gpa: GPA_CODE, hpa: code_phys, flags: rwx },
-            VmxEptMap { gpa: GPA_DATA, hpa: data_phys, flags: rwx },
-            VmxEptMap { gpa: GPA_IDT,  hpa: idt_phys,  flags: rwx },
-            VmxEptMap { gpa: GPA_STACK, hpa: stack_phys, flags: rwx },
-            VmxEptMap { gpa: GPA_GDT,  hpa: gdt_phys,  flags: rwx },
+        // SAFETY: one run at a time; EPT_MAPS is launch scratch.
+        let maps = core::ptr::addr_of_mut!(EPT_MAPS).cast::<VmxEptMap>();
+        let base: [(u64, u64); 9] = [
+            (GPA_PML4, pml4_phys), (GPA_PDPT, pdpt_phys), (GPA_PD, pd_phys),
+            (GPA_PT, pt_phys), (GPA_CODE, code_phys), (GPA_DATA, data_phys),
+            (GPA_IDT, idt_phys), (GPA_STACK, stack_phys), (GPA_GDT, gdt_phys),
         ];
-        let eptp = vmx_ept_build(maps.as_ptr(), maps.len() as u32);
+        let mut nmap = 0usize;
+        for &(g, h) in base.iter() {
+            core::ptr::write(maps.add(nmap), VmxEptMap { gpa: g, hpa: h, flags: rwx });
+            nmap += 1;
+        }
+        let mut s = 0usize;
+        while s < CHV_MEMORY_MAX {
+            let sl = MEM_SLOTS[s];
+            if sl.used {
+                let mut p = 0usize;
+                while p < sl.npages {
+                    core::ptr::write(maps.add(nmap), VmxEptMap {
+                        gpa: sl.gpa + (p as u64) * 0x1000,
+                        hpa: MEM_SLOT_PHYS[sl.off + p],
+                        flags: rwx,
+                    });
+                    nmap += 1;
+                    p += 1;
+                }
+            }
+            s += 1;
+        }
+        let eptp = vmx_ept_build(maps as *const VmxEptMap, nmap as u32);
         if eptp == 0 {
             notice("hv: guest launch: EPT build failed");
             free_guest_pages(&guest_pages);
@@ -1496,6 +1684,9 @@ unsafe fn run_guest() -> i32 {
         notice_hex("hv: guest CPUID exits ", CPUID_EXITS);
         if INTR_WINDOW_EXITS > 0 {
             notice_hex("hv: interrupt-window exits ", INTR_WINDOW_EXITS);
+        }
+        if MEM_PAGES_USED > 0 {
+            notice_hex("hv: guest memory slots mapped, pages ", MEM_PAGES_USED as u64);
         }
         if real_mode {
             notice("hv: guest launched in 16-bit real mode (unrestricted guest)");

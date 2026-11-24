@@ -4,7 +4,7 @@
 //! Demand/zero/COW mapping helpers exposed to C. Split out of `page_fault.rs`.
 
 use crate::ffi::*;
-use crate::pmm::{kalloc, free_page, page_ref_get_locked, PAGE_LOCK};
+use crate::pmm::{kalloc, free_page, page_ref_inc, page_ref_get_locked, PAGE_LOCK};
 use crate::vmm::paging::{vmm_map, p2v, v2p};
 use crate::fault::page_fault::{ensure_private_pte, pte_get};
 use crate::safe::{zero_page, flush_tlb, lock_acquire, lock_release};
@@ -220,4 +220,111 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -
     }
 
     USER_STACK_TOP
+}
+
+/// Pin the user pages covering `[va, va+size)` in `pd`, so the hypervisor can
+/// back guest memory with userspace frames (the `/dev/chv` memory-slot uAPI).
+///
+/// For each 4 KiB page: walk to its PTE.  A present page is used as is; a
+/// lazily-mapped anonymous page (`PAGE_DEMAND`, as a fresh `mmap` installs) is
+/// materialised here — a zeroed frame installed exactly as the demand fault
+/// path would on first touch.  A page that is neither present nor a demand page
+/// fails the whole call.  Each frame takes one extra reference, so the swap
+/// reclaim path (`swap_evict_page`, which skips frames with a reference count
+/// above 1) leaves the guest's memory alone.  The frames' physical addresses are
+/// written into `out_phys[0..n]`.
+///
+/// Returns the number of pages pinned, or -1 (nothing left pinned) when a page
+/// cannot be backed.
+///
+/// # Safety
+///
+/// `pd` must be a live page map the caller owns and may mutate, and no other CPU
+/// may race a walk of it; `out_phys` must have room for `ceil(size/4096)` `u64`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vmm_pin_range(
+    pd: *mut u64,
+    va: u64,
+    size: u64,
+    out_phys: *mut u64,
+) -> i64 {
+    if pd.is_null() || out_phys.is_null() || size == 0 {
+        return -1;
+    }
+    let start = va & !0xFFF;
+    // A saturated end is rejected by the boundary test below (it is >= the top).
+    let end = va.saturating_add(size).saturating_add(0xFFF) & !0xFFF;
+    if end <= start || start < USER_SPACE_START as u64 || end > USER_STACK_TOP as u64 {
+        return -1;
+    }
+
+    let mut n: i64 = 0;
+    let mut cur = start;
+    while cur < end {
+        let pte = pte_get(pd, cur);
+        if pte.is_null() {
+            // SAFETY: `out_phys[0..n]` holds frames pinned in this call.
+            return unsafe { unpin_prefix(out_phys, n) };
+        }
+        // SAFETY: `pte` is a live in-bounds page-table entry.
+        let mut val = unsafe { *pte };
+        if val & PAGE_PRESENT as u64 == 0 {
+            // Lazy anonymous page: install a zeroed frame (the demand fault path
+            // would do the same on first touch).  Anything else is unmapped.
+            if val & PAGE_DEMAND as u64 == 0 {
+                // SAFETY: as above.
+                return unsafe { unpin_prefix(out_phys, n) };
+            }
+            let frame = kalloc();
+            if frame.is_null() {
+                // SAFETY: as above.
+                return unsafe { unpin_prefix(out_phys, n) };
+            }
+            zero_page(frame);
+            val = (v2p(frame) & !0xFFF) | (PAGE_PRESENT | PAGE_USER | PAGE_RW) as u64;
+            // SAFETY: `pte` is the live entry for this address; the store
+            // publishes the materialised mapping.
+            unsafe { *pte = val; }
+            flush_tlb(cur);
+        }
+        let phys = val & !0xFFF;
+        page_ref_inc(p2v(phys) as *const u8);
+        // SAFETY: `n` stays below the caller's page count while `cur < end`.
+        unsafe { *out_phys.add(n as usize) = phys; }
+        n += 1;
+        cur += PAGE_SIZE as u64;
+    }
+    n
+}
+
+/// Release the references taken by `vmm_pin_range()`, unpinning the frames.
+///
+/// # Safety
+///
+/// `phys` must hold `count` frames previously pinned by `vmm_pin_range()` and
+/// not already unpinned.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
+    if phys.is_null() {
+        return;
+    }
+    let mut i = 0u64;
+    while i < count {
+        // SAFETY: each entry is a frame pinned by `vmm_pin_range`.
+        let p = unsafe { *phys.add(i as usize) };
+        if p != 0 {
+            // SAFETY: `p` is a live PMM-managed frame; this releases exactly the
+            // reference the matching pin took.
+            unsafe { free_page(p2v(p) as *mut u8) };
+        }
+        i += 1;
+    }
+}
+
+/// Unpin the first `n` frames of `out_phys` (the failure path of
+/// `vmm_pin_range`).  Returns -1 so callers can `return` it directly.
+unsafe fn unpin_prefix(out_phys: *mut u64, n: i64) -> i64 {
+    // SAFETY: `out_phys[0..n]` holds frames pinned in this call.
+    unsafe { vmm_unpin_frames(out_phys as *const u64, n as u64) };
+    -1
 }
