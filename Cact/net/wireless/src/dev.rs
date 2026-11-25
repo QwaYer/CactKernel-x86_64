@@ -631,21 +631,22 @@ fn tx_ethernet(d: &mut Dev, eth: &[u8]) -> i32 {
     let hdr = frame::data_hdr_len(&f[..n]);
 
     let rc = if d.privacy {
-        // A group frame needs the GTK, a unicast one the TK: sending without
-        // the right key would encrypt under an all-zero key and be dropped by
-        // the AP, silently (a broadcast is never acknowledged).
-        let have = if is_group { d.have_gtk } else { d.have_tk };
-        if !d.secured || !have {
+        // A station carries every frame it transmits ToDS to the AP — unicast
+        // and group frames (DHCP Discover, ARP) alike — under its pairwise key.
+        // The AP re-encrypts group traffic with the GTK on the downlink; sending
+        // our own broadcast under the GTK would fail the AP's MIC check, since
+        // the AP expects our PTK in this direction and shares the GTK with every
+        // other station.
+        if !d.secured || !d.have_tk {
             d.tx_drop_nokey = d.tx_drop_nokey.wrapping_add(1);
             d.last_error = EAGAIN;
             return EAGAIN;
         }
-        let (key, key_id) = if is_group { (d.gtk, d.gtk_id) } else { (d.tk, 0) };
-        d.pn[key_id as usize & 3] += 1;
-        let pn = d.pn[key_id as usize & 3];
+        d.pn[0] += 1;
+        let pn = d.pn[0];
         f[1] |= 0x40; // Protected
         let mut out = [0u8; 1600];
-        match crate::ccmp::encrypt(&key, key_id, pn, &f[..hdr], hdr, &f[hdr..n], &mut out) {
+        match crate::ccmp::encrypt(&d.tk, 0, pn, &f[..hdr], hdr, &f[hdr..n], &mut out) {
             Some(tot) => hw_tx(d, &out[..tot], Q_DATA),
             None => EINVAL,
         }

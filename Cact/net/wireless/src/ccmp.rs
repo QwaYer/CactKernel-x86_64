@@ -8,8 +8,11 @@
 //! fixes of 2026-10-09 (on-air CCMP header and the tag's counter block), and
 //! kept byte-for-byte interoperable with mac80211/OpenSSL CCM:
 //!
-//!   * on-air CCMP header: PN0, PN1, reserved, key id|ExtIV, PN2..PN5
-//!     (most-significant byte first);
+//!   * on-air CCMP header: PN0, PN1, reserved, key id|ExtIV, PN2..PN5 — the
+//!     packet number is sent least-significant octet first (PN0 at octet 0,
+//!     PN5 at octet 7), and the nonce carries it the other way round (PN5..PN0),
+//!     exactly as mac80211's `ccmp_pn2hdr`/`ccmp_hdr2pn` and
+//!     `ccmp_special_blocks` do;
 //!   * MIC = CBC-MAC over (AAD, payload), XORed with the CTR keystream block at
 //!     counter 0; the payload uses counters 1..n (RFC 3610 / NIST 800-38C).
 //!
@@ -54,15 +57,29 @@ fn aad(hdr: &[u8], _hdr_len: usize, out: &mut [u8; 30]) -> usize {
     n
 }
 
-/// The CCMP nonce: Nonce Flags | A2 | PN (13 bytes).
+/// The 6-byte packet number in mac80211's `pn[]` big-endian view: `pb[0]` is the
+/// most significant octet (PN5), `pb[5]` the least significant (PN0).  The CCMP
+/// header transmits these in the opposite order (PN0 first), while the nonce
+/// takes them as-is (PN5 first).
+fn pn_bytes(pn: u64) -> [u8; 6] {
+    [
+        (pn >> 40) as u8, // PN5
+        (pn >> 32) as u8, // PN4
+        (pn >> 24) as u8, // PN3
+        (pn >> 16) as u8, // PN2
+        (pn >> 8) as u8,  // PN1
+        pn as u8,         // PN0
+    ]
+}
+
+/// The CCMP nonce: Nonce Flags | A2 | PN (13 bytes), with the PN laid out
+/// PN5..PN0 in the last 6 bytes (mac80211 `ccmp_special_blocks`).
 fn nonce(hdr: &[u8], _hdr_len: usize, pn: u64, out: &mut [u8; 13]) {
     let a4 = hdr[1] & 0x03 == 0x03;
     let qos = ((hdr[0] >> 4) & 0x0f) & 0x8 != 0;
     out[0] = if qos { hdr[if a4 { 30 } else { 24 }] & 0x0f } else { 0 };
     out[1..7].copy_from_slice(&hdr[10..16]); // A2
-    for i in 0..6 {
-        out[7 + i] = (pn >> (8 * i)) as u8;
-    }
+    out[7..13].copy_from_slice(&pn_bytes(pn));
 }
 
 fn mic(aes: &Aes128, nonce: &[u8; 13], aad: &[u8], payload: &[u8]) -> [u8; 8] {
@@ -166,15 +183,17 @@ pub fn encrypt(
 
     out[..hdr_len].copy_from_slice(&hdr[..hdr_len]);
     let ccmp = hdr_len;
-    // PN0, PN1, reserved, key id|ExtIV, PN2..PN5 (most significant first).
-    out[ccmp] = (pn >> 40) as u8;
-    out[ccmp + 1] = (pn >> 32) as u8;
+    // PN0, PN1, reserved, key id|ExtIV, PN2..PN5: the packet number is sent
+    // least-significant octet first (mac80211 `ccmp_pn2hdr`).
+    let pb = pn_bytes(pn); // pb[0] = PN5 … pb[5] = PN0
+    out[ccmp] = pb[5];     // PN0
+    out[ccmp + 1] = pb[4]; // PN1
     out[ccmp + 2] = 0x00;
     out[ccmp + 3] = (key_id << 6) | 0x20;
-    out[ccmp + 4] = (pn >> 24) as u8;
-    out[ccmp + 5] = (pn >> 16) as u8;
-    out[ccmp + 6] = (pn >> 8) as u8;
-    out[ccmp + 7] = pn as u8;
+    out[ccmp + 4] = pb[3]; // PN2
+    out[ccmp + 5] = pb[2]; // PN3
+    out[ccmp + 6] = pb[1]; // PN4
+    out[ccmp + 7] = pb[0]; // PN5
 
     let ct = ccmp + 8;
     out[ct..ct + payload.len()].copy_from_slice(payload);
@@ -197,12 +216,14 @@ pub fn decrypt(tk: &[u8; 16], f: &mut [u8], flen: usize, hdr_len: usize) -> Opti
     let aes = Aes128::new(tk);
 
     let ccmp = hdr_len;
-    let pn = ((f[ccmp] as u64) << 40)
-        | ((f[ccmp + 1] as u64) << 32)
-        | ((f[ccmp + 4] as u64) << 24)
-        | ((f[ccmp + 5] as u64) << 16)
-        | ((f[ccmp + 6] as u64) << 8)
-        | (f[ccmp + 7] as u64);
+    // PN0..PN5 as transmitted, least-significant octet first (mac80211
+    // `ccmp_hdr2pn`).
+    let pn = ((f[ccmp + 7] as u64) << 40)   // PN5
+        | ((f[ccmp + 6] as u64) << 32)      // PN4
+        | ((f[ccmp + 5] as u64) << 24)      // PN3
+        | ((f[ccmp + 4] as u64) << 16)      // PN2
+        | ((f[ccmp + 1] as u64) << 8)       // PN1
+        | (f[ccmp] as u64); // PN0
 
     let plen = flen - hdr_len - 8 - 8;
     if plen == 0 {
