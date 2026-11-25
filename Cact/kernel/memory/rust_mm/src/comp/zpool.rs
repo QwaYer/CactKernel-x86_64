@@ -15,14 +15,31 @@
 //! than the raw budget would.
 
 use core::ffi::c_void;
+use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::alloc::heap::{kfree, kmalloc};
-use crate::ffi::{IrqSpinlock, PAGE_SIZE, ZpoolStats};
-use crate::safe::{lock_acquire, lock_release};
+use crate::alloc::heap::{kfree, kmalloc, kmalloc_aligned};
+use crate::ffi::{IrqSpinlock, PAGE_SIZE, ZpoolStats, LOG_WARN};
+use crate::safe::{klog_msg, lock_acquire, lock_release};
 
 use super::zpool_alloc::SlotAlloc;
 
 const PAGE: usize = PAGE_SIZE as usize;
+
+/// Bits for the one-shot "why did a store refuse" diagnostics below: each is set
+/// (and its reason logged once, the first time) so a pressure run says *which*
+/// allocation failed instead of leaving it to guesswork.
+static STORE_FAIL_SEEN: AtomicU32 = AtomicU32::new(0);
+const FAIL_SCRATCH: u32 = 1 << 0;
+const FAIL_COMPRESS: u32 = 1 << 1;
+const FAIL_BLOB: u32 = 1 << 2;
+const FAIL_SLOT: u32 = 1 << 3;
+
+/// Log `msg` the first time `bit` is reported.
+fn fail_once(bit: u32, msg: &core::ffi::CStr) {
+    if STORE_FAIL_SEEN.fetch_or(bit, Ordering::Relaxed) & bit == 0 {
+        klog_msg(LOG_WARN, msg.as_ptr() as *const u8);
+    }
+}
 
 /// One pool slot: a compressed blob, or the raw page when it did not shrink.
 #[repr(C)]
@@ -308,9 +325,16 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
     }
     let scratch = kmalloc(bound);
     if scratch.is_null() {
+        fail_once(FAIL_SCRATCH, c"zpool: store refused — scratch allocation failed");
         return -1;
     }
     let clen = zstd_compress(pool.level, page, scratch, bound);
+    if clen == 0 {
+        // Compression itself failed (its workspace could not be allocated) —
+        // the page still gets stored raw, but the pool now charges a whole page
+        // for it, so say so once.
+        fail_once(FAIL_COMPRESS, c"zpool: compression failed — storing raw");
+    }
     let (payload, src) = if clen != 0 && clen < PAGE {
         (clen, scratch)
     } else {
@@ -318,8 +342,15 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
         (PAGE, page as *mut u8)
     };
 
-    let blob = kmalloc(payload);
+    // Allocate the blob from the *heap window* (align > 8 routes the request
+    // there and gives it a back-pointer) rather than the slab path that a plain
+    // kmalloc of ≤ 2048 would take: a slab needs a fresh page via `kalloc` for
+    // every ~1 KiB of objects, and under memory pressure the PMM is exactly what
+    // is empty — the store then failed even though the page was about to free a
+    // frame.  The heap window is carved out at boot, so this needs no new frame.
+    let blob = kmalloc_aligned(payload, 16);
     if blob.is_null() {
+        fail_once(FAIL_BLOB, c"zpool: store refused — blob allocation failed");
         // SAFETY: `scratch` is a live heap block from kmalloc above.
         unsafe { kfree(scratch) };
         return -1;
@@ -339,6 +370,7 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
     let handle = match pool.alloc.alloc(links, payload as u64) {
         Ok(h) => h,
         Err(_) => {
+            fail_once(FAIL_SLOT, c"zpool: store refused — no slot or budget");
             lock_release(core::ptr::addr_of_mut!(pool.lock));
             // SAFETY: `blob` is a live heap block from kmalloc above.
             unsafe { kfree(blob) };
