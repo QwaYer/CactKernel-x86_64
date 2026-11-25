@@ -546,6 +546,19 @@ unsafe fn cursor_apply(
                 }
             }
         }
+        /* The cursor holds a reference on the image it displays, exactly as a
+         * CRTC or a framebuffer holds one on what it scans out: closing the
+         * client's handle drops *its* reference, so without this one the object
+         * could be freed while the device still displays it (and the driver is
+         * still handed `cursor.obj`).  Drop the image being replaced first. */
+        // SAFETY: `crtc` is the live CRTC; this reads the image it is replacing.
+        let old = unsafe { (*crtc).cursor.obj };
+        if !old.is_null() {
+            drm_gem_unref(old);
+        }
+        if !obj.is_null() {
+            drm_gem_ref(obj);
+        }
         // SAFETY: `crtc` is the live CRTC just resolved from the device's pool; these
         // store the new cursor image state.
         unsafe { (*crtc).cursor.handle = handle };

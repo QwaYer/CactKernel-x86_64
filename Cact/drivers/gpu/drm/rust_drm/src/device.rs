@@ -302,6 +302,15 @@ pub extern "C" fn drm_dev_unregister(dev: *mut DrmDevice) {
     let crtcs = unsafe { &(*dev).crtcs };
     for &p in crtcs.iter() {
         if !p.is_null() {
+            /* A CRTC may still hold a reference on the cursor image it displays;
+             * drop it before reclaiming the CRTC, or the object leaks. */
+            let crtc = p as *mut Crtc;
+            // SAFETY: `crtc` is a live CRTC owned by this device; this reads the
+            // cursor image it holds.
+            let cursor_obj = unsafe { (*crtc).cursor.obj };
+            if !cursor_obj.is_null() {
+                drm_gem_unref(cursor_obj);
+            }
             // SAFETY: each entry is a `kalloc`'d CRTC this device owns.
             unsafe { cact_mm::kfree(p as *mut u8) };
         }
