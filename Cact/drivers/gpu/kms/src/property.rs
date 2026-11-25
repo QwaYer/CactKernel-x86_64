@@ -119,8 +119,12 @@ const fn drm_iowr(nr: u32, size: u32) -> u32 {
     (3u32 << 30) | (0x64u32 << 8) | nr | (size << 16)
 }
 const DRM_IOCTL_MODE_GETPROPERTY: u32 = drm_iowr(0xAA, 64);
-const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = drm_iowr(0xB9, 28);
-const DRM_IOCTL_MODE_OBJ_SETPROPERTY: u32 = drm_iowr(0xBA, 20);
+/* The sizes are `sizeof(struct …)`, i.e. the fields plus the tail padding to
+ * the struct's 8-byte alignment — 32 and 24, not the 28/20 the fields add up
+ * to.  `drm_copy_in` compares this encoded size against `size_of`, so the
+ * unpadded numbers made both ioctls fail with -EINVAL before they could run. */
+const DRM_IOCTL_MODE_OBJ_GETPROPERTIES: u32 = drm_iowr(0xB9, 32);
+const DRM_IOCTL_MODE_OBJ_SETPROPERTY: u32 = drm_iowr(0xBA, 24);
 const DRM_IOCTL_MODE_GETPROPBLOB: u32 = drm_iowr(0xAC, 16);
 const DRM_IOCTL_MODE_CREATEPROPBLOB: u32 = drm_iowr(0xBD, 16);
 const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = drm_iowr(0xBE, 4);
