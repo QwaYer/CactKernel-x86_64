@@ -22,7 +22,7 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import modsign  # noqa: E402
 
-LOCALBINREPO_MAGIC  = 0x53464B43
+LOCALBINREPO_MAGIC  = 0x5052424C
 LOCALBINREPO_CKSUM_OFF = 28
 
 

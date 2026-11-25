@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 
-#define LOCALBINREPO_MAGIC    0x53464B43u   /* 'C','K','F','S' little-endian */
+#define LOCALBINREPO_MAGIC    0x5052424Cu   /* 'L','B','R','P' little-endian */
 #define LOCALBINREPO_VERSION  1u
 
 /* Offset of the checksum field within localbinrepo_hdr_t (byte offset 28). */
@@ -51,7 +51,7 @@ typedef struct {
 CACT_STATIC_ASSERT(sizeof(localbinrepo_hdr_t)   == 32);
 CACT_STATIC_ASSERT(sizeof(localbinrepo_entry_t) == 24);
 CACT_STATIC_ASSERT(LOCALBINREPO_CKSUM_OFF      == 28);
-CACT_STATIC_ASSERT(LOCALBINREPO_MAGIC          == 0x53464B43u);
+CACT_STATIC_ASSERT(LOCALBINREPO_MAGIC          == 0x5052424Cu);
 CACT_STATIC_ASSERT(LOCALBINREPO_VERSION        == 1);
 
 #endif
