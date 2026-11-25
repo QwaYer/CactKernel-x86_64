@@ -11,6 +11,10 @@
 #include "shm.h"
 #include "swap.h"
 #include "pagecache.h"
+#include "page_fault.h"
+#include "oom.h"
+#include "irqstat.h"
+#include "thermal.h"
 #include "hypervisor.h"
 #include "klib.h"
 #include "task.h"
@@ -21,6 +25,7 @@
 #include "msi.h"
 #include "energy.h"
 #include "rtc.h"
+#include "tick.h"
 #include "vfsdev.h"
 #include "module/kmod.h"
 #include "fs_mod.h"
@@ -447,6 +452,8 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
 }
 
 extern unsigned int timer_ticks_get(void);
+extern uint64_t     sched_ctxt_count(void);
+extern uint32_t     sched_next_pid(void);
 
 // /proc/uname — binary struct cact_uname_t (relay for uname()).
 int _uname_read(uint64_t off, uint32_t size, char *buf) {
@@ -665,4 +672,261 @@ int _usb_read(uint64_t off, uint32_t size, char *buf) {
 // modunload [pci N] index and lsmod's driver fallback use section A.
 int _pci_read(uint64_t off, uint32_t size, char *buf) {
     return pci_proc_read(off, size, buf);
+}
+
+// /proc/vmstat generator — the kernel's virtual-memory event counters, one
+// "<name> <value>" per line.  Everything here is a cumulative counter or a
+// current frame count, composed from the PMM, slab, shmem, page-cache, swap,
+// page-fault and OOM getters (there is no central vm_stat array).  Names follow
+// Linux where the meaning matches; CactOS-only figures keep a `_kb` suffix so
+// they are not mistaken for Linux's page counts.
+int _vmstat_read(uint64_t off, uint32_t size, char *buf) {
+    static char tmp[1024];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    pf_stats_t   pf  = pf_get_stats();
+    swap_stats_t sw  = swap_get_stats();
+    pc_stats_t   pc  = pc_get_stats();
+    oom_stats_t  oom = oom_get_stats();
+
+    #define _V(name, val) do { \
+        if (p <= cap - 64) \
+            p += snprintf(tmp + p, (size_t)(cap - p), "%s %u\n", \
+                          (name), (unsigned)(val)); \
+    } while (0)
+
+    _V("nr_free_pages", pmm_free_frames());
+    _V("nr_slab_kb",    slab_total_bytes() / 1024u);
+    _V("nr_shmem_kb",   shm_total_bytes()  / 1024u);
+    _V("nr_cached_kb",  pc.cached_bytes    / 1024u);
+    _V("nr_dirty_kb",   pc.dirty_bytes     / 1024u);
+
+    _V("pgfault",       pf.total_faults);
+    _V("pgmajfault",    pf.swap_ins);
+    _V("pgdemand",      pf.demand_allocs);
+    _V("pgcow",         pf.cow_copies);
+    _V("pgstackgrow",   pf.stack_grows);
+    _V("pgzero",        pf.zero_pages);
+    _V("pgprotfault",   pf.protection_faults);
+    _V("pgbadaccess",   pf.invalid_access);
+
+    _V("pswpin",        sw.pages_swapped_in);
+    _V("pswpout",       sw.pages_swapped_out);
+    _V("swapfail",      sw.swap_failures);
+    _V("swap_used_kb",  sw.used_slots * (PAGE_SIZE / 1024u));
+
+    _V("oom_kill",      oom.oom_kills);
+
+    #undef _V
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/interrupts generator — one row per vector that has a label or a
+// non-zero count, with a per-CPU column and the vector's label.  The vector
+// number is decimal (CactOS keys its IDT by vector, not by a Linux IRQ): the
+// ISA IRQs are 0x21-0x2F, PCI INTx 0xF0-0xF7, the LAPIC timer 0xFE, the
+// C-state IPIs 0xF8/0xF9, the spurious vector 0xFF, and MSI/MSI-X vectors
+// 0x30-0xEF labelled with the PCI function that owns them.
+int _interrupts_read(uint64_t off, uint32_t size, char *buf) {
+    static char tmp[4096];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    int ncpu = energy_core_count_online();
+    if (ncpu < 1) ncpu = 1;
+    if (ncpu > 8) ncpu = 8;   /* keep one row inside the buffer */
+
+    #define _IRQ(...) do { \
+        if (p <= cap - 128) \
+            p += snprintf(tmp + p, (size_t)(cap - p), __VA_ARGS__); \
+    } while (0)
+
+    _IRQ("%-11s", "");
+    for (int c = 0; c < ncpu; c++) {
+        char h[12];
+        snprintf(h, sizeof(h), "CPU%d", c);
+        _IRQ("%11s", h);
+    }
+    _IRQ("\n");
+
+    for (unsigned int v = 0; v < IRQSTAT_VECTORS; v++) {
+        const char *nm = irqstat_name_of(v);
+        uint32_t tot = irqstat_vector_total(v);
+        if (tot == 0 && (!nm || !nm[0])) continue;
+
+        _IRQ("%3u: ", v);
+        for (int c = 0; c < ncpu; c++) _IRQ("%11u", (unsigned)irqstat_cpu(c, v));
+        if (nm && nm[0]) _IRQ("  %s", nm);
+        _IRQ("\n");
+    }
+
+    #undef _IRQ
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/stat generator — the classic Linux shape: per-CPU tick totals, then the
+// system counts.  Only user/system/idle are tracked (there is no nice/iowait/
+// softirq/steal accounting), so those columns are 0.
+int _stat_read(uint64_t off, uint32_t size, char *buf) {
+    static char tmp[4096];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    int ncpu = energy_core_count_online();
+    if (ncpu < 1) ncpu = 1;
+    if (ncpu > tick_cpu_count()) ncpu = tick_cpu_count();
+    if (ncpu > 16) ncpu = 16;
+
+    #define _ST(...) do { \
+        if (p <= cap - 128) \
+            p += snprintf(tmp + p, (size_t)(cap - p), __VA_ARGS__); \
+    } while (0)
+
+    /* user nice system idle iowait irq softirq steal guest guest_nice */
+    uint64_t au = 0, as = 0, ai = 0;
+    for (int c = 0; c < ncpu; c++) {
+        au += tick_cpu_user(c);
+        as += tick_cpu_system(c);
+        ai += tick_cpu_idle(c);
+    }
+    _ST("cpu  %llu 0 %llu %llu 0 0 0 0 0 0\n",
+        (unsigned long long)au, (unsigned long long)as, (unsigned long long)ai);
+    for (int c = 0; c < ncpu; c++)
+        _ST("cpu%d %llu 0 %llu %llu 0 0 0 0 0 0\n", c,
+            (unsigned long long)tick_cpu_user(c),
+            (unsigned long long)tick_cpu_system(c),
+            (unsigned long long)tick_cpu_idle(c));
+
+    _ST("intr %llu\n", (unsigned long long)irqstat_total());
+    _ST("ctxt %llu\n", (unsigned long long)sched_ctxt_count());
+
+    /* btime is the wall-clock instant of boot: now minus uptime, when the RTC
+     * handed us a date; 0 otherwise. */
+    uint64_t now = rtc_epoch_sec();
+    uint32_t up  = timer_ticks_get() / 100u;
+    _ST("btime %llu\n", (now > up) ? (unsigned long long)(now - up) : 0ull);
+
+    _ST("processes %u\n", (unsigned)(sched_next_pid() - 1u));
+
+    /* procs_running counts Ready/Running tasks, procs_blocked the parked ones;
+     * the per-CPU idle contexts (pid 0) are not counted, like Linux. */
+    uint32_t running = 0, blocked = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    for (struct task_struct *t = task_list_head; t; t = t->next) {
+        if (t->pid == 0) continue;
+        switch (t->state) {
+        case TASK_RUNNING:
+        case TASK_READY:   running++; break;
+        case TASK_SLEEPING:
+        case TASK_WAITING: blocked++; break;
+        default: break;
+        }
+    }
+    irq_spinlock_release(&scheduler_lock);
+    _ST("procs_running %u\n", (unsigned)running);
+    _ST("procs_blocked %u\n", (unsigned)blocked);
+
+    #undef _ST
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/sensors generator — a "<name> <temp_C>" table: one row per ACPI thermal
+// zone (its _TMP, read live) plus the Intel DTS for the reading CPU.  Machines
+// with neither see a single "no sensors available" line.
+int _sensors_read(uint64_t off, uint32_t size, char *buf) {
+    static char tmp[1024];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+    int found = 0;
+
+    #define _SN(...) do { \
+        if (p <= cap - 64) \
+            p += snprintf(tmp + p, (size_t)(cap - p), __VA_ARGS__); \
+    } while (0)
+
+    int nz = acpi_thermal_count();
+    for (int i = 0; i < nz; i++) {
+        int t;
+        if (acpi_thermal_read(i, &t) != 0) continue;
+        if (!found) _SN("%-24s %s\n", "name", "temp_C");
+        char nm[32];
+        snprintf(nm, sizeof(nm), "acpi_thermal_zone%d", i);
+        int c = t / 10, f = t % 10;
+        if (f < 0) f = -f;
+        _SN("%-24s %d.%d\n", nm, c, f);
+        found++;
+    }
+
+    int dt;
+    if (intel_dts_available()) {
+        int ncpu = energy_core_count_online();
+        if (ncpu < 1) ncpu = 1;
+        if (ncpu > 64) ncpu = 64;
+        for (int c = 0; c < ncpu; c++) {
+            if (intel_dts_cpu(c, &dt) != 0) continue;
+            if (!found) _SN("%-24s %s\n", "name", "temp_C");
+            char nm[32];
+            snprintf(nm, sizeof(nm), "cpu_dts%d", c);
+            _SN("%-24s %d\n", nm, dt);
+            found++;
+        }
+    }
+
+    if (!found)
+        _SN("no sensors available\n");
+
+    #undef _SN
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+// /proc/slabinfo generator — one row per slab cache: name, in-use objects,
+// total objects, object size and slab pages.  A snapshot of the Rust
+// allocator's cache list (slab_snapshot).
+int _slabinfo_read(uint64_t off, uint32_t size, char *buf) {
+    static char tmp[4096];
+    int p = 0;
+    int cap = (int)sizeof(tmp);
+
+    static slab_info_t infos[64];
+    uint32_t n = slab_snapshot(infos, 64);
+
+    #define _SI(...) do { \
+        if (p <= cap - 96) \
+            p += snprintf(tmp + p, (size_t)(cap - p), __VA_ARGS__); \
+    } while (0)
+
+    _SI("%-24s %9s %9s %9s %7s\n", "name", "active", "num_objs", "obj_size", "slabs");
+    for (uint32_t i = 0; i < n; i++)
+        _SI("%-24s %9u %9u %9u %7u\n", infos[i].name,
+            (unsigned)infos[i].active, (unsigned)infos[i].num_objs,
+            (unsigned)infos[i].obj_size, (unsigned)infos[i].slabs);
+
+    #undef _SI
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
 }

@@ -133,6 +133,11 @@ void procfs_init(void) {
     procfs_register_file("usb",     _usb_read);
     procfs_register_file("dmi",     _dmi_read);
     procfs_register_file("pci",     _pci_read);
+    procfs_register_file("vmstat",  _vmstat_read);
+    procfs_register_file("interrupts", _interrupts_read);
+    procfs_register_file("stat",    _stat_read);
+    procfs_register_file("sensors", _sensors_read);
+    procfs_register_file("slabinfo", _slabinfo_read);
 
     uint32_t nfiles = 0;
     for (proc_file_t *f = file_list; f; f = f->next) nfiles++;

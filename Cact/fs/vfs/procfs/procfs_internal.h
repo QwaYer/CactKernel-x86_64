@@ -45,5 +45,10 @@ int _modules_read(uint64_t off, uint32_t size, char *buf);
 int _usb_read(uint64_t off, uint32_t size, char *buf);
 int _dmi_read(uint64_t off, uint32_t size, char *buf);
 int _pci_read(uint64_t off, uint32_t size, char *buf);
+int _vmstat_read(uint64_t off, uint32_t size, char *buf);
+int _interrupts_read(uint64_t off, uint32_t size, char *buf);
+int _stat_read(uint64_t off, uint32_t size, char *buf);
+int _sensors_read(uint64_t off, uint32_t size, char *buf);
+int _slabinfo_read(uint64_t off, uint32_t size, char *buf);
 
 #endif
