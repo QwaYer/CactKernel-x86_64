@@ -207,7 +207,13 @@ int tarmod_get(const mb2_module_info_t *mod, const char *path,
 }
 
 int modsrc_get(const char *path, const uint8_t **out_data, uint32_t *out_size) {
+    /* The staged userland image first (a disk-booted system still carries its
+     * modules there), then the two driver archives — so a driver can be
+     * modload'ed by name whichever archive carries it, with no need to extract
+     * the .cctk to disk first. */
     if (initfs_modblob_get(path, out_data, out_size) == 0)
         return 0;
-    return tarmod_get(&mb2_drvrepo_module, path, out_data, out_size);
+    if (tarmod_get(&mb2_drvrepo_module, path, out_data, out_size) == 0)
+        return 0;
+    return tarmod_get(&mb2_netdrvrepo_module, path, out_data, out_size);
 }
