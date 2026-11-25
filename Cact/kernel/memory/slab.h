@@ -59,4 +59,16 @@ void*         slab_kmalloc(size_t size);
 void          slab_kfree(void* ptr);
 uint32_t      slab_total_bytes(void);
 
+/* Per-cache summary for /proc/slabinfo (Rust slab_snapshot).  `active` is the
+ * in-use object count, `num_objs` active+free, `slabs` the page count. */
+typedef struct {
+    char     name[SLAB_NAME_LEN];
+    uint32_t obj_size;
+    uint32_t active;
+    uint32_t num_objs;
+    uint32_t slabs;
+} slab_info_t;
+
+uint32_t      slab_snapshot(slab_info_t* out, uint32_t max);
+
 #endif

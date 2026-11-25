@@ -618,6 +618,76 @@ pub extern "C" fn slab_total_bytes() -> u32 {
     bytes
 }
 
+/// One cache's summary, filled by [`slab_snapshot`] for /proc/slabinfo.
+#[repr(C)]
+pub struct SlabInfoC {
+    pub name: [u8; SLAB_NAME_LEN],
+    pub obj_size: u32,
+    pub active: u32,
+    pub num_objs: u32,
+    pub slabs: u32,
+}
+
+/// Snapshot up to `max` slab caches into `out`; returns the number written.
+/// `active` is the in-use object count (summed over the partial and full
+/// lists), `num_objs` the active+free object count, `slabs` the page count.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn slab_snapshot(out: *mut SlabInfoC, max: u32) -> u32 {
+    if out.is_null() || max == 0 {
+        return 0;
+    }
+    let mut n: u32 = 0;
+    lock_acquire(G_CACHE_LOCK.as_ptr());
+    // SAFETY: head read while holding `G_CACHE_LOCK`, which serialises the list.
+    let mut c = unsafe { *KStatic::get_mut(G_CACHE_LIST.as_ptr()) };
+    while !c.is_null() && n < max {
+        // SAFETY: `c` is a live cache from the locked list.
+        let cache = unsafe { &*c };
+        let mut active: u32 = 0;
+        let mut free: u32 = 0;
+
+        let mut s = cache.partial;
+        while !s.is_null() {
+            // SAFETY: `s` is a live slab node of the partial list.
+            let slab = unsafe { &*s };
+            active = active.saturating_add(slab.inuse);
+            free = free.saturating_add(slab.capacity.saturating_sub(slab.inuse));
+            s = slab.next;
+        }
+        s = cache.full;
+        while !s.is_null() {
+            // SAFETY: `s` is a live slab node of the full list (capacity == inuse).
+            active = active.saturating_add(unsafe { (*s).capacity });
+            s = unsafe { (*s).next };
+        }
+        s = cache.free;
+        while !s.is_null() {
+            // SAFETY: `s` is a live slab node of the free list, all objects free.
+            free = free.saturating_add(cache.objs_per_slab);
+            s = unsafe { (*s).next };
+        }
+
+        // SAFETY: `out` holds room for `max` entries and `n < max`.
+        let dst = unsafe { &mut *out.add(n as usize) };
+        dst.name = [0u8; SLAB_NAME_LEN];
+        let mut i = 0;
+        while i < SLAB_NAME_LEN - 1 && cache.name[i] != 0 {
+            dst.name[i] = cache.name[i];
+            i += 1;
+        }
+        dst.obj_size = cache.obj_size;
+        dst.active = active;
+        dst.num_objs = active.saturating_add(free);
+        dst.slabs = cache.total_slabs;
+
+        n += 1;
+        // SAFETY: follow `next` in the locked cache list.
+        c = unsafe { (*c).next };
+    }
+    lock_release(G_CACHE_LOCK.as_ptr());
+    n
+}
+
 #[path = "slab_generic.rs"]
 mod slab_generic;
 pub use slab_generic::*;
