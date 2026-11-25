@@ -267,6 +267,22 @@ else
   rc=1
 fi
 
+# The driver archives: netdrvrepo (network .cctk) and drvrepo (the rest) are the
+# signed module sets the kernel serves in place as /dev/netdrvrepo and
+# /dev/drvrepo.  The check ISO is a full build, so both must be present — a
+# medium built without a driver repo carries no such module and the .cctk set
+# rides nowhere, which is a hard failure like firmrepo above.
+echo "cact-check: --- driver module archives ---"
+for mod in netdrvrepo drvrepo; do
+  if grep -qF "devfs: $mod module " "$log"; then
+    grep -Fm1 "devfs: $mod module " "$log" | sed 's/^/cact-check:   ok    /'
+  else
+    echo "cact-check:   MISS  no $mod module in the boot log" >&2
+    echo "cact-check:         (this ISO carries no $mod.tar.zst — /dev/$mod reads empty)" >&2
+    rc=1
+  fi
+done
+
 echo "cact-check: --- failure markers ---"
 if grep -nE "$fail_re" "$log"; then
   rc=1
