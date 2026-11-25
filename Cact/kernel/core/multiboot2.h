@@ -166,7 +166,7 @@ struct mb2_tag_module {
 
 // Captured module info passed back from multiboot2_parse(); the first module
 // whose cmdline starts with "localbinrepo" is recorded, and the first starting with
-// "firmrepo", "netdrvrepo" or "drvrepo" is recorded separately.
+// "firmrepo", "netdrvrepo", "drvrepo" or "grubrepo" is recorded separately.
 #define MB2_MODULE_NAME_MAX 32
 typedef struct {
     uint32_t mod_start;     // 0 when no matching module was found
@@ -194,6 +194,11 @@ extern mb2_module_info_t mb2_netdrvrepo_module;
 // driver archives together carry the whole out-of-tree set, so neither has to
 // fit the localbinrepo staging buffer and the kernel itself loads neither.
 extern mb2_module_info_t mb2_drvrepo_module;
+
+// grubrepo.tar.zst captured during multiboot2_parse(): the GRUB stage payload
+// the installer deploys, served in place as /dev/grubrepo.  Same in-place
+// contract as drvrepo; cact-install streams grub/ out of it.
+extern mb2_module_info_t mb2_grubrepo_module;
 
 // Highest end address over every MB2 module tag (0 when there were none).  The
 // RAM below it holds the modules loaded by GRUB — available RAM per the memory

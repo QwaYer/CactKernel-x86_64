@@ -121,14 +121,14 @@ devfs_driver_t drv_fb = {
     .read=_fb_read, .write=_fb_write, .ioctl=_fb_ioctl
 };
 
-// /dev/firmrepo, /dev/localbinrepo, /dev/netdrvrepo, /dev/drvrepo — the
-// Multiboot2 modules GRUB hands over: the compressed firmware archive, the
-// localbinrepo image and the two driver archives (network and the rest).  All
-// are far too big to stage a second time, so they stay in place in physical
-// memory and are served read-only.  The module's physical range lies inside the
-// boot reservation, whose low identity alias a process PD can shadow (the ELF
-// image is loaded in that same range), so the copy goes through the direct map,
-// whose PML4 entry every address space shares.
+// /dev/firmrepo, /dev/localbinrepo, /dev/netdrvrepo, /dev/drvrepo, /dev/grubrepo
+// — the Multiboot2 modules GRUB hands over: the compressed firmware archive,
+// the localbinrepo image, the two driver archives (network and the rest) and
+// the installer's GRUB payload.  All are far too big to stage a second time, so
+// they stay in place in physical memory and are served read-only.  The module's
+// physical range lies inside the boot reservation, whose low identity alias a
+// process PD can shadow (the ELF image is loaded in that same range), so the
+// copy goes through the direct map, whose PML4 entry every address space shares.
 static int _module_read(const mb2_module_info_t *mod, uint64_t off,
                         uint32_t size, char *buf) {
     uint32_t total = mod->mod_size;
@@ -158,10 +158,16 @@ static int _drvrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     return _module_read(&mb2_drvrepo_module, off, size, buf);
 }
 
+static int _grubrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
+    (void)p;
+    return _module_read(&mb2_grubrepo_module, off, size, buf);
+}
+
 devfs_driver_t drv_firmrepo = { .read=_firmrepo_read };
 devfs_driver_t drv_localbinrepo = { .read=_localbinrepo_read };
 devfs_driver_t drv_netdrvrepo = { .read=_netdrvrepo_read };
 devfs_driver_t drv_drvrepo = { .read=_drvrepo_read };
+devfs_driver_t drv_grubrepo = { .read=_grubrepo_read };
 
 // Register this file's devices.  Each driver group registers the nodes it
 // owns, so devfs_init() stays a generic bootstrap and carries no device list.
@@ -212,6 +218,14 @@ void devfs_devices_init(void) {
     else
         pr_warn("%s: no drvrepo module — /dev/drvrepo reads empty\n", "devfs");
 
+    // /dev/grubrepo carries the installer's GRUB payload, same optional contract.
+    if (mb2_grubrepo_module.mod_start)
+        pr_info("%s: grubrepo module %s, %u KiB (served as /dev/grubrepo)\n",
+                "devfs", mb2_grubrepo_module.name,
+                (unsigned)(mb2_grubrepo_module.mod_size / 1024));
+    else
+        pr_warn("%s: no grubrepo module — /dev/grubrepo reads empty\n", "devfs");
+
     devfs_entry_t *lr =
         register_chrdev("firmrepo", DEVFS_F_CHAR, &drv_firmrepo, 0);
     // Publish the module size on the node: with no module it stays 0, which is
@@ -241,4 +255,11 @@ void devfs_devices_init(void) {
         register_chrdev("drvrepo", DEVFS_F_CHAR, &drv_drvrepo, 0);
     if (dr)
         dr->node.size = mb2_drvrepo_module.mod_size;
+
+    // /dev/grubrepo serves the installer's GRUB payload archive in place, for
+    // cact-install to stream grub/ out of.
+    devfs_entry_t *gr =
+        register_chrdev("grubrepo", DEVFS_F_CHAR, &drv_grubrepo, 0);
+    if (gr)
+        gr->node.size = mb2_grubrepo_module.mod_size;
 }
