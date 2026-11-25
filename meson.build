@@ -363,9 +363,9 @@ run_target('iso-full',
             build_root / 'isodir-full', build_root / 'cact-full.iso', cctkfs_img,
             local_repo / 'localrepo.tar.zst'])
 
-# P2.3: one command that boots an image headless, greps the kernel self-test
-# markers off COM1 and exits non-zero on any failure.  The script resolves the
-# ISO itself (CactBridge build first, then this build tree), so it does not
+# P2.3: one command that boots an image headless, greps the boot-log markers off
+# COM1 and exits non-zero on any failure.  The script resolves the ISO itself
+# (CactBridge build first, then this build tree), so it does not
 # depend on a target here; build/stage the image before running it.
 run_target('check',
   command: [bash, src_root / 'tools/cact_check.sh'])

@@ -7,7 +7,7 @@
 #
 # Boots a CactOS ISO in QEMU with no display, captures COM1 to a file, waits
 # until the guest reaches userspace (or a deadline passes), then greps the boot
-# log for the kernel self-test markers, the localrepo staging and for failure
+# log for the boot markers, the localrepo staging and for failure
 # markers.  Exits non-zero if any required marker is missing or any failure
 # marker is present, so the release can be gated with a single command:
 #
@@ -17,21 +17,21 @@
 #   1. $1 on the command line
 #   2. $CACT_CHECK_ISO
 #   3. ../CactBridge-x86/build/cact-check.iso     (preferred: cactcheck as init,
-#                                                   runs the userspace self-tests)
-#   4. ../CactBridge-x86/build/cact-non-gui.iso   (kernel self-tests only)
+#                                                   runs the userspace tests)
+#   4. ../CactBridge-x86/build/cact-non-gui.iso   (kernel only, no test runner)
 #   5. build-meson/cact-full.iso                  (kernel + LocalRepo cctkfs)
 #
 # Environment overrides:
 #   CACT_CHECK_TIMEOUT   seconds before the boot is considered hung (default 120)
 #   CACT_CHECK_SETTLE    extra seconds to keep running after userspace is up,
-#                        so userspace self-tests have time to finish (default 10)
+#                        so the userspace tests have time to finish (default 10)
 #   CACT_CHECK_MEM       guest RAM (default 2G)
 #   CACT_CHECK_SMP       guest logical CPUs (default 2)
 #   CACT_CHECK_LOG       serial log path (default: a temp file, kept on failure)
 #   CACT_CHECK_KEEP_LOG  1 = keep the log even on success
 #
-# The kernel prints its self-test result on COM1; this script is the single
-# source of truth for which markers mean "the kernel is healthy".
+# This script is the single source of truth for which markers in the boot log
+# mean "the kernel is healthy".
 # ==============================================================================
 
 set -euo pipefail
@@ -80,7 +80,7 @@ if [[ -w /dev/kvm ]]; then
   accel_args=(-accel kvm -cpu host)
 fi
 
-# The disk is optional (the kernel self-tests and the localrepo pipeline do not
+# The disk is optional (the boot and the localrepo pipeline do not
 # need it), and attaching it fails outright while a dev guest holds it: QEMU
 # refuses to open an image another instance has locked, which used to surface as
 # an empty log and a screenful of MISSes.  So attach it only when the lock is
@@ -163,7 +163,7 @@ trap - EXIT
 # ------------------------------------------------------------------------------
 # Analyse the captured log.
 # ------------------------------------------------------------------------------
-fail_re='PANIC|SELF-TEST FAILED|check\(s\) FAILED'
+fail_re='PANIC'
 fail_re+='|CACT-CHECK: [A-Za-z0-9_]+ FAIL|CACT-CHECK: DONE.*fail=[1-9]'
 # localrepo pipeline: a boot medium without the module, an empty /dev/localrepo,
 # a failed archive source, or the removed tmpfs-staging regression.
@@ -171,9 +171,9 @@ fail_re+='|devfs: no localrepo module|localrepo source is empty'
 fail_re+='|localrepo copy failed|no localrepo archive source found'
 fail_re+='|cgoct: localrepo staged'
 
-# Markers that must be present for the check to pass.  Empty: the kernel has no
-# boot self-tests any more, so the boot is judged on reaching userspace, on the
-# ksym vermagic matching the signer, and on the localrepo/cctkfs pipeline below.
+# Markers that must be present for the check to pass.  Empty: the boot is judged
+# on reaching userspace, on the ksym vermagic matching the signer, and on the
+# localrepo/cctkfs pipeline below.
 required=(
 )
 

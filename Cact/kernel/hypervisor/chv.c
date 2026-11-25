@@ -5,11 +5,9 @@
 //
 // The hypervisor model lives in the Rust crate `cact_hv` (linked into
 // kernel.bin) and in the C/asm primitives under this directory; this file is
-// only the userspace door to it.  It used to be reached by a boot-time
-// self-test that ran a throwaway guest before the VFS existed and — worse —
-// left the CPU in VMX root for the rest of the kernel's life (CR4.VMXE set, a
-// live VMCS, a leaked VMXON region).  The guest is now run on demand, when
-// userspace asks, and host mode is left again before the ioctl returns.
+// only the userspace door to it.  The guest is run on demand, when userspace
+// asks, and host mode is left again before the ioctl returns — returning to
+// ring-3 with VMX root still entered wedges the kernel.
 //
 //   /dev/chv  ioctl  -> capabilities, run the model's guest
 //   CACT_CHVCTL_* = 0x4100 (Cact/kernel/core/syscall/ioctl_abi.h)

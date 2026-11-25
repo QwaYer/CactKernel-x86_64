@@ -46,7 +46,7 @@ actually has, not a promise. What already works is described in
 - **GPU / KMS**: the DRM uapi and a **KMS core are in-tree** (Rust
   `rust_drm` + `kms`: GEM, dumb buffers, mmap, atomic modeset, planes, cursors,
   syncobj, PRIME); a **virtio-gpu** driver exists as a sibling repo, and the
-  VT/PTY layer has no automated self-test. There is **no Intel GPU driver
+  VT/PTY layer has no automated test coverage. There is **no Intel GPU driver
   in 2.0.0** — the i915 port is heavily 64-bit-bound, so it is deferred to
   3.0.0 (see [GPU / Intel (i915)](#gpu--intel-i915) for the kernel gaps it
   exposes).
