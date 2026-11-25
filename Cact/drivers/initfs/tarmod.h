@@ -21,12 +21,13 @@
 int tarmod_get(const mb2_module_info_t *mod, const char *path,
                const uint8_t **out_data, uint32_t *out_size);
 
-/* Resolve a loadable module image the way every loader wants it: the staged
- * localbinrepo image first, then the drvrepo and netdrvrepo archives (each
- * streamed on demand).  This is the single front door for pci_load_module /
- * fs_mod / usb_mod, so `modload <name>.cctk` works whichever archive carries
- * the module; firmware and the console font deliberately do NOT go through it
- * (they only ever live in localbinrepo). */
+/* Resolve a loadable module image the way every loader (and every routing
+ * probe) wants it: the staged localbinrepo image first, then the drvrepo and
+ * netdrvrepo archives (each streamed on demand), then the VFS.  This is the
+ * single front door for pci_load_module / fs_mod / usb_mod, so detect() and
+ * load() always agree and `modload <name>.cctk` works wherever the module
+ * lives; firmware and the console font deliberately do NOT go through it (they
+ * only ever live in localbinrepo). */
 int modsrc_get(const char *path, const uint8_t **out_data, uint32_t *out_size);
 
 #endif /* TARMOD_H */

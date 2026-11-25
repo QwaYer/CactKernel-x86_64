@@ -23,6 +23,7 @@
 #include "initfs_modblob.h"
 #include "cact_zstd.h"
 #include "memory.h"
+#include "vfs.h"
 
 /* Largest driver module is well under this; the buffer dominates tarmod's bss. */
 #define TARMOD_MAX_MEMBER  (128u * 1024u)
@@ -206,14 +207,62 @@ int tarmod_get(const mb2_module_info_t *mod, const char *path,
     return rc;
 }
 
+/* VFS-sourced module staging: a .cctk that lives as a file (an extracted
+ * module, or one the image still carries) is read here and stays valid until
+ * the next modsrc_get(), the same contract as the archive scratch.  The buffer
+ * grows to the largest module and is kept for the kernel's lifetime. */
+static uint8_t *modsrc_vfs_buf;
+static uint32_t modsrc_vfs_cap;
+
+static int modsrc_vfs_get(const char *path, const uint8_t **out_data,
+                          uint32_t *out_size) {
+    struct vfs_node *node;
+    uint32_t fsz;
+    int br;
+
+    if (!path)
+        return -1;
+    node = vfs_resolve_path(path);
+    if (!node)
+        return -1;
+
+    fsz = node->size;
+    if (!fsz) {
+        vfs_node_unref(node);
+        return -1;
+    }
+    if (fsz > modsrc_vfs_cap) {
+        uint8_t *nb = (uint8_t *)kmalloc(fsz);
+        if (!nb) {
+            vfs_node_unref(node);
+            return -1;
+        }
+        if (modsrc_vfs_buf)
+            kfree(modsrc_vfs_buf);
+        modsrc_vfs_buf = nb;
+        modsrc_vfs_cap = fsz;
+    }
+
+    br = read_vfs(node, 0, fsz, (char *)modsrc_vfs_buf);
+    vfs_node_unref(node);
+    if (br <= 0)
+        return -1;
+
+    *out_data = modsrc_vfs_buf;
+    *out_size = (uint32_t)br;
+    return 0;
+}
+
 int modsrc_get(const char *path, const uint8_t **out_data, uint32_t *out_size) {
     /* The staged userland image first (a disk-booted system still carries its
-     * modules there), then the two driver archives — so a driver can be
-     * modload'ed by name whichever archive carries it, with no need to extract
-     * the .cctk to disk first. */
+     * modules there), then the two driver archives, then the VFS — so
+     * modload can name a module wherever it lives, and a *detect* probe sees
+     * exactly what the loader would load (they share this one door). */
     if (initfs_modblob_get(path, out_data, out_size) == 0)
         return 0;
     if (tarmod_get(&mb2_drvrepo_module, path, out_data, out_size) == 0)
         return 0;
-    return tarmod_get(&mb2_netdrvrepo_module, path, out_data, out_size);
+    if (tarmod_get(&mb2_netdrvrepo_module, path, out_data, out_size) == 0)
+        return 0;
+    return modsrc_vfs_get(path, out_data, out_size);
 }
