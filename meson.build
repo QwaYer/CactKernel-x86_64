@@ -358,10 +358,15 @@ cact_iso = custom_target('cact-iso',
 # cact-full.iso.  The firmrepo archive (same LocalRepo tree, packed by its
 # `firmrepo` target) rides on the ISO as a second module — without it the
 # kernel boots with an empty /dev/firmrepo and firmextr has nothing to read.
+# The netdrvrepo archive (Network-for-Cact-x86_64's `netdrvrepo` target) is the
+# third module, served as /dev/netdrvrepo; it is optional, and its placeholder
+# line is dropped when the archive is absent.
+netdrvrepo_tar = src_root / '..' / 'Network-for-Cact-x86_64' / 'netdrvrepo.tar.zst'
+
 run_target('iso-full',
   command: [bash, iso_script, kernel_bin, src_root / 'grub.cfg',
             build_root / 'isodir-full', build_root / 'cact-full.iso', localbinrepo_img,
-            local_repo / 'firmrepo.tar.zst'])
+            local_repo / 'firmrepo.tar.zst', netdrvrepo_tar])
 
 # P2.3: one command that boots an image headless, greps the boot-log markers off
 # COM1 and exits non-zero on any failure.  The script resolves the ISO itself

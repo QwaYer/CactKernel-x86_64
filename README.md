@@ -53,6 +53,8 @@ CactKernel is one piece of a larger workspace. Typical pieces:
 
 The **`firmrepo`** module is a **second** archive (`firmrepo.tar.zst`), too big to stage: the kernel keeps it in place on the boot medium and serves it through **`/dev/firmrepo`** (compressed), so `firmextr` and package tooling can stream it without copying it into RAM.
 
+The **`netdrvrepo`** module is a **third** archive (`netdrvrepo.tar.zst`, `Network-for-Cact-x86_64`), handled exactly like `firmrepo`: it is served in place as **`/dev/netdrvrepo`**, and `firmextr -f /dev/netdrvrepo usr/lib/modules/<mod>.cctk` streams one signed network driver module out of it for `modload` — so the network `.cctk` set rides outside the `localbinrepo` staging buffer. It is optional; a medium built without it boots with the node reading empty.
+
 From the workspace root (QEMU-oriented full rebuild):
 
 ```sh
@@ -110,9 +112,11 @@ ninja -C build-meson iso-full   # signs localbinrepo.img via tools/cact_sign_loc
 ```
 
 `iso-full` is a run_target: it always regenerates, and fails loudly when
-`localbinrepo.img` is missing. It rides **two** GRUB modules on the ISO — the **`localbinrepo`**
-archive and the compressed **`firmrepo.tar.zst`** archive (served in place as
-`/dev/firmrepo`, so `firmextr` and package tooling have something to read).
+`localbinrepo.img` is missing. It rides **three** GRUB modules on the ISO — the **`localbinrepo`**
+archive, the compressed **`firmrepo.tar.zst`** archive (served in place as
+`/dev/firmrepo`, so `firmextr` and package tooling have something to read) and the
+optional **`netdrvrepo.tar.zst`** archive (`/dev/netdrvrepo`, whose module line is
+dropped when the archive is absent).
 
 **QEMU:** [`./run_qemu.sh`](./run_qemu.sh) picks up **`build-meson/cact-full.iso`** (then **`build-meson/cact.iso`**); override with **`CACT_ISO`**.
 
