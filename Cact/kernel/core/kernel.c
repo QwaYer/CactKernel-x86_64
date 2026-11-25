@@ -226,7 +226,7 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
 
     // Reserve the RAM GRUB loaded its module images into before the memory
     // managers come up: the memory map calls it "available", but the modules
-    // live there (the localrepo archive is served to userspace in place), so
+    // live there (the firmrepo archive is served to userspace in place), so
     // both the frame allocator and the heap window must start above it.
     {
         uint32_t boot_reserved = pmm_reserve_boot_images(mb2_modules_end);

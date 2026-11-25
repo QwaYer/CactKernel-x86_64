@@ -87,8 +87,8 @@ static TOTAL_USABLE_FRAMES: KStatic<u32> = KStatic::new(0);
 /// (`RESERVED_END`) and is raised by `pmm_reserve_boot_images()` past the
 /// Multiboot2 module images, then by `pmm_alloc_tables()` past the PMM's own
 /// arrays: GRUB loads the modules into ordinary available RAM right after the
-/// kernel, and they are handed to userspace *in place* (the localrepo archive
-/// via /dev/localrepo), so `kalloc` and `kmalloc` must both stay off that RAM.
+/// kernel, and they are handed to userspace *in place* (the firmrepo archive
+/// via /dev/firmrepo), so `kalloc` and `kmalloc` must both stay off that RAM.
 /// Written once during single-threaded boot, read-only afterwards.
 static BOOT_RESERVED_END: KStatic<u32> = KStatic::new(RESERVED_END);
 

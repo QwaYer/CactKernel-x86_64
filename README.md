@@ -51,7 +51,7 @@ CactKernel is one piece of a larger workspace. Typical pieces:
 
 **Why `cctkfs` exists:** the kernel copies the Multiboot2 "cctkfs" module into a large **`.bss`** staging buffer **before paging** (`initfs_modblob_load`). At runtime, **binfs / sbinfs / libfs / usrfs** overlay files from that archive on top of ext4 (e.g. **`/usr/bin/init`**, **`/usr/lib/clibc.so`**, optional **`/usr/lib/modules/*.cctk`** drivers), and the bare **`/bin`, `/sbin`, `/lib`** are symlinks into **`/usr`**. PCI dynamic loading reads ET_REL blobs from the same archive. All modules are verified with an **ECDSA P-256** signature against the kernel's embedded public key (plus a ksym-ABI `vermagic`) before loading.
 
-The **`localrepo`** module is a **second** archive (`localrepo.tar.zst`), too big to stage: the kernel keeps it in place on the boot medium and serves it through **`/dev/localrepo`** (compressed), so `firmextr` and package tooling can stream it without copying it into RAM.
+The **`firmrepo`** module is a **second** archive (`firmrepo.tar.zst`), too big to stage: the kernel keeps it in place on the boot medium and serves it through **`/dev/firmrepo`** (compressed), so `firmextr` and package tooling can stream it without copying it into RAM.
 
 From the workspace root (QEMU-oriented full rebuild):
 
@@ -92,8 +92,8 @@ Every source directory owns a `meson.build` and produces its own static library;
 ```sh
 meson setup build-meson --cross-file cross/x86_64-cact-clang.ini
 ninja -C build-meson             # kernel.bin + cact.iso (kernel-only GRUB)
-ninja -C build-meson iso-full    # cact-full.iso with cctkfs.img + localrepo.tar.zst
-ninja -C build-meson check       # headless QEMU boot check (COM1: userspace, vermagic, localrepo)
+ninja -C build-meson iso-full    # cact-full.iso with cctkfs.img + firmrepo.tar.zst
+ninja -C build-meson check       # headless QEMU boot check (COM1: userspace, vermagic, firmrepo)
 ninja -C build-meson clean
 ninja -C build-meson rust-clean  # cargo clean in the four Rust crates
 ninja -C build-meson acpica-clean
@@ -111,8 +111,8 @@ ninja -C build-meson iso-full   # signs cctkfs.img via tools/cact_sign_cctkfs.py
 
 `iso-full` is a run_target: it always regenerates, and fails loudly when
 `cctkfs.img` is missing. It rides **two** GRUB modules on the ISO — the **`cctkfs`**
-archive and the compressed **`localrepo.tar.zst`** archive (served in place as
-`/dev/localrepo`, so `firmextr` and package tooling have something to read).
+archive and the compressed **`firmrepo.tar.zst`** archive (served in place as
+`/dev/firmrepo`, so `firmextr` and package tooling have something to read).
 
 **QEMU:** [`./run_qemu.sh`](./run_qemu.sh) picks up **`build-meson/cact-full.iso`** (then **`build-meson/cact.iso`**); override with **`CACT_ISO`**.
 
@@ -194,7 +194,7 @@ CactKernel-x86_64/
 ├── meson.build
 ├── VERSION
 ├── linker.ld
-├── grub.cfg              # multiboot2 kernel + cctkfs + localrepo modules
+├── grub.cfg              # multiboot2 kernel + cctkfs + firmrepo modules
 ├── grub.cfg.kernelonly   # kernel-only multiboot (the cact.iso default, -Diso_grub_cfg)
 ├── grub.cfg.ramroot      # RAM-first userland variant
 ├── build_disk.sh         # raw ext4 image for QEMU AHCI/NVMe
@@ -212,7 +212,7 @@ Boot is split into **three phases**: early `init()` (identity map, no user IRQs 
 
 | Step | What happens |
 |------|----------------|
-| 1 | **Multiboot2** parse — memory map, framebuffer tag, modules (the `localrepo` archive is recorded separately and served in place) |
+| 1 | **Multiboot2** parse — memory map, framebuffer tag, modules (the `firmrepo` archive is recorded separately and served in place) |
 | 2 | **cctkfs staging** — `initfs_modblob_load()` copies the GRUB "cctkfs" module from its physical address into kernel **`.bss`** before paging is enabled |
 | 3 | **Framebuffer** — `fb_init()`; if no FB tag / zero size → halt (blind) |
 | 4 | **Console font** — `font_load_boot()` parses the PSF2 file staged in cctkfs; a missing/broken font is a **panic** (the kernel cannot draw a glyph) |

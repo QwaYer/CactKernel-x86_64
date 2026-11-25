@@ -121,8 +121,8 @@ devfs_driver_t drv_fb = {
     .read=_fb_read, .write=_fb_write, .ioctl=_fb_ioctl
 };
 
-// /dev/localrepo, /dev/cctkfs — the two Multiboot2 modules GRUB hands over:
-// the compressed localrepo archive and the cctkfs image.  Both are far too big
+// /dev/firmrepo, /dev/cctkfs — the two Multiboot2 modules GRUB hands over:
+// the compressed firmrepo archive and the cctkfs image.  Both are far too big
 // to stage a second time, so they stay in place in physical memory and are
 // served read-only.  The module's physical range lies inside the boot
 // reservation, whose low identity alias a process PD can shadow (the ELF image
@@ -137,9 +137,9 @@ static int _module_read(const mb2_module_info_t *mod, uint64_t off,
     return (int)size;
 }
 
-static int _localrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
+static int _firmrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
-    return _module_read(&mb2_localrepo_module, off, size, buf);
+    return _module_read(&mb2_firmrepo_module, off, size, buf);
 }
 
 static int _cctkfs_read(void *p, uint64_t off, uint32_t size, char *buf) {
@@ -147,7 +147,7 @@ static int _cctkfs_read(void *p, uint64_t off, uint32_t size, char *buf) {
     return _module_read(&mb2_cctkfs_module, off, size, buf);
 }
 
-devfs_driver_t drv_localrepo = { .read=_localrepo_read };
+devfs_driver_t drv_firmrepo = { .read=_firmrepo_read };
 devfs_driver_t drv_cctkfs    = { .read=_cctkfs_read };
 
 // Register this file's devices.  Each driver group registers the nodes it
@@ -164,16 +164,16 @@ void devfs_devices_init(void) {
     register_chrdev("input/mouse",    DEVFS_F_CHAR, &drv_mouse,    0);
     register_chrdev("fb0",      DEVFS_F_CHAR, &drv_fb,       0);
 
-    // /dev/localrepo serves whatever GRUB handed over; report its size so a
-    // boot medium without the `module2 … localrepo` line — or with a module
+    // /dev/firmrepo serves whatever GRUB handed over; report its size so a
+    // boot medium without the `module2 … firmrepo` line — or with a module
     // that turned out to be empty — is visible in the log instead of surfacing
     // as an empty archive at firmextr's first read.
-    if (mb2_localrepo_module.mod_start)
-        pr_info("%s: localrepo module %s, %u KiB (served as /dev/localrepo)\n",
-                "devfs", mb2_localrepo_module.name,
-                (unsigned)(mb2_localrepo_module.mod_size / 1024));
+    if (mb2_firmrepo_module.mod_start)
+        pr_info("%s: firmrepo module %s, %u KiB (served as /dev/firmrepo)\n",
+                "devfs", mb2_firmrepo_module.name,
+                (unsigned)(mb2_firmrepo_module.mod_size / 1024));
     else
-        pr_warn("%s: no localrepo module — /dev/localrepo reads empty\n", "devfs");
+        pr_warn("%s: no firmrepo module — /dev/firmrepo reads empty\n", "devfs");
 
     if (mb2_cctkfs_module.mod_start)
         pr_info("%s: cctkfs module %s, %u KiB (served as /dev/cctkfs)\n",
@@ -181,16 +181,16 @@ void devfs_devices_init(void) {
                 (unsigned)(mb2_cctkfs_module.mod_size / 1024));
 
     devfs_entry_t *lr =
-        register_chrdev("localrepo", DEVFS_F_CHAR, &drv_localrepo, 0);
+        register_chrdev("firmrepo", DEVFS_F_CHAR, &drv_firmrepo, 0);
     // Publish the module size on the node: with no module it stays 0, which is
     // how cgoct/cact-install tell "this device carries no archive" (they skip
     // zero-size sources) instead of copying an empty file out of it.
     if (lr)
-        lr->node.size = mb2_localrepo_module.mod_size;
+        lr->node.size = mb2_firmrepo_module.mod_size;
 
     // /dev/cctkfs serves the boot cctkfs image in place, so the installer can
     // put the image being booted — not a stale copy bundled inside it — onto a
-    // target disk.  Same "size 0 means no module" contract as /dev/localrepo.
+    // target disk.  Same "size 0 means no module" contract as /dev/firmrepo.
     devfs_entry_t *cf =
         register_chrdev("cctkfs", DEVFS_F_CHAR, &drv_cctkfs, 0);
     if (cf)

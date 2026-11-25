@@ -7,7 +7,7 @@
 #
 # Boots a CactOS ISO in QEMU with no display, captures COM1 to a file, waits
 # until the guest reaches userspace (or a deadline passes), then greps the boot
-# log for the boot markers, the localrepo staging and for failure
+# log for the boot markers, the firmrepo staging and for failure
 # markers.  Exits non-zero if any required marker is missing or any failure
 # marker is present, so the release can be gated with a single command:
 #
@@ -80,7 +80,7 @@ if [[ -w /dev/kvm ]]; then
   accel_args=(-accel kvm -cpu host)
 fi
 
-# The disk is optional (the boot and the localrepo pipeline do not
+# The disk is optional (the boot and the firmrepo pipeline do not
 # need it), and attaching it fails outright while a dev guest holds it: QEMU
 # refuses to open an image another instance has locked, which used to surface as
 # an empty log and a screenful of MISSes.  So attach it only when the lock is
@@ -165,15 +165,15 @@ trap - EXIT
 # ------------------------------------------------------------------------------
 fail_re='PANIC'
 fail_re+='|CACT-CHECK: [A-Za-z0-9_]+ FAIL|CACT-CHECK: DONE.*fail=[1-9]'
-# localrepo pipeline: a boot medium without the module, an empty /dev/localrepo,
+# firmrepo pipeline: a boot medium without the module, an empty /dev/firmrepo,
 # a failed archive source, or the removed tmpfs-staging regression.
-fail_re+='|devfs: no localrepo module|localrepo source is empty'
-fail_re+='|localrepo copy failed|no localrepo archive source found'
-fail_re+='|cgoct: localrepo staged'
+fail_re+='|devfs: no firmrepo module|firmrepo source is empty'
+fail_re+='|firmrepo copy failed|no firmrepo archive source found'
+fail_re+='|cgoct: firmrepo staged'
 
 # Markers that must be present for the check to pass.  Empty: the boot is judged
 # on reaching userspace, on the ksym vermagic matching the signer, and on the
-# localrepo/cctkfs pipeline below.
+# firmrepo/cctkfs pipeline below.
 required=(
 )
 
@@ -231,28 +231,28 @@ if grep -qF "CACT-CHECK: BEGIN" "$log"; then
   fi
 fi
 
-# The localrepo archive: the bootloader must have handed the kernel the
-# `localrepo` module, and the supervisor must have copied it into tmpfs.  A
-# medium built without the module (or with an empty /dev/localrepo) boots
+# The firmrepo archive: the bootloader must have handed the kernel the
+# `firmrepo` module, and the supervisor must have copied it into tmpfs.  A
+# medium built without the module (or with an empty /dev/firmrepo) boots
 # cleanly and only shows up much later as firmextr's confusing "not a readable
 # zstd archive" at the shell, so both halves are hard failures here.
-echo "cact-check: --- localrepo archive ---"
-if grep -qF "devfs: localrepo module " "$log"; then
-  grep -Fm1 "devfs: localrepo module " "$log" | sed 's/^/cact-check:   ok    /'
+echo "cact-check: --- firmrepo archive ---"
+if grep -qF "devfs: firmrepo module " "$log"; then
+  grep -Fm1 "devfs: firmrepo module " "$log" | sed 's/^/cact-check:   ok    /'
 else
-  echo "cact-check:   MISS  no localrepo module in the boot log" >&2
-  echo "cact-check:         (this ISO carries no localrepo.tar.zst — /dev/localrepo reads empty)" >&2
+  echo "cact-check:   MISS  no firmrepo module in the boot log" >&2
+  echo "cact-check:         (this ISO carries no firmrepo.tar.zst — /dev/firmrepo reads empty)" >&2
   rc=1
 fi
-# The archive is served in place as the node /dev/localrepo (the check above just
+# The archive is served in place as the node /dev/firmrepo (the check above just
 # confirmed the module is present).  cgoct must NOT copy it into tmpfs any more:
 # doing so would put ~500 MiB into the guest's 2 GiB of RAM.  A staging line means
 # that removal regressed, so its reappearance is a hard failure (see `fail_re`).
-if grep -qF "cgoct: localrepo staged -> " "$log"; then
-  echo "cact-check:   FAIL  cgoct staged localrepo into tmpfs (removed behaviour came back)" >&2
+if grep -qF "cgoct: firmrepo staged -> " "$log"; then
+  echo "cact-check:   FAIL  cgoct staged firmrepo into tmpfs (removed behaviour came back)" >&2
   rc=1
 else
-  echo "cact-check:   ok    cgoct did not stage localrepo into tmpfs (served in place)"
+  echo "cact-check:   ok    cgoct did not stage firmrepo into tmpfs (served in place)"
 fi
 
 # The boot cctkfs image: the kernel serves the module in place as /dev/cctkfs,

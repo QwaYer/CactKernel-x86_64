@@ -16,7 +16,7 @@
 // Module info captured from MB2_TAG_MODULE; written by multiboot2_parse(),
 // consumed by init() to stage the cctkfs image into kernel .bss.
 mb2_module_info_t mb2_cctkfs_module;
-mb2_module_info_t mb2_localrepo_module;
+mb2_module_info_t mb2_firmrepo_module;
 
 // Highest end address over all MB2 module tags: the RAM the bootloader loaded
 // images into.  It is ordinary "available" RAM as far as the memory map says,
@@ -78,9 +78,9 @@ void multiboot2_parse(uint32_t mb2_info_addr,
     mb2_cctkfs_module.mod_start = 0;
     mb2_cctkfs_module.mod_size  = 0;
     mb2_cctkfs_module.name[0]   = '\0';
-    mb2_localrepo_module.mod_start = 0;
-    mb2_localrepo_module.mod_size  = 0;
-    mb2_localrepo_module.name[0]   = '\0';
+    mb2_firmrepo_module.mod_start = 0;
+    mb2_firmrepo_module.mod_size  = 0;
+    mb2_firmrepo_module.name[0]   = '\0';
     mb2_modules_end = 0;
     mb2_efi_systab  = 0;
 
@@ -202,7 +202,7 @@ void multiboot2_parse(uint32_t mb2_info_addr,
             // Highest module end over the whole tag list: see mb2_modules_end.
             if (t->mod_end > mb2_modules_end) mb2_modules_end = t->mod_end;
 
-            // Where the bootloader put it.  cctkfs and localrepo are both
+            // Where the bootloader put it.  cctkfs and firmrepo are both
             // served *in place* (RAM is identity-mapped), so this physical
             // range is the only address the module ever has; it lies inside the
             // boot reservation the PMM logs right after this parse.
@@ -221,12 +221,12 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                 copy_module_name(mb2_cctkfs_module.name, t->string,
                                  MB2_MODULE_NAME_MAX);
             }
-            if (mb2_localrepo_module.mod_start == 0 &&
-                starts_with(t->string, "localrepo"))
+            if (mb2_firmrepo_module.mod_start == 0 &&
+                starts_with(t->string, "firmrepo"))
             {
-                mb2_localrepo_module.mod_start = t->mod_start;
-                mb2_localrepo_module.mod_size  = t->mod_end - t->mod_start;
-                copy_module_name(mb2_localrepo_module.name, t->string,
+                mb2_firmrepo_module.mod_start = t->mod_start;
+                mb2_firmrepo_module.mod_size  = t->mod_end - t->mod_start;
+                copy_module_name(mb2_firmrepo_module.name, t->string,
                                  MB2_MODULE_NAME_MAX);
             }
             break;

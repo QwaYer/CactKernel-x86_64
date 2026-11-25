@@ -23,7 +23,7 @@ pub const MEMFD_MAX: usize = 128;
 /// Initial slot count of an object's frame-pointer array (4 MiB worth); the
 /// array is a `kmalloc` block grown in `MEMFD_PAGES_GROW` steps, so an object is
 /// no longer capped at 4 MiB.  A fixed `MEMFD_MAX_PAGES = 1024` array (or cap)
-/// is what kept a 502 MiB tmpfs file — the localrepo firmware archive — from
+/// is what kept a 502 MiB tmpfs file — the firmrepo firmware archive — from
 /// ever being written.
 pub const MEMFD_PAGES_INITIAL: u32 = 1024;
 /// Slots added per growth step (64 MiB worth).

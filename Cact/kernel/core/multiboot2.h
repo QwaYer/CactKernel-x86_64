@@ -166,7 +166,7 @@ struct mb2_tag_module {
 
 // Captured module info passed back from multiboot2_parse(); the first module
 // whose cmdline starts with "cctkfs" is recorded, and the first starting with
-// "localrepo" is recorded separately.
+// "firmrepo" is recorded separately.
 #define MB2_MODULE_NAME_MAX 32
 typedef struct {
     uint32_t mod_start;     // 0 when no matching module was found
@@ -177,10 +177,10 @@ typedef struct {
 // cctkfs staging module captured during multiboot2_parse() (defined in multiboot2.c)
 extern mb2_module_info_t mb2_cctkfs_module;
 
-// localrepo.tar.zst captured during multiboot2_parse().  It is NOT staged: it
-// stays in place in physical memory (RAM is identity-mapped) and /dev/localrepo
+// firmrepo.tar.zst captured during multiboot2_parse().  It is NOT staged: it
+// stays in place in physical memory (RAM is identity-mapped) and /dev/firmrepo
 // hands it to userspace, because the image is far too big to copy.
-extern mb2_module_info_t mb2_localrepo_module;
+extern mb2_module_info_t mb2_firmrepo_module;
 
 // Highest end address over every MB2 module tag (0 when there were none).  The
 // RAM below it holds the modules loaded by GRUB — available RAM per the memory
