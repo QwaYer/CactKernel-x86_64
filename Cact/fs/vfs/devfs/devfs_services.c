@@ -87,7 +87,16 @@ static int _console_write(void *p, uint64_t off, uint32_t size, char *buf) {
     return tty_write(0, off, size, buf);
 }
 
-devfs_driver_t drv_console = { .read = _console_read, .write = _console_write };
+static int _console_ioctl(void *p, uint32_t cmd, void *arg) {
+    (void)p;
+    /* /dev/console is the active VT (see _console_write), so terminal ioctls
+     * go to the tty driver: this is what makes isatty(/dev/console) true while
+     * any non-terminal node returns -ENOTTY instead. */
+    return tty_ioctl(0, cmd, arg);
+}
+
+devfs_driver_t drv_console = { .read = _console_read, .write = _console_write,
+                               .ioctl = _console_ioctl };
 
 // ── /dev/kmsg ─────────────────────────────────────────────────────────────
 // Kernel message log.  Records are stored in the Linux /dev/kmsg read format

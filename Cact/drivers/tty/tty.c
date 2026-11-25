@@ -570,6 +570,22 @@ int tty_ioctl(int idx, uint32_t cmd, void *arg) {
         return 0;
     }
 
+    case TIOCGWINSZ: {
+        // Only a terminal answers this — it is what isatty() probes.
+        if (!arg || !validate_user_ptr(arg, sizeof(struct winsize))) return -1;
+        return copy_to_user(arg, &terminal_winsize, sizeof(terminal_winsize));
+    }
+
+    case TIOCSWINSZ: {
+        if (!arg || !validate_user_ptr(arg, sizeof(struct winsize))) return -1;
+        struct winsize ws;
+        if (copy_from_user(&ws, arg, sizeof(ws)) != 0) return -1;
+        terminal_winsize = ws;
+        if (terminal_fg_pgid)
+            task_signal_pgid(terminal_fg_pgid, SIGWINCH);
+        return 0;
+    }
+
     default:
         return -1;
     }

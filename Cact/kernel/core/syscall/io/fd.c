@@ -655,24 +655,11 @@ sysret_t sys_ioctl(struct syscall_frame *regs) {
     }
 
     if (cmd == TIOCGWINSZ || cmd == TIOCSWINSZ) {
-        if (!arg || !validate_user_ptr(arg, sizeof(struct winsize))) return -1;
-        struct winsize ws_buf;
-        if (cmd == TIOCSWINSZ) {
-            if (copy_from_user(&ws_buf, arg, sizeof(ws_buf)) != 0) return -1;
-            terminal_winsize.ws_row    = ws_buf.ws_row;
-            terminal_winsize.ws_col    = ws_buf.ws_col;
-            terminal_winsize.ws_xpixel = ws_buf.ws_xpixel;
-            terminal_winsize.ws_ypixel = ws_buf.ws_ypixel;
-            if (terminal_fg_pgid)
-                task_signal_pgid(terminal_fg_pgid, SIGWINCH);
-        } else {
-            ws_buf.ws_row    = terminal_winsize.ws_row;
-            ws_buf.ws_col    = terminal_winsize.ws_col;
-            ws_buf.ws_xpixel = terminal_winsize.ws_xpixel;
-            ws_buf.ws_ypixel = terminal_winsize.ws_ypixel;
-            if (copy_to_user(arg, &ws_buf, sizeof(ws_buf)) != 0) return -1;
-        }
-        return 0;
+        // Answered by the tty driver only (see tty_ioctl): the window size is
+        // the terminal's, and isatty() probes exactly this command — a pipe,
+        // file or device node must get -1/-ENOTTY here, not a success.
+        if (!f || !f->node) return -1;
+        return ioctl_file_vfs(f, cmd, arg);
     }
 
     if (!f || !f->node) return -1;
