@@ -464,6 +464,11 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     extern void zram_init(void);
     zram_init();
 
+    // Compressed swap cache in front of the swap device.  Off unless the command
+    // line asked (`zswap=<pct>%` or `zswap=1`); /dev/zmem owns it at runtime.
+    extern void zswap_init(void);
+    zswap_init();
+
     // PCI Express ECAM init (needs ACPI tables, before PCI enumeration)
     pcidev_init();
     {

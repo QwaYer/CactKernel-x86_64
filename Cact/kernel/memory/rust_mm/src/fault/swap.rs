@@ -12,6 +12,9 @@ use crate::pmm::{kalloc, free_page};
 use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
 use crate::vmm::paging::{p2v, v2p};
 
+use super::swap_pte;
+use super::zswap;
+
 pub type SwapSlot = u32;
 pub type SwapReadFn = Option<unsafe extern "C" fn(u32, *mut u8, u32) -> i32>;
 pub type SwapWriteFn = Option<unsafe extern "C" fn(u32, *const u8, u32) -> i32>;
@@ -76,15 +79,15 @@ fn slot_to_lba(slot: SwapSlot) -> u32 {
 }
 
 fn swap_encode_pte(slot: SwapSlot) -> u64 {
-    ((slot as u64) << 12 & 0xFFFFF000) | PAGE_SWAPPED as u64
+    swap_pte::encode_device(slot)
 }
 
 fn swap_decode_pte(pte: u64) -> SwapSlot {
-    ((pte & 0xFFFFF000) >> 12) as SwapSlot
+    swap_pte::decode(pte)
 }
 
 pub fn swap_pte_is_swapped(pte: u64) -> bool {
-    (pte & PAGE_PRESENT as u64 == 0) && (pte & PAGE_SWAPPED as u64 != 0)
+    swap_pte::is_swapped(pte)
 }
 
 pub fn swap_is_enabled() -> bool {
@@ -126,6 +129,10 @@ pub extern "C" fn swap_init(
     // SAFETY: stays off; set last so no reader can see `G_ENABLED` before the
     // tables above are initialised.
     *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 0;
+
+    // Boot-time, single-threaded: initialise the zswap front-end's own lock so
+    // the first `zswap_enable` from /dev/zmem cannot race it.
+    zswap::zswap_early_init();
     0
 }
 
@@ -312,8 +319,8 @@ pub extern "C" fn swap_free_slot(slot: SwapSlot) {
 /// allowed to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
-    // SAFETY: `G_ENABLED` immutable after boot init.
-    if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 || pd.is_null() {
+    // Evicting is possible with a swap device, with the zswap pool, or with both.
+    if pd.is_null() || (!swap_is_enabled() && !zswap::zswap_is_enabled()) {
         return -1;
     }
 
@@ -365,14 +372,37 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
                         }
                         continue;
                     }
-                    let mut slot: SwapSlot = 0;
-                    // SAFETY: `phys` is the page-aligned frame selected by the scan
-                    // and `slot` is a live local receiving the assigned swap slot.
-                    if unsafe { swap_out_page(phys, &mut slot) } != 0 {
-                        return -1;
+                    // Prefer the compressed pool — it costs no device I/O.  A
+                    // page the pool refuses (full) falls back to the device,
+                    // after one writeback attempt when zswap writeback is on.
+                    let mut encoded: Option<u64> = None;
+                    if let Some(handle) = zswap::zswap_store(phys) {
+                        encoded = Some(swap_pte::encode_zswap(handle));
+                    } else {
+                        if swap_is_enabled() {
+                            // SAFETY: `pd` is the caller's live page directory;
+                            // the writeback walk only touches its own user PTEs.
+                            unsafe { zswap::zswap_try_writeback(pd) };
+                            if let Some(handle) = zswap::zswap_store(phys) {
+                                encoded = Some(swap_pte::encode_zswap(handle));
+                            }
+                        }
+                        if encoded.is_none() && swap_is_enabled() {
+                            let mut slot: SwapSlot = 0;
+                            // SAFETY: `phys` is the page-aligned frame selected by
+                            // the scan and `slot` a live local.
+                            if unsafe { swap_out_page(phys, &mut slot) } == 0 {
+                                encoded = Some(swap_encode_pte(slot));
+                            }
+                        }
                     }
+                    let Some(encoded) = encoded else {
+                        // Nowhere to put the page (pool full and no device to
+                        // fall back to): leave it resident rather than lose it.
+                        return -1;
+                    };
 
-                    let mut new_pte = swap_encode_pte(slot);
+                    let mut new_pte = encoded;
                     new_pte |= (pte & ((PAGE_RW | PAGE_USER) as u64)) & !(PAGE_PRESENT as u64);
                     // SAFETY: `pte_entry` is the live PTE for `va`; the store
                     // publishes the swapped-out entry.
@@ -436,6 +466,8 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
     }
 
     let slot = swap_decode_pte(pte);
+    // A `PAGE_ZSWAP` entry names a pool handle; everything else is a device slot.
+    let from_pool = swap_pte::in_zswap(pte);
 
     let mut phys = kalloc();
     if phys.is_null() {
@@ -450,10 +482,15 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
         }
     }
 
-    // `swap_in_page` takes the frame's *physical* address (that is what its I/O
-    // callback needs), while `kalloc` handed out a direct-map VA.
-    if swap_in_page(slot, v2p(phys)) != 0 {
-        // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
+    // `swap_in_page`/`zswap_load` take the frame's *physical* address (that is
+    // what the backing store needs), while `kalloc` handed out a direct-map VA.
+    let ok = if from_pool {
+        zswap::zswap_load(slot, v2p(phys))
+    } else {
+        swap_in_page(slot, v2p(phys)) == 0
+    };
+    if !ok {
+        // SAFETY: the frame is live and PMM-managed; this releases exactly one reference to it.
         unsafe { free_page(phys) };
         return -1;
     }

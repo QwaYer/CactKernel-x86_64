@@ -103,11 +103,10 @@ pub const PAGE_USER:    u32 = 0x004;
 /// while bit 9 (0x200) is reserved for PAGE_COW on PTEs.
 pub const PDE_PRIVATE:  u32 = 0x100;
 /// Bit 3 — Page Write-Through (PWT).  Set for MMIO/PCI-hole PTEs so that
-/// writes are not held in write buffers.  Also reused as PAGE_SWAPPED marker
-/// when PRESENT=0 (non-overlapping use: hw only checks PWT when PRESENT=1).
+/// writes are not held in write buffers.  The software swap marker
+/// (`fault::swap_pte::PAGE_SWAPPED`) reuses this bit while PRESENT is clear;
+/// the hardware only consults PWT on a present entry, so the two do not clash.
 pub const PAGE_PWT:     u32 = 0x008;
-/// Alias: software swap marker reuses bit 3 (safe — PRESENT=0 when swapped).
-pub const PAGE_SWAPPED: u32 = 0x008;
 /// Bit 4 — Page Cache Disable (PCD).  Set for MMIO/PCI-hole PTEs so that
 /// reads/writes bypass L1/L2 cache and reach device registers directly.
 pub const PAGE_PCD:     u32 = 0x010;
@@ -456,6 +455,37 @@ pub struct ZpoolStats {
     pub stored_bytes: u64,
     /// Uncompressed size of the live pages (`live_pages * PAGE_SIZE`).
     pub original_bytes: u64,
+}
+
+/// zswap front-end accounting (`fault::zswap`), mirrored by `zswap_stats_t` in
+/// `Cact/kernel/memory/zswap.h` for `/proc/zmem`.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ZswapStats {
+    /// 1 while the compressed pool front-end is active.
+    pub enabled: u32,
+    /// 1 when a full pool tries to write a page back to the device first.
+    pub writeback: u32,
+    /// zstd level the pool compresses at.
+    pub level: i32,
+    /// Pool page capacity (0 when no pool exists).
+    pub capacity_pages: u32,
+    /// Pages currently held compressed in the pool.
+    pub pool_pages: u32,
+    /// Payload budget in bytes.
+    pub budget_bytes: u64,
+    /// Compressed bytes the pool currently holds.
+    pub stored_bytes: u64,
+    /// Uncompressed size of the pooled pages.
+    pub original_bytes: u64,
+    /// Cumulative successful stores.
+    pub stores: u32,
+    /// Cumulative stores the pool refused (full / out of memory).
+    pub store_fail: u32,
+    /// Cumulative pool loads back into a frame.
+    pub loads: u32,
+    /// Cumulative pool pages migrated to the device to make room.
+    pub writebacks: u32,
 }
 
 /// Flat MMAP entry passed from the C multiboot2 parser.

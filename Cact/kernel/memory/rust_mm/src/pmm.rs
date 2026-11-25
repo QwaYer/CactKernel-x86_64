@@ -430,7 +430,9 @@ pub extern "C" fn kalloc() -> *mut u8 {
 
         let reclaimed = if freed_from_slab > 0 {
             true
-        } else if crate::fault::swap::swap_is_enabled() {
+        } else if crate::fault::swap::swap_is_enabled()
+            || crate::fault::zswap::zswap_is_enabled()
+        {
             let pd = crate::safe::current_page_dir();
             // SAFETY: `pd` is the live page directory read from CR3 above, and
             // eviction only walks/mutates that directory's own user PTEs.

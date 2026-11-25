@@ -5,4 +5,6 @@
 
 pub mod page_fault;
 pub mod swap;
+pub mod swap_pte;
+pub mod zswap;
 pub mod oom;

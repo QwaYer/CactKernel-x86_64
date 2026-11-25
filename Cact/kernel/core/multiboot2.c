@@ -70,6 +70,25 @@ const char *mb2_cmdline_get(const char *key) {
     return 0;
 }
 
+// Bounded, NUL-terminated copy of a value, for callers (the Rust zswap hook)
+// that want a safe buffer rather than a pointer into the command line.
+int mb2_cmdline_value(const char *key, char *buf, int cap) {
+    const char *v = mb2_cmdline_get(key);
+    if (!v)
+        return 0;
+    if (!buf || cap <= 0)
+        return -1;
+    int i = 0;
+    while (i < cap - 1 && v[i] && v[i] != ' ' && v[i] != '\t' && v[i] != '\n') {
+        buf[i] = v[i];
+        i++;
+    }
+    buf[i] = '\0';
+    if (v[i] && v[i] != ' ' && v[i] != '\t' && v[i] != '\n')
+        return -1;  // truncated
+    return 1;
+}
+
 // Parse "512", "512K", "512M", "2G" (case-insensitive suffix, optional trailing
 // 'B'/'b').  A value with trailing junk is rejected rather than half-parsed.
 int mb2_cmdline_parse_size(const char *val, uint64_t *out_bytes) {

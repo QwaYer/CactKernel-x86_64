@@ -140,6 +140,12 @@ extern const char *mb2_cmdline;
 // the value after '=' or NULL when the key is absent.
 const char *mb2_cmdline_get(const char *key);
 
+// Copy the value of `key` into `buf` as a NUL-terminated string, for callers
+// that want a bounded copy rather than a pointer into the command line.
+// Returns 1 when found and copied, 0 when the key is absent, -1 when the value
+// does not fit `cap`.
+int mb2_cmdline_value(const char *key, char *buf, int cap);
+
 // Parse a byte size with an optional K/M/G suffix (case-insensitive, 1024
 // based) from `val`.  Returns 1 and writes *out_bytes on success, 0 otherwise.
 // A bare number is bytes.  (A percentage, as zswap=/zswap limit uses, is not a
