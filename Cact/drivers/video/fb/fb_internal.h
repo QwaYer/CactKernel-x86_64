@@ -12,7 +12,7 @@
 /* Console state (fb_text.c). */
 extern int cursor_x;
 extern int cursor_y;
-extern uint32_t current_fb_color;
+extern uint32_t saved_color;
 
 /* Framebuffer state (fb.c). */
 extern uint32_t* fb_buffer;
