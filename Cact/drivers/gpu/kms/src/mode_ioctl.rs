@@ -196,6 +196,25 @@ pub(crate) fn zero_modeinfo() -> ModeInfo {
     }
 }
 
+/// Copy a resource id list to the client, honouring the room the client
+/// declared for its own buffer.
+///
+/// A listing ioctl writes *at most* `want` ids — never the whole list — so a
+/// client that sized its array to the count it passed cannot be overrun.  The
+/// handler still reports the true total in the count field, which is how a
+/// client learns to grow the array and call again.  A zero `want` (the client
+/// asking only for counts) or a null pointer copies nothing.
+fn put_ids(user: u64, ids: &[u32], want: u32) -> c_int {
+    if user == 0 || want == 0 {
+        return 0;
+    }
+    let n = core::cmp::min(want as usize, ids.len());
+    if n == 0 {
+        return 0;
+    }
+    drm_put_raw(uptru(user), ids.as_ptr() as *const c_void, n as u32 * 4)
+}
+
 /* ── GETRESOURCES ───────────────────────────────────────────────────────── */
 
 #[no_mangle]
@@ -272,37 +291,16 @@ pub extern "C" fn mode_get_resources(file: *mut DrmFile, arg: *mut c_void) -> c_
         }
     }
 
-    if req.count_crtcs != 0
-        && drm_put_raw(
-            uptru(req.crtc_id_ptr),
-            crtcs.as_ptr() as *const c_void,
-            crtcs.len() as u32 * 4,
-        ) != 0
-    {
+    if put_ids(req.crtc_id_ptr, &crtcs, req.count_crtcs) != 0 {
         return -22;
     }
-    if req.count_connectors != 0
-        && drm_put_raw(
-            uptru(req.connector_id_ptr),
-            conns.as_ptr() as *const c_void,
-            conns.len() as u32 * 4,
-        ) != 0
-    {
+    if put_ids(req.connector_id_ptr, &conns, req.count_connectors) != 0 {
         return -22;
     }
-    if req.count_encoders != 0
-        && drm_put_raw(
-            uptru(req.encoder_id_ptr),
-            encs.as_ptr() as *const c_void,
-            encs.len() as u32 * 4,
-        ) != 0
-    {
+    if put_ids(req.encoder_id_ptr, &encs, req.count_encoders) != 0 {
         return -22;
     }
-    if req.count_fbs != 0
-        && drm_put_raw(uptru(req.fb_id_ptr), fbs.as_ptr() as *const c_void, fbs.len() as u32 * 4)
-            != 0
-    {
+    if put_ids(req.fb_id_ptr, &fbs, req.count_fbs) != 0 {
         return -22;
     }
 
@@ -453,13 +451,7 @@ pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_
                 }
             }
         }
-        if req.count_encoders != 0
-            && drm_put_raw(
-                uptru(req.encoders_ptr),
-                encs.as_ptr() as *const c_void,
-                encs.len() as u32 * 4,
-            ) != 0
-        {
+        if put_ids(req.encoders_ptr, &encs, req.count_encoders) != 0 {
             return -22;
         }
 
@@ -591,10 +583,7 @@ pub extern "C" fn mode_get_plane_resources(file: *mut DrmFile, arg: *mut c_void)
         }
     }
 
-    if req.count_planes != 0
-        && drm_put_raw(uptru(req.plane_id_ptr), ids.as_ptr() as *const c_void, ids.len() as u32 * 4)
-            != 0
-    {
+    if put_ids(req.plane_id_ptr, &ids, req.count_planes) != 0 {
         return -22;
     }
     req.count_planes = ids.len() as u32;
@@ -642,13 +631,7 @@ pub extern "C" fn mode_get_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
     // SAFETY: `p` is the live plane looked up above; this borrow is consumed by the
     // reads below.
     let p = unsafe { &*p };
-    if req.count_format_types != 0
-        && drm_put_raw(
-            uptru(req.format_type_ptr),
-            p.formats.as_ptr() as *const c_void,
-            p.formats.len() as u32 * 4,
-        ) != 0
-    {
+    if put_ids(req.format_type_ptr, &p.formats, req.count_format_types) != 0 {
         return -22;
     }
 

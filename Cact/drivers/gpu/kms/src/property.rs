@@ -380,23 +380,28 @@ pub extern "C" fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_i
     // this handler adds or removes a property.
     let p = unsafe { &*p };
 
-    if req.count_values != 0
-        && req.values_ptr != 0
-        && !p.values.is_empty()
-        && drm_put_raw(
+    /* At most the number of values the client declared room for: the array it
+     * pointed at is no larger than `count_values`, so writing the whole list
+     * would overrun it. */
+    if req.count_values != 0 && req.values_ptr != 0 && !p.values.is_empty() {
+        let n = core::cmp::min(req.count_values as usize, p.values.len());
+        if drm_put_raw(
             uptru(req.values_ptr),
             p.values.as_ptr() as *const c_void,
-            p.values.len() as u32 * 8,
+            n as u32 * 8,
         ) != 0
-    {
-        return -22;
+        {
+            return -22;
+        }
     }
 
     /* ENUM text: userspace asks for count_enum_blobs first, then a run of
      * drm_mode_property_enum {value, name[32]} entries. */
     if p.flags & (DRM_MODE_PROP_ENUM | DRM_MODE_PROP_BITMASK) != 0 {
         if req.count_enum_blobs != 0 && req.enum_blob_ptr != 0 {
-            let n = p.values.len();
+            /* Only as many enum entries as the client declared room for; the
+             * count it reads back is the true total, so it can resize. */
+            let n = core::cmp::min(req.count_enum_blobs as usize, p.values.len());
             let mut en: Vec<ModePropertyEnum> = vec![
                 ModePropertyEnum {
                     value: 0,
