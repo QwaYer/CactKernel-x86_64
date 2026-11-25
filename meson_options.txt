@@ -16,5 +16,8 @@ option('acpica_fetch', type: 'boolean', value: true,
 option('acpica_repo', type: 'string', value: 'https://github.com/acpica/acpica.git',
   description: 'ACPICA git repository used by the configure-time fetch')
 
-option('iso_grub_cfg', type: 'string', value: 'grub.cfg.kernelonly',
-  description: 'GRUB config used by the cact.iso target (grub.cfg.kernelonly | grub.cfg | grub.cfg.ramroot)')
+option('grub_repo', type: 'string', value: '../grubrepo',
+  description: 'grubrepo: GRUB menus + make-iso.sh used by the iso targets (relative or absolute)')
+
+option('iso_grub_cfg', type: 'string', value: 'menu-kernel-only.cfg',
+  description: 'Menu used by the cact.iso target: a name under grubrepo/menus, or a path (menu-kernel-only.cfg | menu-with-mb2.cfg | menu-ramroot.cfg)')

@@ -329,7 +329,12 @@ kernel_bin = custom_target('kernel-bin',
 # Bootable ISO images
 # ------------------------------------------------------------------------------
 
-iso_script = src_root / 'tools/cact_make_iso.sh'
+# GRUB packaging (menus + make-iso.sh) lives in grubrepo; this tree keeps only
+# the kernel and points its ISO targets at grubrepo.
+grub_repo = get_option('grub_repo')
+grub_root = grub_repo.startswith('/') ? grub_repo : src_root / grub_repo
+iso_script = grub_root / 'tools' / 'make-iso.sh'
+
 isodir = build_root / 'isodir'
 
 if get_option('local_repo') == ''
@@ -343,13 +348,28 @@ else
 endif
 localbinrepo_img = local_repo / 'localbinrepo.img'
 
-iso_inputs = [kernel_bin]
-iso_inputs += files(get_option('iso_grub_cfg'))
+# iso_grub_cfg names a menu under grubrepo/menus (or a path, absolute or
+# relative to this tree).
+_iso_cfg = get_option('iso_grub_cfg')
+# Older build dirs still hold the pre-grubrepo value, a file name in this tree.
+_iso_alias = {
+  'grub.cfg.kernelonly': 'menu-kernel-only.cfg',
+  'grub.cfg': 'menu-with-mb2.cfg',
+  'grub.cfg.ramroot': 'menu-ramroot.cfg',
+}
+if _iso_alias.has_key(_iso_cfg)
+  _iso_cfg = _iso_alias[_iso_cfg]
+endif
+if _iso_cfg.contains('/')
+  iso_menu = _iso_cfg.startswith('/') ? _iso_cfg : (src_root / _iso_cfg)
+else
+  iso_menu = grub_root / 'menus' / _iso_cfg
+endif
 
 cact_iso = custom_target('cact-iso',
   output: 'cact.iso',
-  input: iso_inputs,
-  command: [bash, iso_script, '@INPUT0@', '@INPUT1@', isodir, '@OUTPUT@'],
+  input: kernel_bin,
+  command: [bash, iso_script, kernel_bin, iso_menu, isodir, '@OUTPUT@'],
   build_by_default: true)
 
 # Unlike the kernel-only image this one depends on an artifact living outside
@@ -360,13 +380,16 @@ cact_iso = custom_target('cact-iso',
 # kernel boots with an empty /dev/firmrepo and firmextr has nothing to read.
 # The netdrvrepo archive (Network-for-Cact-x86_64's `netdrvrepo` target) is the
 # third module, served as /dev/netdrvrepo; it is optional, and its placeholder
-# line is dropped when the archive is absent.
+# line is dropped when the archive is absent.  The drvrepo archive
+# (Driver-for-Cact-x86_64's `drvrepo` target) is the fourth, served as
+# /dev/drvrepo, with the same optional contract.
 netdrvrepo_tar = src_root / '..' / 'Network-for-Cact-x86_64' / 'netdrvrepo.tar.zst'
+drvrepo_tar = src_root / '..' / 'Driver-for-Cact-x86_64' / 'drvrepo.tar.zst'
 
 run_target('iso-full',
-  command: [bash, iso_script, kernel_bin, src_root / 'grub.cfg',
+  command: [bash, iso_script, kernel_bin, grub_root / 'menus' / 'menu-with-mb2.cfg',
             build_root / 'isodir-full', build_root / 'cact-full.iso', localbinrepo_img,
-            local_repo / 'firmrepo.tar.zst', netdrvrepo_tar])
+            local_repo / 'firmrepo.tar.zst', netdrvrepo_tar, drvrepo_tar])
 
 # P2.3: one command that boots an image headless, greps the boot-log markers off
 # COM1 and exits non-zero on any failure.  The script resolves the ISO itself
