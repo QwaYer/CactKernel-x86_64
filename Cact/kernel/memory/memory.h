@@ -44,10 +44,11 @@ uint32_t cact_mmio_window_base(void);               /* rust_mm: pmm.rs */
  *
  * HEAP_START/RESERVED_END are the *floor*.  The PMM raises the boundary past
  * the Multiboot2 module images at boot (GRUB loads them into ordinary available
- * RAM, and the firmrepo archive is served to userspace in place out of it), so
- * the heap window starts directly above whatever the boot reservation covers.
- * These macros are therefore only valid before pmm_reserve_boot_images() runs;
- * ask the PMM (pmm.rs reserved_end/heap_start/heap_end) for the live values.
+ * RAM, and the firmrepo archive is served to userspace in place out of it), and
+ * lowers it on a small-RAM machine where the fixed floor would leave the heap no
+ * room (see pmm_alloc_tables).  These macros are therefore only valid before
+ * pmm_reserve_boot_images() runs; ask the PMM (pmm.rs reserved_end/heap_start/
+ * heap_end) for the live values.
  */
 #define HEAP_START (512u * 1024u * 1024u)   /* 0x20000000 */
 #define HEAP_SIZE  (16u * 1024u * 1024u)   /* 16 MB heap window */

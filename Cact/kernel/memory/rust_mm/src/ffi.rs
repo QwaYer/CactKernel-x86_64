@@ -85,7 +85,10 @@ pub const HEAP_MAGIC: u32 = 0xDEAD_BEEF;
 ///                           `brk` heap, which overlaps the reservation and so
 ///                           must not collide with a handed-out frame.
 ///                           (Boot modules raise the live value past this
-///                           anyway — see `pmm_reserve_boot_images`.)
+///                           anyway — see `pmm_reserve_boot_images` — and a
+///                           small-RAM machine lowers it, since a floor at or
+///                           above the RAM end would leave no frames and no heap
+///                           window: see `pmm_alloc_tables`.)
 pub const RESERVED_END: u32 = 0x2000_0000;
 
 /// Maximum number of MMAP entries copied from the MB2 boot info.

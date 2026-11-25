@@ -103,9 +103,16 @@ pub(crate) fn heap_start() -> u32 {
     reserved_end()
 }
 
-/// End of the kernel heap window (exclusive), clipped to the PCI hole.
+/// End of the kernel heap window (exclusive), clipped to the PCI hole and to the
+/// RAM the PMM actually manages.
 pub(crate) fn heap_end() -> u32 {
-    heap_start().saturating_add(HEAP_SIZE).min(PCI_HOLE_START)
+    heap_start()
+        .saturating_add(HEAP_SIZE)
+        .min(PCI_HOLE_START)
+        // Never above managed RAM: the frame arrays sit just past the
+        // reservation, so a window past the RAM end would land on top of them
+        // (and the first heap block header written there would be corrupted).
+        .min(ram_end() as u32)
 }
 
 /// C entry point: reserve the RAM the bootloader loaded its module images into.
@@ -192,6 +199,17 @@ fn bitmap_test(idx: u64) -> bool {
     (unsafe { *bitmap_ptr().add(pmm_math::bitmap_byte(idx)) } & pmm_math::bitmap_mask(idx)) != 0
 }
 
+/// Low user VA window the reservation must keep so the ELF image and its `brk`
+/// heap still fit below the floor (see `RESERVED_END` in ffi.rs).
+const MIN_USER_WINDOW: u64 = 64 * 1024 * 1024;
+/// Hard lower bound for the reservation floor.
+const MIN_RESERVED_END: u64 = USER_HEAP_START as u64 + MIN_USER_WINDOW;
+/// RAM to keep above the heap window for `kalloc`, so that lowering the floor on
+/// a small-RAM machine still leaves a usable frame pool.  Without it the floor
+/// only just fits the window and the pool is a sliver — early allocations fail
+/// (the loader then dereferences a NULL).
+const MIN_KALLOC_POOL: u64 = 64 * 1024 * 1024;
+
 /// Carve the frame arrays out of the boot reservation and point the PMM at
 /// them.
 ///
@@ -202,6 +220,37 @@ fn bitmap_test(idx: u64) -> bool {
 /// marks them used.  The kernel reaches them through the direct map.
 fn pmm_alloc_tables(ram_hi: u64) {
     const ALIGN: u64 = 2 * 1024 * 1024;
+    // The fixed floor (`RESERVED_END`, 512 MiB) assumes a machine with RAM to
+    // spare above it.  On a small-RAM one it consumes every frame and puts the
+    // heap window on top of these very arrays — the first heap block header was
+    // written into the array and read back with a zero size, which panicked the
+    // allocator.  So lower the floor to the largest 2 MiB-aligned value that
+    // still leaves room inside `ram_hi` for the arrays and the heap window, but
+    // never below the low user VA window (`USER_HEAP_START..floor`), whose
+    // addresses map into the reserved range.
+    let floor_max = reserved_end() as u64;
+    let low_top   = ram_hi.min(LOW_MEM_END);
+    let slack     = low_top / 1024 + (1024 * 1024);  // bitmap + refcount arrays
+    // Above the floor the machine needs: the heap window, a usable kalloc pool,
+    // and room for the arrays themselves.
+    let want      = low_top.saturating_sub(HEAP_SIZE as u64 + MIN_KALLOC_POOL + slack);
+    let floor     = if floor_max > want {
+        let lowered = (want.max(MIN_RESERVED_END) & !(ALIGN - 1)).min(floor_max);
+        if lowered < floor_max {
+            klog_msg(
+                LOG_WARN,
+                c"pmm: small RAM — lowering the reservation floor to fit the heap"
+                    .as_ptr() as *const u8,
+            );
+        }
+        lowered
+    } else {
+        floor_max
+    };
+    // SAFETY: written once during single-threaded boot, before
+    // `init_memory_manager` reads it and long before any allocator caller.
+    unsafe { *KStatic::get_mut(BOOT_RESERVED_END.as_ptr()) = floor as u32 };
+
     let mut frames = addr_to_page(ram_hi.max(reserved_end() as u64));
     let bitmap_at = reserved_end() as u64;
     let mut bitmap_size;
