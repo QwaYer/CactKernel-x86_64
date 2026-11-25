@@ -382,14 +382,17 @@ cact_iso = custom_target('cact-iso',
 # third module, served as /dev/netdrvrepo; it is optional, and its placeholder
 # line is dropped when the archive is absent.  The drvrepo archive
 # (Driver-for-Cact-x86_64's `drvrepo` target) is the fourth, served as
-# /dev/drvrepo, with the same optional contract.
+# /dev/drvrepo, and the grubrepo archive (grubrepo's `grubrepo` target, the
+# installer's GRUB payload) is the fifth, served as /dev/grubrepo — both with
+# the same optional contract.
 netdrvrepo_tar = src_root / '..' / 'Network-for-Cact-x86_64' / 'netdrvrepo.tar.zst'
 drvrepo_tar = src_root / '..' / 'Driver-for-Cact-x86_64' / 'drvrepo.tar.zst'
+grubrepo_tar = grub_root / 'grubrepo.tar.zst'
 
 run_target('iso-full',
   command: [bash, iso_script, kernel_bin, grub_root / 'menus' / 'menu-with-mb2.cfg',
             build_root / 'isodir-full', build_root / 'cact-full.iso', localbinrepo_img,
-            local_repo / 'firmrepo.tar.zst', netdrvrepo_tar, drvrepo_tar])
+            local_repo / 'firmrepo.tar.zst', netdrvrepo_tar, drvrepo_tar, grubrepo_tar])
 
 # P2.3: one command that boots an image headless, greps the boot-log markers off
 # COM1 and exits non-zero on any failure.  The script resolves the ISO itself
