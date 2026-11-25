@@ -56,6 +56,16 @@ int          swap_is_backing_device(struct blkdev *dev);
 int          swap_out_page(uint64_t phys_addr, swap_slot_t* out_slot);
 int          swap_in_page(swap_slot_t slot, uint64_t phys_addr);
 void         swap_free_slot(swap_slot_t slot);
+
+/* swapoff, driven by the C address-space walker: begin() stops new evictions and
+ * suspends kalloc's reclaim (the walk holds scheduler_lock, which that reclaim
+ * can take); migrate_pd() faults one address space's device-swapped pages back
+ * into RAM; end() lifts the suspension.  release_slots() then drops any slot
+ * whose owner is gone, so the device can be detached clean. */
+int          swap_migrate_begin(void);
+int          swap_migrate_pd(uint64_t *pd);
+void         swap_migrate_end(void);
+void         swap_release_slots(void);
 swap_stats_t swap_get_stats(void);
 void         swap_print_stats(void);
 int          swap_evict_page(uint64_t* pd);

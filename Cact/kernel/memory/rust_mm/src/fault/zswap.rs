@@ -123,9 +123,11 @@ pub fn zswap_store(phys: u64) -> Option<u32> {
     }
 }
 
-/// Decompress pool entry `handle` into the frame at physical `phys` and release
-/// the entry.  Returns true on success.
-pub fn zswap_load(handle: u32, phys: u64) -> bool {
+/// Read pool entry `handle` into the frame at physical `phys`, **keeping** the
+/// entry allocated.  The fault path releases it only after winning a
+/// compare-exchange on the PTE (see `fault::swap`), so that a racing fault and a
+/// `swapoff` migration cannot both free it.
+pub fn load_keep(handle: u32, phys: u64) -> bool {
     let p = pool();
     if p.is_null() {
         return false;
@@ -134,9 +136,28 @@ pub fn zswap_load(handle: u32, phys: u64) -> bool {
     if !pool_load_keep(p, handle, page) {
         return false;
     }
-    // SAFETY: `p` is the live pool and `handle` names a live entry in it.
-    unsafe { zpool_free(p, handle) };
     G_LOADS.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
+/// Release a pool entry the caller owns (it won the PTE compare-exchange, so no
+/// other PTE can still name it).
+pub fn free_handle(handle: u32) {
+    let p = pool();
+    if p.is_null() {
+        return;
+    }
+    // SAFETY: `p` is the live pool and `handle` names a live entry.
+    unsafe { zpool_free(p, handle) };
+}
+
+/// Decompress pool entry `handle` into the frame at physical `phys` and release
+/// the entry.  Returns true on success.
+pub fn zswap_load(handle: u32, phys: u64) -> bool {
+    if !load_keep(handle, phys) {
+        return false;
+    }
+    free_handle(handle);
     true
 }
 

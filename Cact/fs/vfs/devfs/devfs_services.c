@@ -433,9 +433,34 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         kfree(kname);
         if (!dev) return -ENODEV;
         if (!swap_is_backing_device(dev)) return -EINVAL;
-        // Refuse while pages are still swapped out: CactOS has no swapoff
-        // migration, so releasing the device would strand them.
-        if (swap_get_stats().used_slots != 0) return -EBUSY;
+
+        // Fault every swapped-out page back into RAM first: CactOS cannot
+        // re-attach a device, so releasing it would strand them.  The walk holds
+        // scheduler_lock so a task cannot exit and free an address space we are
+        // migrating; swap_migrate_begin() suspends kalloc's reclaim for the
+        // duration, because that reclaim (eviction / OOM-kill) takes the same
+        // lock again.
+        if (swap_migrate_begin() != 0) return -EBUSY;
+        pr_info("%s: swapoff — migrating swapped pages back to RAM\n", "swap");
+        int failed = 0;
+        irq_spinlock_acquire(&scheduler_lock);
+        for (struct task_struct *t = task_list_head; t && !failed; t = t->next) {
+            if (!t->page_directory) continue;
+            // One pass per distinct address space (threads share a page map).
+            int dup = 0;
+            for (struct task_struct *u = task_list_head; u && u != t; u = u->next)
+                if (u->page_directory == t->page_directory) { dup = 1; break; }
+            if (dup) continue;
+            if (swap_migrate_pd(t->page_directory) != 0) failed = 1;
+        }
+        irq_spinlock_release(&scheduler_lock);
+        swap_migrate_end();
+        // Out of RAM: nothing was detached, swap stays on, the caller may retry.
+        if (failed) return -ENOMEM;
+
+        // Anything still allocated has no PTE left to name it (its owner is
+        // gone), so drop it and hand the device over clean.
+        swap_release_slots();
         swap_detach_device(dev);
         return 0;
     }

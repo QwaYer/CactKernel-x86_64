@@ -259,16 +259,14 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) 
     0
 }
 
-/// Fill the frame at physical address `phys_addr` from swap slot `slot` (see
-/// `swap_out_page` for why the address is physical and how the callback's
-/// buffer is derived from it).
-#[unsafe(no_mangle)]
-pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
-    // SAFETY: `G_ENABLED` immutable after boot init.
-    if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 {
-        return -1;
-    }
-    // SAFETY: `G_TOTAL_SLOTS` immutable after boot init; slotted reads are validated
+/// Read `slot` into the frame at `phys_addr` **without** releasing the slot.
+///
+/// The fault path and a `swapoff` migration both read a page in this way and
+/// only then claim its PTE with a compare-exchange, releasing the slot exactly
+/// once — by the winner.  Reading and releasing in one step (as this used to)
+/// would let the two free the same slot twice, or read one already reused.
+fn read_slot(slot: SwapSlot, phys_addr: u64) -> i32 {
+    // SAFETY: `G_TOTAL_SLOTS` immutable after boot init; slot reads are validated
     // against it.
     if slot >= *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } {
         return -1;
@@ -292,13 +290,25 @@ pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
         (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).swap_failures += 1;
         return -1;
     }
+    // SAFETY: `G_STATS.pages_swapped_in` — unlocked diagnostic counter, see above.
+    (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).pages_swapped_in += 1;
+    0
+}
 
+/// Fill the frame at physical address `phys_addr` from swap slot `slot` (see
+/// `swap_out_page` for why the address is physical and how the callback's
+/// buffer is derived from it).
+#[unsafe(no_mangle)]
+pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
+    if !swap_is_enabled() {
+        return -1;
+    }
+    if read_slot(slot, phys_addr) != 0 {
+        return -1;
+    }
     lock_acquire(G_SWAP_LOCK.as_ptr());
     bitmap_free(slot);
     lock_release(G_SWAP_LOCK.as_ptr());
-
-    // SAFETY: `G_STATS.pages_swapped_in` — unlocked diagnostic counter, see above.
-    (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).pages_swapped_in += 1;
     0
 }
 
@@ -310,6 +320,122 @@ pub extern "C" fn swap_free_slot(slot: SwapSlot) {
     }
     lock_acquire(G_SWAP_LOCK.as_ptr());
     bitmap_free(slot);
+    lock_release(G_SWAP_LOCK.as_ptr());
+}
+
+/// Set while a `swapoff` migration is walking address spaces.
+///
+/// `kalloc` skips its reclaim (eviction and OOM-kill) while it is set: the walk
+/// holds `scheduler_lock`, and both of those can take it again — a nested
+/// acquisition would deadlock.  It also stops new pages being evicted out from
+/// under the migration.
+static SWAPOFF: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+
+/// True while a `swapoff` migration runs; `kalloc` skips its reclaim instead of
+/// recursing into a lock the migration holds (see [`SWAPOFF`]).
+pub fn swapoff_in_progress() -> bool {
+    SWAPOFF.load(Ordering::Acquire) != 0
+}
+
+/// Begin a `swapoff` migration: stop accepting new evictions and mark the walk
+/// in progress.  Returns 0, or -1 when a migration is already running.
+#[unsafe(no_mangle)]
+pub extern "C" fn swap_migrate_begin() -> i32 {
+    if SWAPOFF
+        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return -1;
+    }
+    swap_disable();
+    0
+}
+
+/// End a `swapoff` migration.
+#[unsafe(no_mangle)]
+pub extern "C" fn swap_migrate_end() {
+    SWAPOFF.store(0, Ordering::Release);
+}
+
+/// Fault every device-swapped page of `pd` back into RAM and release its slots.
+/// Pool-backed (`PAGE_ZSWAP`) entries are left alone — the pool does not depend
+/// on the device.  Returns 0 when everything migrated, or -1 when a frame could
+/// not be had (the caller then leaves swap attached).
+///
+/// # Safety
+///
+/// `pd` must be null or a live page directory that stays alive for the call: the
+/// caller holds `scheduler_lock`, so the owning task cannot exit underneath it.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
+    if pd.is_null() {
+        return 0;
+    }
+    // Sweep the *user* window only: kernel VAs are never paged out, and the
+    // bound keeps the walk from wandering into the kernel half.
+    let end = USER_STACK_TOP as u64;
+    let mut va = USER_SPACE_START as u64;
+    while va < end {
+        // SAFETY: `pd` is a live page map and the walk only reads it.
+        let w = unsafe { crate::vmm::paging::walk(pd, va, false, false) };
+        if !w.pte_entry.is_null() {
+            let entry = w.pte_entry as *mut AtomicU64;
+            // SAFETY: `entry` points at one live atomic PTE.
+            let pte = unsafe { (*entry).load(Ordering::Acquire) };
+            if swap_pte::is_swapped(pte) && !swap_pte::in_zswap(pte) {
+                let slot = swap_pte::decode(pte);
+                let frame = kalloc();
+                if frame.is_null() {
+                    return -1;
+                }
+                // Read the page in *without* releasing the slot, then claim the
+                // PTE: whoever wins the compare-exchange releases the slot, so a
+                // racing fault and this pass free it exactly once.
+                if read_slot(slot, v2p(frame)) != 0 {
+                    // SAFETY: `frame` is a live PMM frame.
+                    unsafe { free_page(frame) };
+                    return -1;
+                }
+                let new_pte = (v2p(frame) & !0xFFF)
+                    | (pte & ((PAGE_RW | PAGE_USER) as u64))
+                    | PAGE_PRESENT as u64;
+                // SAFETY: `entry` points at one live atomic PTE.
+                let won = unsafe {
+                    (*entry).compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
+                }
+                .is_ok();
+                if won {
+                    lock_acquire(G_SWAP_LOCK.as_ptr());
+                    bitmap_free(slot);
+                    lock_release(G_SWAP_LOCK.as_ptr());
+                } else {
+                    // A racing fault restored this page first: drop our frame and
+                    // let it own the slot.
+                    // SAFETY: `frame` is a live PMM frame.
+                    unsafe { free_page(frame) };
+                }
+                flush_tlb(va);
+            }
+        }
+        va += PAGE_SIZE as u64;
+    }
+    0
+}
+
+/// Release every slot still marked used.  Only for the `swapoff` path, after
+/// [`swap_migrate_pd`] has run over every live address space: a slot still
+/// allocated then has no PTE left to name it (its owner is gone), so the device
+/// can be handed over clean.
+#[unsafe(no_mangle)]
+pub extern "C" fn swap_release_slots() {
+    lock_acquire(G_SWAP_LOCK.as_ptr());
+    // SAFETY: `G_BITMAP` is mutated under `G_SWAP_LOCK`.
+    let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
+    for b in bm.iter_mut() {
+        *b = 0;
+    }
+    // SAFETY: `G_STATS.used_slots` is cleared with the bitmap, under `G_SWAP_LOCK`.
+    unsafe { KStatic::get_mut(G_STATS.as_ptr()) }.used_slots = 0;
     lock_release(G_SWAP_LOCK.as_ptr());
 }
 
@@ -528,28 +654,42 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
         }
     }
 
-    // `swap_in_page`/`zswap_load` take the frame's *physical* address (that is
-    // what the backing store needs), while `kalloc` handed out a direct-map VA.
-    let ok = if from_pool {
-        zswap::zswap_load(slot, v2p(phys))
+    // Read the page in *without* releasing the backing store, then claim the
+    // PTE: whoever wins the compare-exchange releases it, so a second fault on
+    // this page (or a `swapoff` migration) cannot free a slot twice, nor read
+    // one that has just been reused.
+    let read_ok = if from_pool {
+        zswap::load_keep(slot, v2p(phys))
     } else {
-        swap_in_page(slot, v2p(phys)) == 0
+        read_slot(slot, v2p(phys)) == 0
     };
-    if !ok {
+    if !read_ok {
         // SAFETY: the frame is live and PMM-managed; this releases exactly one reference to it.
         unsafe { free_page(phys) };
         return -1;
     }
 
     let old_flags = pte & ((PAGE_RW | PAGE_USER) as u64);
-    // SAFETY: `pte_entry` points at one live atomic PTE; the store publishes the
-    // restored mapping, by the frame's physical address.
-    unsafe {
-        (*pte_entry).store(
-            (v2p(phys) & !0xFFF) | old_flags | PAGE_PRESENT as u64,
-            Ordering::Release,
-        )
-    };
+    let new_pte = (v2p(phys) & !0xFFF) | old_flags | PAGE_PRESENT as u64;
+    // SAFETY: `pte_entry` points at one live atomic PTE.
+    let won = unsafe {
+        (*pte_entry).compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
+    }
+    .is_ok();
+    if won {
+        if from_pool {
+            zswap::free_handle(slot);
+        } else {
+            lock_acquire(G_SWAP_LOCK.as_ptr());
+            bitmap_free(slot);
+            lock_release(G_SWAP_LOCK.as_ptr());
+        }
+    } else {
+        // Another context (a second fault on this page, or a swapoff migration)
+        // restored it first: drop our frame — the mapping is present now.
+        // SAFETY: the frame is live and PMM-managed.
+        unsafe { free_page(phys) };
+    }
     flush_tlb(page_va);
     0
 }

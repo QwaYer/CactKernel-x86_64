@@ -470,11 +470,14 @@ pub extern "C" fn kalloc() -> *mut u8 {
         }
         round += 1;
 
-        // A kalloc running *inside* an eviction (the eviction's zpool/zram store
-        // allocated) must not start another pass: it could pick the page being
-        // evicted and free its frame twice.  Fail this allocation instead — the
-        // caller is expected to handle null.
-        if crate::fault::swap::eviction_in_progress() {
+        // A kalloc running inside an eviction or a `swapoff` migration must not
+        // start a pass of its own: an eviction could pick the page being
+        // evicted and free its frame twice, and a migration holds the
+        // `scheduler_lock` its reclaim would try to take again.  Fail this
+        // allocation instead — the caller is expected to handle null.
+        if crate::fault::swap::eviction_in_progress()
+            || crate::fault::swap::swapoff_in_progress()
+        {
             return core::ptr::null_mut();
         }
 
