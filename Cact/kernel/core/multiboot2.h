@@ -166,7 +166,7 @@ struct mb2_tag_module {
 
 // Captured module info passed back from multiboot2_parse(); the first module
 // whose cmdline starts with "localbinrepo" is recorded, and the first starting with
-// "firmrepo" is recorded separately.
+// "firmrepo" (and with "netdrvrepo") is recorded separately.
 #define MB2_MODULE_NAME_MAX 32
 typedef struct {
     uint32_t mod_start;     // 0 when no matching module was found
@@ -181,6 +181,13 @@ extern mb2_module_info_t mb2_localbinrepo_module;
 // stays in place in physical memory (RAM is identity-mapped) and /dev/firmrepo
 // hands it to userspace, because the image is far too big to copy.
 extern mb2_module_info_t mb2_firmrepo_module;
+
+// netdrvrepo.tar.zst captured during multiboot2_parse(): the network driver
+// modules, served in place as /dev/netdrvrepo exactly like firmrepo.  Kept out
+// of the localbinrepo staging buffer (which is far too small for the driver
+// set) and left to userspace — firmextr streams a .cctk out of it, then modload
+// maps it.
+extern mb2_module_info_t mb2_netdrvrepo_module;
 
 // Highest end address over every MB2 module tag (0 when there were none).  The
 // RAM below it holds the modules loaded by GRUB — available RAM per the memory
