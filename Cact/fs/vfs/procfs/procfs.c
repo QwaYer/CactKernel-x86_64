@@ -123,6 +123,7 @@ void procfs_init(void) {
     procfs_register_file("cpuinfo", _cpuinfo_read);
     procfs_register_file("apic",    _apic_read);
     procfs_register_file("meminfo", _meminfo_read);
+    procfs_register_file("zmem",    _zmem_read);
     procfs_register_file("uptime",  _uptime_read);
     procfs_register_file("version", _version_read);
     procfs_register_file("time",    _time_read);

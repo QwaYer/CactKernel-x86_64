@@ -10,6 +10,8 @@
 #include "slab.h"
 #include "shm.h"
 #include "swap.h"
+#include "zram.h"
+#include "zswap.h"
 #include "pagecache.h"
 #include "page_fault.h"
 #include "oom.h"
@@ -443,6 +445,63 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
 
     #undef _A
     #undef _N
+
+    uint32_t len = (uint32_t)p;
+    if (off >= len) return 0;
+    if (size > len - off) size = (uint32_t)(len - off);
+    memcpy(buf, tmp + off, size);
+    return (int)size;
+}
+
+//
+// /proc/zmem — the read side of the compressed-memory interface: the zswap
+// pool plus every zram device, with original/compressed sizes so the
+// compression the hardware pays for is visible (what `zmemctl` reports and
+// `free`-style tools can read).  Written by /dev/zmem's ioctls and by the
+// zram=/zswap= command line; see Cact/kernel/memory/{zram,zswap}.h.
+int _zmem_read(uint64_t off, uint32_t size, char *buf) {
+    char tmp[1024]; int p = 0;
+
+    /* Bounded appends: _meminfo_read's _A has no capacity guard, so this
+     * generator uses the guarded form to stay safe if the device count grows. */
+    #define _A(s) { const char *_s=(s); while (*_s && p < (int)sizeof(tmp) - 1) tmp[p++]=*_s++; }
+    #define _N(n) { char _b[16]; snprintf(_b, sizeof(_b), "%d", (int)(n)); _A(_b); }
+    #define _KB(n) { char _b[24]; snprintf(_b, sizeof(_b), "%llu", (unsigned long long)((n) / 1024u)); _A(_b); }
+    /* Percentage of the original that the compressed form saves. */
+    #define _SAVED(orig, comp) ((unsigned)(((orig) > (comp)) ? (((orig) - (comp)) * 100ull / (orig)) : 0ull))
+
+    zswap_stats_t zs;
+    memset(&zs, 0, sizeof(zs));
+    zswap_get_stats(&zs);
+    _A("zswap: "); _A(zs.enabled ? "on" : "off");
+    _A(" writeback="); _N(zs.writeback);
+    _A(" level="); _N(zs.level);
+    _A("\n  budget:  "); _N(zs.capacity_pages); _A(" pages, ");
+    _KB(zs.budget_bytes); _A(" kB\n");
+    _A("  pooled:  "); _N(zs.pool_pages); _A(" pages, ");
+    _KB(zs.stored_bytes); _A(" kB from "); _KB(zs.original_bytes);
+    _A(" kB (saves "); _N(_SAVED(zs.original_bytes, zs.stored_bytes)); _A("%)\n");
+    _A("  events:  "); _N(zs.stores); _A(" stores, ");
+    _N(zs.store_fail); _A(" refused, "); _N(zs.loads); _A(" loads, ");
+    _N(zs.writebacks); _A(" writebacks\n");
+
+    int n = zram_count();
+    for (int i = 0; i < n; i++) {
+        zram_info_t zi;
+        if (zram_get_info(i, &zi) != 0) continue;
+        _A("zram "); _A(zi.name);
+        _A(": "); _N(zi.capacity_pages); _A(" pages capacity\n");
+        _A("  stored:  "); _N(zi.stored_pages); _A(" pages, ");
+        _KB(zi.stored_bytes); _A(" kB from "); _KB(zi.original_bytes);
+        _A(" kB (saves "); _N(_SAVED(zi.original_bytes, zi.stored_bytes)); _A("%)\n");
+        _A("  io:      "); _N(zi.pages_in); _A(" reads, ");
+        _N(zi.pages_out); _A(" writes\n");
+    }
+
+    #undef _A
+    #undef _N
+    #undef _KB
+    #undef _SAVED
 
     uint32_t len = (uint32_t)p;
     if (off >= len) return 0;

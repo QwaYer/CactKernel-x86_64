@@ -29,6 +29,8 @@
 #include "cact_acpi.h"
 #include "tty.h"
 #include "rtc.h"
+#include "zram.h"
+#include "zswap.h"
 
 // devfs_services.c — kernel-service devices exposed through devfs.
 //
@@ -345,6 +347,55 @@ static int _sys_ioctl(void *p, uint32_t cmd, void *arg) {
 }
 
 devfs_driver_t drv_sys = { .ioctl = _sys_ioctl };
+
+// ── /dev/zmem ─────────────────────────────────────────────────────────────
+// The single atomic control node for the compressed-memory backends (zram and
+// zswap).  Root only, like /dev/sys: these change how the whole system's memory
+// behaves.  Each ioctl configures *and* enables in one call.
+
+static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
+    (void)p;
+    int r = _root_only();
+    if (r) return r;
+
+    switch (cmd) {
+    case CACT_ZMEM_ZSWAP_SET: {
+        cact_zmem_zswap_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (!a.enabled)
+            return zswap_disable();
+        if (a.max_pool_pct == 0 || a.max_pool_pct > 100) return -EINVAL;
+        if (zswap_enable(a.max_pool_pct, (int)a.compress_level,
+                         (int)a.writeback) != 0)
+            return -EINVAL;
+        return 0;
+    }
+
+    case CACT_ZMEM_ZRAM_CREATE: {
+        cact_zmem_zram_create_t a;
+        if (!arg) return -EINVAL;
+        if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
+        if (a.name[sizeof(a.name) - 1] != '\0') return -EINVAL;
+        return zram_create(a.name, a.size_bytes, (int)a.compress_level);
+    }
+
+    case CACT_ZMEM_ZRAM_DESTROY: {
+        if (!arg) return -EINVAL;
+        if (!validate_user_str((const char *)arg)) return -EFAULT;
+        char *kname = copy_path_from_user((char *)arg);
+        if (!kname) return -EFAULT;
+        int rc = zram_destroy(kname);
+        kfree(kname);
+        return rc;
+    }
+
+    default:
+        return -EINVAL;
+    }
+}
+
+devfs_driver_t drv_zmem = { .ioctl = _zmem_ioctl };
 
 // ── /dev/net ──────────────────────────────────────────────────────────────
 
@@ -787,6 +838,7 @@ devfs_driver_t drv_epoll = { .ioctl = _epoll_ioctl };
 void devfs_services_init(void) {
     register_chrdev("console", DEVFS_F_CHAR, &drv_console, 0);
     register_chrdev("sys",     DEVFS_F_CHAR, &drv_sys,     0);
+    register_chrdev("zmem",    DEVFS_F_CHAR, &drv_zmem,    0);
     register_chrdev("net",     DEVFS_F_CHAR, &drv_net,     0);
     register_chrdev("pipe",    DEVFS_F_CHAR, &drv_pipe,    0);
     register_chrdev("memfd",   DEVFS_F_CHAR, &drv_memfd,   0);
