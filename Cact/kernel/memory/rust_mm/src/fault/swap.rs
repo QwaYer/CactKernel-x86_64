@@ -313,12 +313,43 @@ pub extern "C" fn swap_free_slot(slot: SwapSlot) {
     lock_release(G_SWAP_LOCK.as_ptr());
 }
 
+/// Non-zero while an eviction is running on some CPU.
+///
+/// Eviction allocates (the zswap pool's blobs, zram's page store), and under
+/// memory pressure that allocation runs `kalloc`'s own reclaim, which would
+/// re-enter eviction — and a second pass can pick the very page being evicted,
+/// freeing its frame twice.  A disk-backed swap never allocated here, so this
+/// only became reachable once zswap/zram (heap-backed) were in play.
+static EVICT_BUSY: core::sync::atomic::AtomicI32 = core::sync::atomic::AtomicI32::new(0);
+
+/// True while an eviction is in progress; `kalloc` uses it to skip its own
+/// reclaim attempt instead of recursing (see [`EVICT_BUSY`]).
+pub fn eviction_in_progress() -> bool {
+    EVICT_BUSY.load(Ordering::Acquire) != 0
+}
+
 /// # Safety
 ///
 /// `pd` must be null or a valid page directory whose user PTEs the caller is
 /// allowed to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
+    // Refuse a nested/concurrent eviction: see `EVICT_BUSY`.
+    if EVICT_BUSY.fetch_add(1, Ordering::AcqRel) != 0 {
+        EVICT_BUSY.fetch_sub(1, Ordering::AcqRel);
+        return -1;
+    }
+    // SAFETY: forwarded to the caller's contract.
+    let rc = unsafe { swap_evict_page_inner(pd) };
+    EVICT_BUSY.fetch_sub(1, Ordering::AcqRel);
+    rc
+}
+
+/// # Safety
+///
+/// `pd` must be null or a valid page directory whose user PTEs the caller is
+/// allowed to mutate; the caller must not race another page-table walker.
+unsafe fn swap_evict_page_inner(pd: *mut u64) -> i32 {
     // Evicting is possible with a swap device, with the zswap pool, or with both.
     if pd.is_null() || (!swap_is_enabled() && !zswap::zswap_is_enabled()) {
         return -1;
@@ -366,6 +397,21 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
                     // another mapping.  Evicting it would move a frame someone
                     // still owns, so skip it and keep scanning.
                     if crate::pmm::page_ref_get(p2v(phys) as *const u8) > 1 {
+                        va += PAGE_SIZE;
+                        if va >= USER_STACK_TOP {
+                            va = USER_SPACE_START;
+                        }
+                        continue;
+                    }
+                    // Only an anonymous page may be evicted: a file-backed or
+                    // shared-memory page's frame belongs to the page cache / an
+                    // shm object, and freeing one from here corrupts that owner
+                    // (under pressure this faulted in `file_unref`).
+                    // SAFETY: `current_proc()` is the running task's `ProcMeta`
+                    // (or null, which classifies the address as anonymous).
+                    if !unsafe {
+                        crate::vmm::stats::va_is_anonymous(crate::vmm::stats::current_proc(), va)
+                    } {
                         va += PAGE_SIZE;
                         if va >= USER_STACK_TOP {
                             va = USER_SPACE_START;

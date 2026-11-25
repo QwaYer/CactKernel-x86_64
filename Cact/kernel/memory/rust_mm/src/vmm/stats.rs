@@ -50,6 +50,41 @@ unsafe fn classify(tbl: *mut MmapTable, shm_ranges: &[(u32, u32)], va: u32) -> O
     Some(fd >= 0 || shobj > 0)
 }
 
+/// True when the user page at `va` is anonymous — the only kind swap may evict.
+/// File-backed, shared-memory and unmapped addresses are `false`: their frames
+/// belong to the page cache or an shm object, so freeing one from under that
+/// owner corrupts it (under pressure this showed up as a kernel fault in
+/// `file_unref`).
+///
+/// # Safety
+///
+/// `proc` must be null or the live `ProcMeta` that owns the address space.
+pub unsafe fn va_is_anonymous(proc: *const ProcMeta, va: u32) -> bool {
+    let mut shm_ranges = [(0u32, 0u32); TASK_SHM_MAX];
+    let n_shm = shm_attached_ranges(proc, &mut shm_ranges);
+    let tbl = if proc.is_null() {
+        core::ptr::null_mut()
+    } else {
+        // SAFETY: `proc` is the caller's live `ProcMeta`.
+        unsafe { (*proc).mmap_table }
+    };
+    // SAFETY: `tbl` is null or the process's live mmap table.
+    matches!(unsafe { classify(tbl, &shm_ranges[..n_shm], va) }, Some(false))
+}
+
+/// The `ProcMeta` of the running task, or null (a kernel thread has none).
+pub fn current_proc() -> *const ProcMeta {
+    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may
+    // return null, which the check below handles.
+    let t = unsafe { cact_current_task_get() };
+    if t.is_null() {
+        return core::ptr::null();
+    }
+    // SAFETY: `t` is the live current task; `proc` may itself be null, which the
+    // caller treats as "no mmap table".
+    unsafe { (*t).proc as *const ProcMeta }
+}
+
 /// Walk `pd` (a process PML4) and report its user pages and private page-table
 /// pages.  `proc` is the owning `ProcMeta` (mmap table + shm attachments), or
 /// null for a bare address space.  A null/kernel `pd` yields all-zero counts.
