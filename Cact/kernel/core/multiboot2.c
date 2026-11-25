@@ -18,6 +18,7 @@
 mb2_module_info_t mb2_localbinrepo_module;
 mb2_module_info_t mb2_firmrepo_module;
 mb2_module_info_t mb2_netdrvrepo_module;
+mb2_module_info_t mb2_drvrepo_module;
 
 // Highest end address over all MB2 module tags: the RAM the bootloader loaded
 // images into.  It is ordinary "available" RAM as far as the memory map says,
@@ -85,6 +86,9 @@ void multiboot2_parse(uint32_t mb2_info_addr,
     mb2_netdrvrepo_module.mod_start = 0;
     mb2_netdrvrepo_module.mod_size  = 0;
     mb2_netdrvrepo_module.name[0]   = '\0';
+    mb2_drvrepo_module.mod_start = 0;
+    mb2_drvrepo_module.mod_size  = 0;
+    mb2_drvrepo_module.name[0]   = '\0';
     mb2_modules_end = 0;
     mb2_efi_systab  = 0;
 
@@ -206,9 +210,9 @@ void multiboot2_parse(uint32_t mb2_info_addr,
             // Highest module end over the whole tag list: see mb2_modules_end.
             if (t->mod_end > mb2_modules_end) mb2_modules_end = t->mod_end;
 
-            // Where the bootloader put it.  firmrepo and netdrvrepo are served
-            // *in place* (RAM is identity-mapped), so this physical range is
-            // the only address the module ever has; it lies inside the boot
+            // Where the bootloader put it.  firmrepo, netdrvrepo and drvrepo are
+            // served *in place* (RAM is identity-mapped), so this physical range
+            // is the only address the module ever has; it lies inside the boot
             // reservation the PMM logs right after this parse.
             pr_info("%s: module %s at phys 0x%x-0x%x (%u B, %u KiB)\n",
                     "multiboot2", t->string,
@@ -239,6 +243,14 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                 mb2_netdrvrepo_module.mod_start = t->mod_start;
                 mb2_netdrvrepo_module.mod_size  = t->mod_end - t->mod_start;
                 copy_module_name(mb2_netdrvrepo_module.name, t->string,
+                                 MB2_MODULE_NAME_MAX);
+            }
+            if (mb2_drvrepo_module.mod_start == 0 &&
+                starts_with(t->string, "drvrepo"))
+            {
+                mb2_drvrepo_module.mod_start = t->mod_start;
+                mb2_drvrepo_module.mod_size  = t->mod_end - t->mod_start;
+                copy_module_name(mb2_drvrepo_module.name, t->string,
                                  MB2_MODULE_NAME_MAX);
             }
             break;

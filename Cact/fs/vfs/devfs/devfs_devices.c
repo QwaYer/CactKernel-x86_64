@@ -121,13 +121,14 @@ devfs_driver_t drv_fb = {
     .read=_fb_read, .write=_fb_write, .ioctl=_fb_ioctl
 };
 
-// /dev/firmrepo, /dev/localbinrepo, /dev/netdrvrepo — the Multiboot2 modules GRUB
-// hands over: the compressed firmrepo archive, the localbinrepo image and the
-// network driver archive.  All are far too big to stage a second time, so they
-// stay in place in physical memory and are served read-only.  The module's
-// physical range lies inside the boot reservation, whose low identity alias a
-// process PD can shadow (the ELF image is loaded in that same range), so the
-// copy goes through the direct map, whose PML4 entry every address space shares.
+// /dev/firmrepo, /dev/localbinrepo, /dev/netdrvrepo, /dev/drvrepo — the
+// Multiboot2 modules GRUB hands over: the compressed firmware archive, the
+// localbinrepo image and the two driver archives (network and the rest).  All
+// are far too big to stage a second time, so they stay in place in physical
+// memory and are served read-only.  The module's physical range lies inside the
+// boot reservation, whose low identity alias a process PD can shadow (the ELF
+// image is loaded in that same range), so the copy goes through the direct map,
+// whose PML4 entry every address space shares.
 static int _module_read(const mb2_module_info_t *mod, uint64_t off,
                         uint32_t size, char *buf) {
     uint32_t total = mod->mod_size;
@@ -152,9 +153,15 @@ static int _netdrvrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     return _module_read(&mb2_netdrvrepo_module, off, size, buf);
 }
 
+static int _drvrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
+    (void)p;
+    return _module_read(&mb2_drvrepo_module, off, size, buf);
+}
+
 devfs_driver_t drv_firmrepo = { .read=_firmrepo_read };
 devfs_driver_t drv_localbinrepo = { .read=_localbinrepo_read };
 devfs_driver_t drv_netdrvrepo = { .read=_netdrvrepo_read };
+devfs_driver_t drv_drvrepo = { .read=_drvrepo_read };
 
 // Register this file's devices.  Each driver group registers the nodes it
 // owns, so devfs_init() stays a generic bootstrap and carries no device list.
@@ -196,6 +203,15 @@ void devfs_devices_init(void) {
     else
         pr_warn("%s: no netdrvrepo module — /dev/netdrvrepo reads empty\n", "devfs");
 
+    // /dev/drvrepo carries the non-network driver archive, with the same
+    // optional-module contract as /dev/netdrvrepo above.
+    if (mb2_drvrepo_module.mod_start)
+        pr_info("%s: drvrepo module %s, %u KiB (served as /dev/drvrepo)\n",
+                "devfs", mb2_drvrepo_module.name,
+                (unsigned)(mb2_drvrepo_module.mod_size / 1024));
+    else
+        pr_warn("%s: no drvrepo module — /dev/drvrepo reads empty\n", "devfs");
+
     devfs_entry_t *lr =
         register_chrdev("firmrepo", DEVFS_F_CHAR, &drv_firmrepo, 0);
     // Publish the module size on the node: with no module it stays 0, which is
@@ -219,4 +235,10 @@ void devfs_devices_init(void) {
         register_chrdev("netdrvrepo", DEVFS_F_CHAR, &drv_netdrvrepo, 0);
     if (nr)
         nr->node.size = mb2_netdrvrepo_module.mod_size;
+
+    // /dev/drvrepo serves the non-network driver archive in place, the same way.
+    devfs_entry_t *dr =
+        register_chrdev("drvrepo", DEVFS_F_CHAR, &drv_drvrepo, 0);
+    if (dr)
+        dr->node.size = mb2_drvrepo_module.mod_size;
 }
