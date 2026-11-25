@@ -278,8 +278,10 @@ pub extern "C" fn drm_fb_handle_release(file: *mut DrmFile, fb_id: u32) {
         return;
     }
 
-    /* A CRTC scanning this out keeps its own reference through crtc->fb, so it only
-     * forgets the pointer here. */
+    /* A CRTC scanning this out took its own reference on the object when it
+     * started; clearing crtc->fb must drop that reference too, or the object can
+     * never be freed.  (Each CRTC that has this framebuffer attached holds one
+     * reference of its own, so this is one unref per matching CRTC.) */
     // SAFETY: `dev` is the live device; this borrow of its CRTC list is consumed by
     // the scan.
     let crtcs = unsafe { &(*dev).crtcs };
@@ -290,6 +292,12 @@ pub extern "C" fn drm_fb_handle_release(file: *mut DrmFile, fb_id: u32) {
             // framebuffer.
             let cur = unsafe { (*crtc).fb };
             if cur == fb as *mut c_void {
+                // SAFETY: `fb` is the live framebuffer; this reads the object the CRTC
+                // held a reference to.
+                let obj = unsafe { (*fb).obj };
+                if !obj.is_null() {
+                    drm_gem_unref(obj);
+                }
                 // SAFETY: as above — clearing the CRTC's framebuffer pointer.
                 unsafe { (*crtc).fb = core::ptr::null_mut() };
             }
