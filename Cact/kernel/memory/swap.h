@@ -11,10 +11,11 @@
 #define SWAP_BITMAP_SIZE    (SWAP_MAX_SLOTS / 8)
 #define SWAP_DATA_START_LBA 1u
 
-#define PAGE_SWAPPED        0x200u
-
-#define SWAP_SLOT_MASK      0xFFFFF000u
-#define SWAP_SLOT_SHIFT     12u
+/* The PTE encoding of a swapped-out page (marker bit + slot in the frame field)
+ * lives entirely in the Rust side (`rust_mm/src/fault/swap.rs`): it is that code
+ * which writes and decodes the entries, and a C mirror here once carried a
+ * different marker bit (0x200, which is PAGE_COW in ffi.rs).  C only needs the
+ * lifecycle and backing-device API below. */
 
 typedef uint32_t swap_slot_t;
 
@@ -56,20 +57,5 @@ swap_stats_t swap_get_stats(void);
 void         swap_print_stats(void);
 int          swap_evict_page(uint64_t* pd);
 int          swap_handle_fault(uint64_t* pd, uint64_t fault_addr);
-
-static inline uint32_t swap_encode_pte(swap_slot_t slot)
-{
-    return ((slot << SWAP_SLOT_SHIFT) & SWAP_SLOT_MASK) | PAGE_SWAPPED;
-}
-
-static inline swap_slot_t swap_decode_pte(uint32_t pte)
-{
-    return (pte & SWAP_SLOT_MASK) >> SWAP_SLOT_SHIFT;
-}
-
-static inline int swap_pte_is_swapped(uint32_t pte)
-{
-    return (!(pte & PAGE_PRESENT)) && (pte & PAGE_SWAPPED);
-}
 
 #endif
