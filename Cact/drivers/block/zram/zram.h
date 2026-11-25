@@ -29,9 +29,14 @@
  * out. */
 int zram_create(const char *name, uint64_t size_bytes, int level);
 
+/* zram_destroy() outcomes. */
+#define ZRAM_DESTROY_OK    0   /* freed */
+#define ZRAM_DESTROY_NODEV 1   /* no device with that name */
+#define ZRAM_DESTROY_BUSY  2   /* it backs swap — detach first */
+
 /* Destroy a device: frees every stored page, removes its /dev node and gives up
- * its slot.  Refuses (-1) while the device still backs swap — detach it first
- * (its pages are live).  Returns 0 on success. */
+ * its slot.  Returns a ZRAM_DESTROY_* code; refuses with BUSY while the device
+ * still backs swap (its pages are live). */
 int zram_destroy(const char *name);
 
 /* True when a device of that name exists. */

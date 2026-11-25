@@ -236,11 +236,11 @@ int zram_create(const char *name, uint64_t size_bytes, int level) {
 int zram_destroy(const char *name) {
     zram_dev_t *zd = zram_find(name);
     if (!zd)
-        return -1;
+        return ZRAM_DESTROY_NODEV;
     if (swap_is_backing_device(zd->dev)) {
         pr_warn("zram: %s is the swap backing device — detach swap first\n",
                 zd->name);
-        return -1;
+        return ZRAM_DESTROY_BUSY;
     }
 
     // Drop the /dev node and the block-layer entry (no partitions: a zram
@@ -253,7 +253,7 @@ int zram_destroy(const char *name) {
 
     pr_info("zram: %s destroyed\n", zd->name);
     memset(zd, 0, sizeof *zd);
-    return 0;
+    return ZRAM_DESTROY_OK;
 }
 
 int zram_exists(const char *name) {

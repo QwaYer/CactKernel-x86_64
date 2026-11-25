@@ -67,6 +67,9 @@
 #ifndef EOPNOTSUPP
 #define EOPNOTSUPP 95
 #endif
+#ifndef EBUSY
+#define EBUSY 16
+#endif
 
 static int _root_only(void) {
     if (!current_task || !current_task->proc) return -1;
@@ -366,9 +369,11 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         if (!a.enabled)
             return zswap_disable();
         if (a.max_pool_pct == 0 || a.max_pool_pct > 100) return -EINVAL;
+        // The percentage is checked above, so a failure here is the pool
+        // allocation.
         if (zswap_enable(a.max_pool_pct, (int)a.compress_level,
                          (int)a.writeback) != 0)
-            return -EINVAL;
+            return -ENOMEM;
         return 0;
     }
 
@@ -377,7 +382,9 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         if (!arg) return -EINVAL;
         if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
         if (a.name[sizeof(a.name) - 1] != '\0') return -EINVAL;
-        return zram_create(a.name, a.size_bytes, (int)a.compress_level);
+        if (zram_create(a.name, a.size_bytes, (int)a.compress_level) != 0)
+            return -EINVAL;   // name in use, size below a page, or out of memory
+        return 0;
     }
 
     case CACT_ZMEM_ZRAM_DESTROY: {
@@ -387,7 +394,9 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         if (!kname) return -EFAULT;
         int rc = zram_destroy(kname);
         kfree(kname);
-        return rc;
+        if (rc == ZRAM_DESTROY_OK)   return 0;
+        if (rc == ZRAM_DESTROY_BUSY) return -EBUSY;
+        return -ENODEV;
     }
 
     default:
