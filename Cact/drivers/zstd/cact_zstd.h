@@ -25,4 +25,24 @@ size_t cact_zstd_frame_size(const void *src, size_t src_size);
 size_t cact_zstd_decompress(const void *src, size_t src_size,
                             void *dst, size_t dst_capacity);
 
+/*
+ * Streaming single-frame decompression, for the drvrepo/netdrvrepo reader: it
+ * pulls one member out of a compressed archive without staging the whole thing
+ * in RAM.  The decoder lives in a caller-owned workspace, so nothing here
+ * allocates and there is no persistent decoder state.
+ */
+
+/* Bytes a streaming decoder needs in its workspace (>= this, 16-byte aligned). */
+size_t cact_zstd_dstream_ws_size(void);
+
+/* Initialise a streaming decoder inside ws.  Returns the handle, or NULL when
+ * the workspace is too small. */
+void *cact_zstd_dstream_init(void *ws, size_t ws_size);
+
+/* One step: consume *in_pos of in, produce *out_pos of out.  Returns 1 when the
+ * frame is complete, 0 when more input/output is needed, -1 on error. */
+int cact_zstd_dstream_step(void *ctx, const void *in, size_t in_size,
+                           size_t *in_pos, void *out, size_t out_size,
+                           size_t *out_pos);
+
 #endif /* CACT_ZSTD_H */

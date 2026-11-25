@@ -66,3 +66,52 @@ size_t cact_zstd_decompress(const void *src, size_t src_size,
 
 	return ret;
 }
+
+size_t cact_zstd_dstream_ws_size(void)
+{
+	return ZSTD_estimateDCtxSize();
+}
+
+void *cact_zstd_dstream_init(void *ws, size_t ws_size)
+{
+	ZSTD_DCtx *dctx;
+
+	if (!ws || ws_size < ZSTD_estimateDCtxSize())
+		return 0;
+
+	dctx = ZSTD_initStaticDCtx(ws, ws_size);
+	if (!dctx)
+		return 0;
+
+	/* Same as ZSTD_initDStream(): begin a fresh session. */
+	ZSTD_DCtx_reset(dctx, ZSTD_reset_session_only);
+	return dctx;
+}
+
+int cact_zstd_dstream_step(void *ctx, const void *in, size_t in_size,
+			   size_t *in_pos, void *out, size_t out_size,
+			   size_t *out_pos)
+{
+	ZSTD_inBuffer ib;
+	ZSTD_outBuffer ob;
+	size_t ret;
+
+	if (!ctx || !in_pos || !out_pos)
+		return -1;
+
+	ib.src = in;
+	ib.size = in_size;
+	ib.pos = *in_pos;
+	ob.dst = out;
+	ob.size = out_size;
+	ob.pos = *out_pos;
+
+	ret = ZSTD_decompressStream((ZSTD_DCtx *)ctx, &ob, &ib);
+	*in_pos = ib.pos;
+	*out_pos = ob.pos;
+
+	if (ZSTD_isError(ret))
+		return -1;
+
+	return ret == 0 ? 1 : 0;
+}

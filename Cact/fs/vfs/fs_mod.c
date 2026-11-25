@@ -17,6 +17,7 @@
 
 #include "fs_mod.h"
 #include "initfs_modblob.h"
+#include "tarmod.h"
 #include "ksym.h"
 #include "klib.h"
 #include "memory.h"
@@ -114,7 +115,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
                              fs_unmount_fn_t *unmount_out) {
     const uint8_t *blob_data = NULL;
     uint32_t       blob_size = 0;
-    if (initfs_modblob_get(path, &blob_data, &blob_size) != 0 || !blob_size) {
+    if (modsrc_get(path, &blob_data, &blob_size) != 0 || !blob_size) {
         pr_err("fsmod: module not found: %s\n", path);
         return -ENOENT;
     }
@@ -502,7 +503,7 @@ int fs_mod_detect(const char *path) {
 
     const uint8_t *blob = NULL;
     uint32_t       size = 0;
-    if (initfs_modblob_get(path, &blob, &size) != 0 || !blob || !size)
+    if (modsrc_get(path, &blob, &size) != 0 || !blob || !size)
         return -1;
 
     Elf64_Ehdr *eh = (Elf64_Ehdr *)blob;
