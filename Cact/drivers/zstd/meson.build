@@ -2,22 +2,22 @@
 # Copyright (C) 2026 CactOS Project
 
 # ==============================================================================
-# Cact/drivers/zstd — in-kernel zstd decompressor
+# Cact/drivers/zstd — in-kernel zstd compressor + decompressor
 # ==============================================================================
 #
-# Imported from Linux 7.3.0-rc4 (decompress-only object set):
-#   lib/zstd/{common,decompress}  — from lib/zstd/Makefile (zstd_decompress +
-#                                   zstd_common)
+# Imported from Linux 7.3.0-rc4 (object set of lib/zstd/Makefile, minus the
+# non-vendored *_module.c wrappers):
+#   lib/zstd/{common,compress,decompress}  — zstd_compress + zstd_decompress +
+#                                            zstd_common
 #   lib/xxhash.c                  — zstd's only source dependency
 #   include/linux/zstd*.h, xxhash.h
 #
 # The imported sources are unmodified apart from their includes, which point at
 # the Cact compat headers in compat/ instead of <linux/...>.  cact_zstd.c is the
-# Cact glue: single-frame decompression into an aligned kmalloc'd DCtx
-# workspace.
+# Cact glue: single-frame (de)compression into an aligned kmalloc'd workspace.
 # ==============================================================================
 
-zstd_includes = include_directories('.', 'common', 'decompress')
+zstd_includes = include_directories('.', 'common', 'compress', 'decompress')
 
 kernel_libs += static_library('cact_zstd',
   files(
@@ -26,6 +26,19 @@ kernel_libs += static_library('cact_zstd',
     'common/error_private.c',
     'common/fse_decompress.c',
     'common/zstd_common.c',
+    'compress/fse_compress.c',
+    'compress/hist.c',
+    'compress/huf_compress.c',
+    'compress/zstd_compress.c',
+    'compress/zstd_compress_literals.c',
+    'compress/zstd_compress_sequences.c',
+    'compress/zstd_compress_superblock.c',
+    'compress/zstd_double_fast.c',
+    'compress/zstd_fast.c',
+    'compress/zstd_lazy.c',
+    'compress/zstd_ldm.c',
+    'compress/zstd_opt.c',
+    'compress/zstd_preSplit.c',
     'decompress/huf_decompress.c',
     'decompress/zstd_ddict.c',
     'decompress/zstd_decompress.c',

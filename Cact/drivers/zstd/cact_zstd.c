@@ -67,6 +67,58 @@ size_t cact_zstd_decompress(const void *src, size_t src_size,
 	return ret;
 }
 
+size_t cact_zstd_compress_bound(size_t src_size)
+{
+	if (!src_size)
+		return 0;
+
+	return ZSTD_compressBound(src_size);
+}
+
+size_t cact_zstd_compress(int level, const void *src, size_t src_size,
+			  void *dst, size_t dst_capacity)
+{
+	ZSTD_compressionParameters cparams;
+	ZSTD_CCtx *cctx;
+	size_t ws_size;
+	void *ws;
+	size_t ret;
+
+	if (!src || !src_size || !dst || !dst_capacity)
+		return 0;
+
+	/* Size the context from the parameters zstd will actually use for this
+	 * source size, mirroring Linux's zstd_cctx_workspace_bound().  Using
+	 * ZSTD_estimateCCtxSize() instead would provision the library-wide worst
+	 * case (megabytes) to compress one 4 KiB page. */
+	cparams = ZSTD_getCParams(level, src_size, 0);
+	ws_size = ZSTD_estimateCCtxSize_usingCParams(cparams);
+	if (ws_size == 0 || ZSTD_isError(ws_size))
+		return 0;
+
+	/* zstd requires the workspace 8-byte aligned; kmalloc() only guarantees
+	 * the heap's block alignment, so ask for an explicitly aligned block. */
+	ws = kmalloc_aligned(ws_size, 16);
+	if (!ws)
+		return 0;
+
+	cctx = ZSTD_initStaticCCtx(ws, ws_size);
+	if (!cctx) {
+		kfree(ws);
+		return 0;
+	}
+
+	/* ZSTD_compressCCtx() resolves its parameters from (level, src_size),
+	 * the same pair the workspace was sized for above. */
+	ret = ZSTD_compressCCtx(cctx, dst, dst_capacity, src, src_size, level);
+	kfree(ws);
+
+	if (ZSTD_isError(ret))
+		return 0;
+
+	return ret;
+}
+
 size_t cact_zstd_dstream_ws_size(void)
 {
 	return ZSTD_estimateDCtxSize();

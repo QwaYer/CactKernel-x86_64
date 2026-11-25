@@ -26,6 +26,25 @@ size_t cact_zstd_decompress(const void *src, size_t src_size,
                             void *dst, size_t dst_capacity);
 
 /*
+ * In-kernel zstd compressor (same vendored tree as the decompressor above).
+ *
+ * The compressed-RAM swap backends (zram, zswap) compress single 4 KiB pages,
+ * so the context is sized from the parameters zstd picks for that source size
+ * rather than the library-wide worst case — a 4 KiB frame needs a ~100 KiB
+ * window, not the multi-megabyte estimate ZSTD_estimateCCtxSize() returns.
+ */
+
+/* Worst-case compressed size of an `src_size`-byte frame. */
+size_t cact_zstd_compress_bound(size_t src_size);
+
+/* Compress src into dst.  `level` is a zstd level (0 = library default); a
+ * frame header is emitted, so cact_zstd_frame_size()/cact_zstd_decompress()
+ * read it straight back.  Returns the bytes written, or 0 on any failure
+ * (bad argument, workspace allocation failure, dst too small). */
+size_t cact_zstd_compress(int level, const void *src, size_t src_size,
+                          void *dst, size_t dst_capacity);
+
+/*
  * Streaming single-frame decompression, for the drvrepo/netdrvrepo reader: it
  * pulls one member out of a compressed archive without staging the whole thing
  * in RAM.  The decoder lives in a caller-owned workspace, so nothing here
