@@ -110,6 +110,13 @@ static int swap_disk_read(uint32_t lba, void* buf, uint32_t sectors)
 {
     if (!swap_backing_dev)
         return -1;
+    // A whole page in one request (the common case — swap pages in 4 KiB units):
+    // let a RAM-backed device (zram) decompress once instead of once per sector.
+    if (sectors == BLKDEV_SECTORS_PER_PAGE &&
+        (lba - SWAP_DATA_START_LBA) % BLKDEV_SECTORS_PER_PAGE == 0)
+        return blkdev_read_page(swap_backing_dev,
+                                (lba - SWAP_DATA_START_LBA) / BLKDEV_SECTORS_PER_PAGE,
+                                (uint8_t*)buf);
     uint8_t* ptr = (uint8_t*)buf;
     for (uint32_t i = 0; i < sectors; i++) {
         if (blkdev_read(swap_backing_dev, lba + i, ptr) != 0)
@@ -124,6 +131,12 @@ static int swap_disk_write(uint32_t lba, const void* buf, uint32_t sectors)
 {
     if (!swap_backing_dev)
         return -1;
+    // Whole-page fast path, as in swap_disk_read.
+    if (sectors == BLKDEV_SECTORS_PER_PAGE &&
+        (lba - SWAP_DATA_START_LBA) % BLKDEV_SECTORS_PER_PAGE == 0)
+        return blkdev_write_page(swap_backing_dev,
+                                 (lba - SWAP_DATA_START_LBA) / BLKDEV_SECTORS_PER_PAGE,
+                                 (uint8_t*)buf);
     const uint8_t* ptr = (const uint8_t*)buf;
     for (uint32_t i = 0; i < sectors; i++) {
         if (blkdev_write(swap_backing_dev, lba + i, (uint8_t*)ptr) != 0)
@@ -133,12 +146,13 @@ static int swap_disk_write(uint32_t lba, const void* buf, uint32_t sectors)
     return 0;
 }
 
-// Attach a swap partition (called by the partition layer when it finds one).
-// The partition carries the slot count, so capacity follows the real device;
-// sector 0 is left for a swap header, the rest is the page area.
+// Attach a swap backing device: the partition layer passes a swap partition,
+// and zram (or another RAM device) passes the whole device it registered.  The
+// device carries the slot count, so capacity follows the real geometry; sector
+// 0 is left for a swap header, the rest is the page area.
 int swap_enable_device(blkdev_t *part)
 {
-    if (!part || !part->parent || part->max_lba <= SWAP_DATA_START_LBA)
+    if (!part || part->max_lba <= SWAP_DATA_START_LBA)
         return -1;
 
     uint32_t sectors = part->max_lba - SWAP_DATA_START_LBA;
@@ -171,6 +185,12 @@ void swap_notify_device_gone(blkdev_t *part)
     swap_disable();
     pr_warn("%s: backing device %s went away — swap disabled\n",
             "swap", part->name);
+}
+
+// Is `dev` the device swap is paging against right now?
+int swap_is_backing_device(blkdev_t *dev)
+{
+    return dev != 0 && dev == swap_backing_dev;
 }
 
 // Main hardware initialisation sequence
@@ -438,6 +458,11 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     // from storage-driver probes running in the bootstrap/user task.
     extern void part_probe_init(void);
     part_probe_init();
+
+    // RAM compressed block device.  Nothing is created unless the command line
+    // asked for it (`zram=<size>`); /dev/zmem owns creation at runtime.
+    extern void zram_init(void);
+    zram_init();
 
     // PCI Express ECAM init (needs ACPI tables, before PCI enumeration)
     pcidev_init();

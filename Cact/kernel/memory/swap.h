@@ -46,6 +46,9 @@ int          swap_is_enabled(void);
 struct blkdev;
 int          swap_enable_device(struct blkdev *part);
 void         swap_notify_device_gone(struct blkdev *part);
+/* True when `dev` is the device swap is currently paging against — a caller
+ * that wants to destroy `dev` (zram) must refuse while this holds. */
+int          swap_is_backing_device(struct blkdev *dev);
 int          swap_out_page(uint64_t phys_addr, swap_slot_t* out_slot);
 int          swap_in_page(swap_slot_t slot, uint64_t phys_addr);
 void         swap_free_slot(swap_slot_t slot);

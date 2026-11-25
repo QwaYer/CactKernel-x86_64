@@ -13,6 +13,10 @@
 // of the mount, and device ids == slot indexes. Freed slots are reused.
 static blkdev_t devices[BLKDEV_SLOTS];
 static int      dev_used[BLKDEV_SLOTS];
+// Whether a whole-disk device may become the boot device.  RAM-backed devices
+// (zram) clear this: they carry no root filesystem, and must never displace the
+// real boot disk.
+static int      boot_ok[BLKDEV_SLOTS];
 static blkdev_t *boot_dev   = 0;
 
 // Partition-layer probe (set by part_probe_init); called when a disk appears.
@@ -29,13 +33,34 @@ static int alloc_slot(void) {
     return -1;
 }
 
+static int blkdev_is_disk(const blkdev_t *d);
+
 static void blkdev_pick_boot(void) {
     boot_dev = 0;
     for (int i = 0; i < BLKDEV_SLOTS; i++) {
-        if (dev_used[i] && !devices[i].parent) {
+        if (dev_used[i] && boot_ok[i] && !devices[i].parent) {
             boot_dev = &devices[i];
             return;
         }
+    }
+}
+
+// RAM-backed devices (zram) call this with candidate==0 so they are never
+// chosen as the boot device: the boot device is what mntfs mounts the root
+// filesystem from, and a volatile RAM device has none.
+void blkdev_set_boot_candidate(blkdev_t *dev, int candidate) {
+    if (!dev || !blkdev_is_disk(dev))
+        return;
+    int idx = (int)dev->id;
+    if (idx < 0 || idx >= BLKDEV_SLOTS)
+        return;
+    boot_ok[idx] = candidate ? 1 : 0;
+    if (!candidate && boot_dev == dev) {
+        // register_blkdev() had picked it (it was the first disk); step it back
+        // and hand the boot role to the next candidate to appear.
+        pr_info("blkdev: %s: not a boot candidate (RAM device)\n",
+                devices[idx].name);
+        blkdev_pick_boot();
     }
 }
 
@@ -75,6 +100,7 @@ int register_blkdev(const char *name, uint32_t max_lba,
     d->read_sector   = read_sector;
     d->write_sector  = write_sector;
     dev_used[idx] = 1;
+    boot_ok[idx]  = 1;
 
     if (!boot_dev)
         boot_dev = d;
@@ -123,6 +149,7 @@ void unregister_blkdev(const char *name) {
 
     int idx = (int)d->id;
     dev_used[idx] = 0;
+    boot_ok[idx]  = 0;
     memset(&devices[idx], 0, sizeof(blkdev_t));
 
     blkdev_pick_boot();
@@ -134,6 +161,7 @@ void unregister_blkdev(const char *name) {
 void blkdev_init(void) {
     memset(devices,   0, sizeof(devices));
     memset(dev_used,  0, sizeof(dev_used));
+    memset(boot_ok,   0, sizeof(boot_ok));
     boot_dev  = 0;
 
     pr_info("%s: layer ready (kmods attach during PCI probe)\n", "block");
@@ -206,6 +234,62 @@ int blkdev_write(blkdev_t *dev, uint32_t lba, uint8_t *buf) {
     if (plba > 0xFFFFFFFFull)
         return -1;
     return blkdev_write(dev->parent, (uint32_t)plba, buf);
+}
+
+// ── Whole-page I/O (RAM-backed devices) ───────────────────────────────────
+
+// The page granularity is fixed at 4 KiB; a caller that changes PAGE_SIZE must
+// keep BLKDEV_SECTORS_PER_PAGE in step (blkdev.h).
+_Static_assert(BLKDEV_SECTORS_PER_PAGE * 512 == PAGE_SIZE,
+               "BLKDEV_SECTORS_PER_PAGE must match PAGE_SIZE");
+
+void blkdev_set_page_ops(blkdev_t *dev,
+                         int (*read_page) (blkdev_t *dev, uint32_t page_index, uint8_t *buf),
+                         int (*write_page)(blkdev_t *dev, uint32_t page_index, uint8_t *buf)) {
+    if (!dev || !blkdev_is_disk(dev))
+        return;
+    dev->read_page  = read_page;
+    dev->write_page = write_page;
+}
+
+int blkdev_read_page(blkdev_t *dev, uint32_t page_index, uint8_t *buf) {
+    if (!dev || !buf)
+        return -1;
+    if (dev->read_page) {
+        if (page_index >= dev->max_lba / BLKDEV_SECTORS_PER_PAGE)
+            return blkdev_lba_oob("read_page", page_index, dev->max_lba / BLKDEV_SECTORS_PER_PAGE);
+        return dev->read_page(dev, page_index, buf);
+    }
+
+    // No page callback: assemble the page from its sectors.
+    uint64_t base = (uint64_t)page_index * BLKDEV_SECTORS_PER_PAGE;
+    if (base + BLKDEV_SECTORS_PER_PAGE > dev->max_lba)
+        return -1;
+    for (uint32_t s = 0; s < BLKDEV_SECTORS_PER_PAGE; s++) {
+        if (blkdev_read(dev, (uint32_t)base + s, buf + s * 512) != 0) {
+            memset(buf + s * 512, 0, 512);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int blkdev_write_page(blkdev_t *dev, uint32_t page_index, uint8_t *buf) {
+    if (!dev || !buf)
+        return -1;
+    if (dev->write_page) {
+        if (page_index >= dev->max_lba / BLKDEV_SECTORS_PER_PAGE)
+            return blkdev_lba_oob("write_page", page_index, dev->max_lba / BLKDEV_SECTORS_PER_PAGE);
+        return dev->write_page(dev, page_index, buf);
+    }
+
+    uint64_t base = (uint64_t)page_index * BLKDEV_SECTORS_PER_PAGE;
+    if (base + BLKDEV_SECTORS_PER_PAGE > dev->max_lba)
+        return -1;
+    for (uint32_t s = 0; s < BLKDEV_SECTORS_PER_PAGE; s++)
+        if (blkdev_write(dev, (uint32_t)base + s, buf + s * 512) != 0)
+            return -1;
+    return 0;
 }
 
 // Compatibility helpers: read/write a sector on the boot device

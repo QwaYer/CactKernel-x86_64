@@ -129,6 +129,23 @@ struct mb2_tag_string {
     char     string[];
 } __attribute__((packed));
 
+// Kernel command line (MB2_TAG_CMDLINE), or "" when the bootloader supplied
+// none.  The string lives in the bootloader's own buffer — the same range as
+// the boot modules, which stays identity-mapped for the life of the kernel —
+// so the pointer is kept as is and read by the early feature takers
+// (zram=/zswap=, see kernel_setup_hardware).
+extern const char *mb2_cmdline;
+
+// Whole-token lookup of `key` (i.e. "zram=512M", never "xzram=..."): returns
+// the value after '=' or NULL when the key is absent.
+const char *mb2_cmdline_get(const char *key);
+
+// Parse a byte size with an optional K/M/G suffix (case-insensitive, 1024
+// based) from `val`.  Returns 1 and writes *out_bytes on success, 0 otherwise.
+// A bare number is bytes.  (A percentage, as zswap=/zswap limit uses, is not a
+// size and is handled by its caller.)
+int mb2_cmdline_parse_size(const char *val, uint64_t *out_bytes);
+
 // Flat memory map entry, built here and read by the PMM's Rust side.
 //
 // Deliberately *not* packed: with `packed` an entry is 20 bytes while the Rust

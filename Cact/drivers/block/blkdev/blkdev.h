@@ -28,6 +28,9 @@
 #define PART_TABLE_MBR  1
 #define PART_TABLE_GPT  2
 
+// 512-byte sectors per 4 KiB page.  blkdev.c asserts this matches PAGE_SIZE.
+#define BLKDEV_SECTORS_PER_PAGE 8
+
 // MBR partition types that describe containers rather than usable devices.
 #define MBR_TYPE_EXTENDED 0x05
 #define MBR_TYPE_EXTENDED_LBA 0x0F
@@ -66,6 +69,15 @@ struct blkdev {
     // the driver has no identity for the device.  Appended last so the offsets
     // fs modules and drivers already rely on stay put.
     char     ident[BLKDEV_IDENT_MAX];
+
+    // Optional whole-page I/O (a 4 KiB page), installed by a RAM-backed device
+    // through blkdev_set_page_ops().  When present, swap reads/writes a page in
+    // ONE call instead of eight sector calls — for zram that is one
+    // compress/decompress per page rather than one per 512-byte sector.  Each
+    // returns 0 or -1.  NULL on ordinary disks, which fall back to the
+    // per-sector path.
+    int (*read_page) (blkdev_t *dev, uint32_t page_index, uint8_t *buf);
+    int (*write_page)(blkdev_t *dev, uint32_t page_index, uint8_t *buf);
 };
 
 // Public API
@@ -80,6 +92,16 @@ int       blkdev_disk_count  (void);       // whole-disk devices only
 int blkdev_read (blkdev_t *dev, uint32_t lba, uint8_t *buf);
 int blkdev_write(blkdev_t *dev, uint32_t lba, uint8_t *buf);
 
+// Optional whole-page I/O for RAM-backed devices (zram).  `page_index` counts
+// 4 KiB pages from the start of the device.  blkdev_read_page/write_page use
+// the device's page callbacks when it has them and otherwise loop the eight
+// sectors through blkdev_read/write, so every device supports both.
+void blkdev_set_page_ops(blkdev_t *dev,
+                         int (*read_page) (blkdev_t *dev, uint32_t page_index, uint8_t *buf),
+                         int (*write_page)(blkdev_t *dev, uint32_t page_index, uint8_t *buf));
+int  blkdev_read_page (blkdev_t *dev, uint32_t page_index, uint8_t *buf);
+int  blkdev_write_page(blkdev_t *dev, uint32_t page_index, uint8_t *buf);
+
 // Whole-disk convenience helpers used by swap / fallback drivers: read/write
 // on the boot device (kept for compatibility with the pre-partition layer).
 void blkdev_read_sector (uint32_t lba, uint8_t *buf);
@@ -90,6 +112,11 @@ void blkdev_write_sector(uint32_t lba, uint8_t *buf);
 int register_blkdev(const char *name, uint32_t max_lba,
                     void (*read_sector)(uint32_t lba, uint8_t *buf),
                     void (*write_sector)(uint32_t lba, uint8_t *buf));
+
+// Mark a whole-disk device as a boot candidate or not.  RAM-backed devices
+// (zram) pass 0: the boot device is what mntfs mounts the root filesystem
+// from, and a volatile RAM device must never displace the real boot disk.
+void blkdev_set_boot_candidate(blkdev_t *dev, int candidate);
 
 void unregister_blkdev(const char *name);
 

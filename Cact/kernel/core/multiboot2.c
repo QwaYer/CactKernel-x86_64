@@ -30,10 +30,70 @@ uint32_t mb2_modules_end;
 // EFI system table physical address (MB2_TAG_EFI64/EFI32); 0 on a legacy boot.
 uint64_t mb2_efi_systab;
 
+// Kernel command line (MB2_TAG_CMDLINE); empty when none.
+//
+// The tag's string lives in the bootloader's Multiboot2 info buffer — which the
+// kernel reaches only while the identity map is up, i.e. during this parse —
+// and that buffer is not reserved after boot.  So the string is COPIED here,
+// into kernel .bss, exactly like the module names; consumers (zram=/zswap=, see
+// kernel_setup_hardware) run after `init_paging` and would fault on the raw
+// physical pointer.
+#define MB2_CMDLINE_MAX 256
+static char g_cmdline_buf[MB2_CMDLINE_MAX];
+const char *mb2_cmdline = g_cmdline_buf;
+
 static int starts_with(const char* s, const char* prefix) {
     while (*prefix) {
         if (*s++ != *prefix++) return 0;
     }
+    return 1;
+}
+
+// Command-line token lookup.  `mb2_cmdline` is a space-separated list of
+// "key" or "key=value" tokens; `key` must match the whole key, so
+// "zram" never matches the "xzram=..." token.  The returned value points into
+// the command line and ends at the next whitespace or NUL, not at a NUL of its
+// own — callers parse it as a token.
+const char *mb2_cmdline_get(const char *key) {
+    if (!key || !key[0])
+        return 0;
+    const char *s = mb2_cmdline;
+    while (*s) {
+        while (*s == ' ' || *s == '\t' || *s == '\n') s++;
+        const char *tok = s;
+        while (*s && *s != ' ' && *s != '\t' && *s != '\n') s++;
+        const char *k = key, *t = tok;
+        while (*k && t < s && *t == *k) { t++; k++; }
+        if (*k == '\0' && t < s && *t == '=')
+            return t + 1;
+    }
+    return 0;
+}
+
+// Parse "512", "512K", "512M", "2G" (case-insensitive suffix, optional trailing
+// 'B'/'b').  A value with trailing junk is rejected rather than half-parsed.
+int mb2_cmdline_parse_size(const char *val, uint64_t *out_bytes) {
+    if (!val || !out_bytes)
+        return 0;
+    uint64_t n = 0;
+    int digits = 0;
+    while (*val >= '0' && *val <= '9') {
+        n = n * 10u + (uint64_t)(*val - '0');
+        val++;
+        digits++;
+    }
+    if (!digits)
+        return 0;
+    uint64_t mult = 1;
+    char c = *val;
+    if (c == 'k' || c == 'K') { mult = 1024ull; val++; }
+    else if (c == 'm' || c == 'M') { mult = 1024ull * 1024; val++; }
+    else if (c == 'g' || c == 'G') { mult = 1024ull * 1024 * 1024; val++; }
+    if (*val == 'b' || *val == 'B')
+        val++;
+    if (*val != '\0' && *val != ' ' && *val != '\t' && *val != '\n')
+        return 0;
+    *out_bytes = n * mult;
     return 1;
 }
 
@@ -95,6 +155,7 @@ void multiboot2_parse(uint32_t mb2_info_addr,
     mb2_grubrepo_module.name[0]   = '\0';
     mb2_modules_end = 0;
     mb2_efi_systab  = 0;
+    g_cmdline_buf[0] = '\0';
 
     // Zero output structures
     out->flags             = 0;
@@ -307,6 +368,14 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                     "checksum %s)\n", "multiboot2", (unsigned)tag->type,
                     (unsigned)r[15], (unsigned long long)xsdt,
                     csum == 0 ? "ok" : "BAD");
+            break;
+        }
+
+        case MB2_TAG_CMDLINE: {
+            if (tag->size <= sizeof(struct mb2_tag_string)) break;
+            struct mb2_tag_string* t = (struct mb2_tag_string*)(uintptr_t)cursor;
+            copy_module_name(g_cmdline_buf, t->string, MB2_CMDLINE_MAX);
+            pr_info("%s: cmdline: \"%s\"\n", "multiboot2", mb2_cmdline);
             break;
         }
 
