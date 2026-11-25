@@ -29,6 +29,16 @@ static vfs_node_t self_info_node;
 static vfs_node_t self_cwd_node;
 static vfs_node_t self_ctl_node;
 static vfs_node_t self_comm_node;
+static vfs_node_t self_maps_node;
+static vfs_node_t self_fd_dir_node;
+static vfs_node_t self_task_dir_node;
+
+/* Forward declarations: /proc/self reuses the /proc/<pid> ops tables for maps,
+ * fd and task — those handlers resolve a NULL node->priv to the calling
+ * process instead of a slot's pid. */
+static vfs_ops_t _pid_maps_ops;
+static vfs_ops_t _pid_fd_dir_ops;
+static vfs_ops_t _pid_task_dir_ops;
 
 vfs_node_t proc_self_dir;   // exported for the procfs root walk
 
@@ -614,6 +624,9 @@ static vfs_node_t *_self_walk(vfs_node_t *dir, const char *name) {
     if (streq(name, "cwd"))  return &self_cwd_node;
     if (streq(name, "ctl"))  return &self_ctl_node;
     if (streq(name, "comm")) return &self_comm_node;
+    if (streq(name, "maps")) return &self_maps_node;
+    if (streq(name, "fd"))   return &self_fd_dir_node;
+    if (streq(name, "task")) return &self_task_dir_node;
     return 0;
 }
 
@@ -625,6 +638,9 @@ static vfs_dirent_t *_self_readdir(vfs_node_t *dir, uint32_t index) {
     case 1:  name = "cwd";  break;
     case 2:  name = "ctl";  break;
     case 3:  name = "comm"; break;
+    case 4:  name = "maps"; break;
+    case 5:  name = "fd";   break;
+    case 6:  name = "task"; break;
     default: return 0;
     }
     strlcpy(_self_de.name, name, 128);
@@ -634,7 +650,7 @@ static vfs_dirent_t *_self_readdir(vfs_node_t *dir, uint32_t index) {
 
 static void _self_listdir(vfs_node_t *dir) {
     (void)dir;
-    printk("  info\n  cwd\n  ctl\n  comm\n");
+    printk("  info\n  cwd\n  ctl\n  comm\n  maps\n  fd/\n  task/\n");
 }
 
 static vfs_ops_t self_dir_ops = {
@@ -668,6 +684,9 @@ typedef struct proc_pid_slot {
     vfs_node_t info;
     vfs_node_t cwd;
     vfs_node_t comm;
+    vfs_node_t maps;       // virtual mappings, text (Linux-shaped)
+    vfs_node_t fd_dir;     // open descriptors: fd/<n>
+    vfs_node_t task_dir;   // thread group: task/<tid>
 } proc_pid_slot_t;
 
 static proc_pid_slot_t _pid_slots[PROC_PID_SLOTS];
@@ -708,6 +727,22 @@ static int _may_read(const struct task_struct *t) {
     if (current_task->proc->euid == 0) return 1;
     if (t->pid == current_task->pid) return 1;
     return t->proc && t->proc->uid == current_task->proc->uid;
+}
+
+// The pid a per-process /proc node refers to: a slot-backed /proc/<pid> node
+// carries its slot in priv (guarded against recycling), while a /proc/self node
+// has priv == NULL and refers to the calling process.  Returns 0, or -1 for a
+// recycled slot or a missing caller.
+static int _node_pid(const vfs_node_t *n, uint32_t *pid) {
+    proc_pid_slot_t *s = (proc_pid_slot_t *)n->priv;
+    if (s) {
+        if (s->pid != n->inode) return -1;
+        *pid = s->pid;
+        return 0;
+    }
+    if (!current_task || current_task->pid == 0) return -1;
+    *pid = current_task->pid;
+    return 0;
 }
 
 static int _pid_info_read(vfs_node_t *node, uint64_t off, uint32_t size,
@@ -779,12 +814,281 @@ static int _pid_comm_read(vfs_node_t *node, uint64_t off, uint32_t size,
     return _emit(name, len, off, size, buf);
 }
 
+// /proc/<pid>/maps — the task's virtual mappings in the Linux shape
+//   <start>-<end> <perms> <offset> <dev> <inode> <path>
+// The mmap table is the region list; the brk heap and the user stack are
+// separate ProcMeta state and are synthesized as their own rows.  A mapping
+// does not retain the path it was opened by, so a file-backed region shows the
+// backing node's name and inode instead.
+static int _pid_maps_read(vfs_node_t *node, uint64_t off, uint32_t size,
+                          char *buf) {
+    uint32_t pid;
+    if (_node_pid(node, &pid) != 0) return -ENOENT;
+
+    static char tmp[8192];
+    int p = 0;
+    int rc = 0;
+
+    /* A row is under 128 bytes (a node name is at most 127), so stop while a
+     * whole row still fits rather than risk a truncated snprintf. */
+    #define _MAP(...) do { \
+        if (p <= (int)sizeof(tmp) - 128) \
+            p += snprintf(tmp + p, sizeof(tmp) - (size_t)p, __VA_ARGS__); \
+    } while (0)
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(pid);
+    if (!t)                  rc = -ENOENT;
+    else if (!_may_read(t))  rc = -EPERM;
+    else {
+        struct proc_metadata *pr = t->proc;
+        if (pr && pr->brk_current > pr->brk_start)
+            _MAP("%08x-%08x rw-p 00000000 00:00 0 [heap]\n",
+                 (unsigned)pr->brk_start, (unsigned)pr->brk_current);
+        if (pr && pr->ustack_virt)
+            _MAP("%08x-%08x rw-p 00000000 00:00 0 [stack]\n",
+                 (unsigned)pr->ustack_virt,
+                 (unsigned)(pr->ustack_virt + USER_STACK_BYTES));
+        if (pr && pr->mmap_table) {
+            for (int i = 0; i < MMAP_MAX_REGIONS; i++) {
+                mmap_region_t *r = &pr->mmap_table->regions[i];
+                if (!r->is_used) continue;
+
+                char perms[5];
+                perms[0] = (r->prot & PROT_READ)   ? 'r' : '-';
+                perms[1] = (r->prot & PROT_WRITE)  ? 'w' : '-';
+                perms[2] = (r->prot & PROT_EXEC)   ? 'x' : '-';
+                perms[3] = (r->flags & MAP_SHARED) ? 's' : 'p';
+                perms[4] = '\0';
+
+                const char *name = "[anon]";
+                uint32_t inode = 0;
+                if (r->fd >= 0 && pr->fds && r->fd < MAX_FD &&
+                    pr->fds->files[r->fd] && pr->fds->files[r->fd]->node) {
+                    name  = pr->fds->files[r->fd]->node->name;
+                    inode = pr->fds->files[r->fd]->node->inode;
+                }
+                _MAP("%08x-%08x %s %08x 00:00 %u %s\n",
+                     (unsigned)r->base, (unsigned)(r->base + r->length),
+                     perms, (unsigned)r->file_off, (unsigned)inode, name);
+            }
+        }
+    }
+    irq_spinlock_release(&scheduler_lock);
+
+    #undef _MAP
+
+    if (rc) return rc;
+    return _emit(tmp, (uint32_t)p, off, size, buf);
+}
+
+static vfs_ops_t _pid_maps_ops = { .read = _pid_maps_read };
+
+// ---- /proc/<pid>/fd — the process's open descriptors --------------------
+//
+// Each entry is a read-only file whose read yields the backing node's name:
+// CactOS keeps no path with an open file and /dev/fd aliases rather than
+// symlinks, so this is the honest view.  Entries come from a small recycled
+// pool keyed by (pid, fd) — a walk builds or finds one, and every read
+// re-resolves it against the live fd table, so a slot that outlives its
+// process reports -ENOENT instead of another process's descriptor.
+
+#define PROC_FD_ENTRIES 128
+
+typedef struct proc_fd_entry {
+    uint32_t   pid;      // 0 = free
+    int        fd;
+    vfs_node_t node;
+} proc_fd_entry_t;
+
+static proc_fd_entry_t _fd_entries[PROC_FD_ENTRIES];
+static vfs_dirent_t    _fd_de;
+
+static int _parse_fd(const char *s, int *out) {
+    if (!s || !*s) return -1;
+    int v = 0;
+    for (const char *q = s; *q; q++) {
+        if (*q < '0' || *q > '9') return -1;
+        v = v * 10 + (*q - '0');
+        if (v >= MAX_FD) return -1;
+    }
+    *out = v;
+    return 0;
+}
+
+static int _fd_entry_read(vfs_node_t *node, uint64_t off, uint32_t size,
+                          char *buf) {
+    proc_fd_entry_t *e = (proc_fd_entry_t *)node->priv;
+    if (!e || e->pid == 0) return -ENOENT;
+
+    char name[128];
+    uint32_t len = 0;
+    int rc = 0;
+
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(e->pid);
+    if (!t || !t->proc || !t->proc->fds || !t->proc->fds->files[e->fd]) {
+        rc = -ENOENT;
+    } else {
+        vfs_node_t *vn = t->proc->fds->files[e->fd]->node;
+        const char *nm = (vn && vn->name[0]) ? vn->name : "?";
+        int n = 0;
+        while (nm[n] && n < 127) { name[n] = nm[n]; n++; }
+        name[n++] = '\n';
+        len = (uint32_t)n;
+    }
+    irq_spinlock_release(&scheduler_lock);
+
+    if (rc) return rc;
+    return _emit(name, len, off, size, buf);
+}
+
+static vfs_ops_t _fd_entry_ops = { .read = _fd_entry_read };
+
+// Caller must hold scheduler_lock.
+static proc_fd_entry_t *_fd_entry_locked(uint32_t pid, int fd) {
+    proc_fd_entry_t *victim = 0;
+    for (int i = 0; i < PROC_FD_ENTRIES; i++) {
+        proc_fd_entry_t *e = &_fd_entries[i];
+        if (e->pid == pid && e->fd == fd) return e;
+        if (!victim && (e->pid == 0 || !_find_task_locked(e->pid)))
+            victim = e;
+    }
+    if (!victim) return 0;
+    memset(victim, 0, sizeof(*victim));
+    victim->pid  = pid;
+    victim->fd   = fd;
+    victim->node.type  = VFS_FILE;
+    victim->node.ops   = &_fd_entry_ops;
+    victim->node.priv  = victim;
+    victim->node.inode = (uint32_t)fd;
+    snprintf(victim->node.name, sizeof(victim->node.name), "%d", fd);
+    return victim;
+}
+
+static vfs_node_t *_fd_dir_walk(vfs_node_t *dir, const char *name) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return 0;
+    int fd;
+    if (_parse_fd(name, &fd) != 0) return 0;
+
+    vfs_node_t *res = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(pid);
+    if (t && t->proc && t->proc->fds && t->proc->fds->files[fd]) {
+        proc_fd_entry_t *e = _fd_entry_locked(pid, fd);
+        if (e) res = &e->node;
+    }
+    irq_spinlock_release(&scheduler_lock);
+    return res;
+}
+
+static vfs_dirent_t *_fd_dir_readdir(vfs_node_t *dir, uint32_t index) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return 0;
+
+    vfs_dirent_t *res = 0;
+    uint32_t seen = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(pid);
+    if (t && t->proc && t->proc->fds) {
+        for (int fd = 0; fd < MAX_FD; fd++) {
+            if (!t->proc->fds->files[fd]) continue;
+            if (seen++ == index) {
+                snprintf(_fd_de.name, sizeof(_fd_de.name), "%d", fd);
+                _fd_de.inode = (uint32_t)fd + 1;
+                res = &_fd_de;
+                break;
+            }
+        }
+    }
+    irq_spinlock_release(&scheduler_lock);
+    return res;
+}
+
+static void _fd_dir_listdir(vfs_node_t *dir) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return;
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(pid);
+    if (t && t->proc && t->proc->fds)
+        for (int fd = 0; fd < MAX_FD; fd++)
+            if (t->proc->fds->files[fd]) printk("  %d\n", fd);
+    irq_spinlock_release(&scheduler_lock);
+}
+
+static vfs_ops_t _pid_fd_dir_ops = {
+    .walk    = _fd_dir_walk,
+    .readdir = _fd_dir_readdir,
+    .listdir = _fd_dir_listdir,
+};
+
+// ---- /proc/<pid>/task — the thread group --------------------------------
+//
+// A process is a thread group: every task whose ProcMeta.tgid equals this pid,
+// leader included.  A tid resolves to that task's own /proc/<tid> directory
+// (the same subtree as the parent), so no separate per-thread nodes are needed.
+static vfs_node_t *_pid_task_walk(vfs_node_t *dir, const char *name) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return 0;
+
+    uint32_t tid;
+    if (_parse_pid(name, &tid) != 0) return 0;
+
+    int ok = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    struct task_struct *t = _find_task_locked(tid);
+    if (t && t->proc && t->proc->tgid == pid) ok = 1;
+    irq_spinlock_release(&scheduler_lock);
+    if (!ok) return 0;
+    return procfs_proc_pid_dir(name);
+}
+
+static vfs_dirent_t *_pid_task_readdir(vfs_node_t *dir, uint32_t index) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return 0;
+
+    vfs_dirent_t *res = 0;
+    uint32_t seen = 0;
+    irq_spinlock_acquire(&scheduler_lock);
+    for (struct task_struct *t = (struct task_struct *)task_list_head; t; t = t->next) {
+        if (t->pid == 0 || !t->proc || t->proc->tgid != pid) continue;
+        if (seen++ == index) {
+            snprintf(_pid_de.name, sizeof(_pid_de.name), "%u", t->pid);
+            _pid_de.inode = t->pid;
+            res = &_pid_de;
+            break;
+        }
+    }
+    irq_spinlock_release(&scheduler_lock);
+    return res;
+}
+
+static void _pid_task_listdir(vfs_node_t *dir) {
+    uint32_t pid;
+    if (_node_pid(dir, &pid) != 0) return;
+    irq_spinlock_acquire(&scheduler_lock);
+    for (struct task_struct *t = (struct task_struct *)task_list_head; t; t = t->next)
+        if (t->pid != 0 && t->proc && t->proc->tgid == pid)
+            printk("  %u\n", t->pid);
+    irq_spinlock_release(&scheduler_lock);
+}
+
+static vfs_ops_t _pid_task_dir_ops = {
+    .walk    = _pid_task_walk,
+    .readdir = _pid_task_readdir,
+    .listdir = _pid_task_listdir,
+};
+
 static vfs_node_t *_pid_walk(vfs_node_t *dir, const char *name) {
     proc_pid_slot_t *s = (proc_pid_slot_t *)dir->priv;
     if (!s || s->pid != dir->inode) return 0;   // dir node recycled under us
     if (streq(name, "info")) return &s->info;
     if (streq(name, "cwd"))  return &s->cwd;
     if (streq(name, "comm")) return &s->comm;
+    if (streq(name, "maps")) return &s->maps;
+    if (streq(name, "fd"))   return &s->fd_dir;
+    if (streq(name, "task")) return &s->task_dir;
     return 0;
 }
 
@@ -795,6 +1099,9 @@ static vfs_dirent_t *_pid_readdir(vfs_node_t *dir, uint32_t index) {
     case 0:  name = "info"; break;
     case 1:  name = "cwd";  break;
     case 2:  name = "comm"; break;
+    case 3:  name = "maps"; break;
+    case 4:  name = "fd";   break;
+    case 5:  name = "task"; break;
     default: return 0;
     }
     strlcpy(_pid_de.name, name, 128);
@@ -804,7 +1111,7 @@ static vfs_dirent_t *_pid_readdir(vfs_node_t *dir, uint32_t index) {
 
 static void _pid_listdir(vfs_node_t *dir) {
     (void)dir;
-    printk("  info\n  cwd\n  comm\n");
+    printk("  info\n  cwd\n  comm\n  maps\n  fd/\n  task/\n");
 }
 
 static vfs_ops_t _pid_dir_ops  = {
@@ -844,6 +1151,24 @@ static void _slot_init(proc_pid_slot_t *s, uint32_t pid) {
     s->comm.priv  = s;
     s->comm.inode = pid;
     strlcpy(s->comm.name, "comm", 128);
+
+    s->maps.type  = VFS_FILE;
+    s->maps.ops   = &_pid_maps_ops;
+    s->maps.priv  = s;
+    s->maps.inode = pid;
+    strlcpy(s->maps.name, "maps", 128);
+
+    s->fd_dir.type  = VFS_DIRECTORY;
+    s->fd_dir.ops   = &_pid_fd_dir_ops;
+    s->fd_dir.priv  = s;
+    s->fd_dir.inode = pid;
+    strlcpy(s->fd_dir.name, "fd", 128);
+
+    s->task_dir.type  = VFS_DIRECTORY;
+    s->task_dir.ops   = &_pid_task_dir_ops;
+    s->task_dir.priv  = s;
+    s->task_dir.inode = pid;
+    strlcpy(s->task_dir.name, "task", 128);
 }
 
 // Caller must hold scheduler_lock.  The slot for |pid|, recycling one whose
@@ -926,6 +1251,21 @@ void procfs_proc_init(void) {
     self_ctl_node.type = VFS_FILE;
     self_ctl_node.ops  = &self_ctl_ops;
 
-    pr_info("%s: /proc/self ready (info, cwd, comm, ctl)\n", "proc");
-    pr_info("%s: /proc/<pid> ready (info, cwd, comm)\n", "proc");
+    memset(&self_maps_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_maps_node.name, "maps", 128);
+    self_maps_node.type = VFS_FILE;
+    self_maps_node.ops  = &_pid_maps_ops;
+
+    memset(&self_fd_dir_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_fd_dir_node.name, "fd", 128);
+    self_fd_dir_node.type = VFS_DIRECTORY;
+    self_fd_dir_node.ops  = &_pid_fd_dir_ops;
+
+    memset(&self_task_dir_node, 0, sizeof(vfs_node_t));
+    strlcpy(self_task_dir_node.name, "task", 128);
+    self_task_dir_node.type = VFS_DIRECTORY;
+    self_task_dir_node.ops  = &_pid_task_dir_ops;
+
+    pr_info("%s: /proc/self ready (info, cwd, comm, ctl, maps, fd/, task/)\n", "proc");
+    pr_info("%s: /proc/<pid> ready (info, cwd, comm, maps, fd/, task/)\n", "proc");
 }
