@@ -157,6 +157,7 @@ static const ksym_entry_t ksym_table[] = {
     { "skb_put",        (uintptr_t)skb_put },
     { "vmm_get_phys",   (uintptr_t)vmm_get_phys },
     { "vmm_map",        (uintptr_t)vmm_map },
+    { "vmm_p2v",        (uintptr_t)vmm_p2v },
 
     /* DRM/KMS core — the generic API a GPU module (e.g. virtio-gpu) drives.
      * Everything behind these entry points is hardware-agnostic: the module
