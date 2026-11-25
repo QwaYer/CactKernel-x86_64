@@ -50,19 +50,21 @@ extern "C" fn drm_node_stat(node: *mut VfsNode, buf: *mut CactStat) -> c_int {
         return 0;
     }
     // SAFETY: the VFS calls this with the live node whose ops table carries
-    // this hook, and with a writable `cact_stat_t`; the same contract holds for
-    // `vfs_fill_stat`.
-    unsafe {
-        vfs_fill_stat(node, buf);
-        let dev = (*node).priv_ as *mut DrmDevice;
-        if dev.is_null() {
-            return 0;
-        }
-        let minor = (*dev).minor as u32;
-        let devnum = if (*dev).render_node == node { 128 + minor } else { minor };
-        // glibc device-number encoding, so libc's major()/minor() decode it.
-        (*buf).rdev = (DRM_MAJOR << 8) | (devnum & 0xff) | ((devnum & 0xfff00) << 12);
+    // this hook, and with a writable `cact_stat_t` (the same contract
+    // `vfs_fill_stat` documents).
+    unsafe { vfs_fill_stat(node, buf) };
+    // SAFETY: `node` is that live node; this reads its private device pointer.
+    let dev = unsafe { (*node).priv_ as *mut DrmDevice };
+    if dev.is_null() {
+        return 0;
     }
+    // SAFETY: `dev` is the live DRM device bound to this node; this reads its minor.
+    let minor = unsafe { (*dev).minor } as u32;
+    // SAFETY: as above — this compares the node against the device's render node.
+    let devnum = if unsafe { (*dev).render_node } == node { 128 + minor } else { minor };
+    // glibc device-number encoding, so libc's major()/minor() decode it.
+    // SAFETY: `buf` is the writable `cact_stat_t` the VFS passed (checked non-null).
+    unsafe { (*buf).rdev = (DRM_MAJOR << 8) | (devnum & 0xff) | ((devnum & 0xfff00) << 12) };
     0
 }
 
