@@ -192,6 +192,98 @@ pub unsafe extern "C" fn zpool_destroy(p: *mut c_void) {
     unsafe { kfree(p as *mut u8) };
 }
 
+/// Grow a pool's slot table and/or raise its payload budget, keeping every live
+/// handle valid: a handle is a slot index and existing slots keep theirs.
+///
+/// This is how zswap's limit can be raised after the pool exists (`zswap_enable`
+/// takes a bigger percentage).  Shrinking is not supported — it would have to
+/// invalidate handles that live in page tables.
+///
+/// # Safety
+///
+/// `p` must be a live pool pointer that has not been destroyed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budget: u64) -> i32 {
+    if p.is_null() || new_capacity == 0 {
+        return -1;
+    }
+    // SAFETY: `p` is a live pool (non-null checked) and the caller owns it.
+    let pool = unsafe { &mut *(p as *mut Zpool) };
+    let old_cap = pool.alloc.capacity();
+
+    if new_capacity <= old_cap {
+        // Not a grow: only the budget may go up (never below what is charged).
+        lock_acquire(core::ptr::addr_of_mut!(pool.lock));
+        let budget = new_budget.max(pool.alloc.used_bytes());
+        pool.alloc.set_budget(budget);
+        lock_release(core::ptr::addr_of_mut!(pool.lock));
+        return 0;
+    }
+
+    // Allocate the bigger tables first, outside the lock.
+    let cap = new_capacity as usize;
+    let new_links = kmalloc(cap * core::mem::size_of::<u32>()) as *mut u32;
+    if new_links.is_null() {
+        return -1;
+    }
+    let new_slots = kmalloc(cap * core::mem::size_of::<Slot>()) as *mut Slot;
+    if new_slots.is_null() {
+        // SAFETY: `new_links` is a live heap block from kmalloc above.
+        unsafe { kfree(new_links as *mut u8) };
+        return -1;
+    }
+    // SAFETY: `new_slots` is a fresh `cap`-entry block, so this zeroes it in
+    // bounds; a null blob marks a free slot.
+    unsafe { core::ptr::write_bytes(new_slots, 0, cap) };
+
+    lock_acquire(core::ptr::addr_of_mut!(pool.lock));
+    // Carry the live slots over at the same indices, then recompute the links
+    // from the blob table (the source of truth for what is in use).
+    // SAFETY: the old table holds `old_cap` slots and the new one has room.
+    unsafe { core::ptr::copy_nonoverlapping(pool.slots, new_slots, old_cap as usize) };
+    // SAFETY: `new_links` is a fresh `cap`-entry u32 block.
+    let links_slice = unsafe { core::slice::from_raw_parts_mut(new_links, cap) };
+    // SAFETY: `new_slots` holds `cap` slots and is not aliased by the link slice.
+    let slots_slice = unsafe { core::slice::from_raw_parts(new_slots, cap) };
+    let head = super::zpool_alloc::rebuild_free_list(links_slice, |i| {
+        slots_slice[i as usize].blob.is_null()
+    });
+    let old_links = pool.links;
+    let old_slots = pool.slots;
+    pool.links = new_links;
+    pool.slots = new_slots;
+    let budget = new_budget.max(pool.alloc.used_bytes());
+    pool.alloc.adopt(new_capacity, head, budget);
+    lock_release(core::ptr::addr_of_mut!(pool.lock));
+
+    // The old tables are unreachable now (every reader holds the lock).
+    // SAFETY: `old_links` was handed out by kmalloc in `zpool_create`.
+    unsafe { kfree(old_links as *mut u8) };
+    // SAFETY: `old_slots` was handed out by kmalloc in `zpool_create`.
+    unsafe { kfree(old_slots as *mut u8) };
+    0
+}
+
+/// Change the compression level future stores use.  Live entries stay readable:
+/// a zstd frame is self-describing, so decompression does not need the level it
+/// was written with.
+///
+/// # Safety
+///
+/// `p` must be a live pool pointer.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
+    if p.is_null() {
+        return -1;
+    }
+    // SAFETY: `p` is a live pool (non-null checked) and the caller owns it.
+    let pool = unsafe { &mut *(p as *mut Zpool) };
+    lock_acquire(core::ptr::addr_of_mut!(pool.lock));
+    pool.level = level;
+    lock_release(core::ptr::addr_of_mut!(pool.lock));
+    0
+}
+
 /// Compress `page` into a new slot.  Returns 0 and writes the handle, or -1
 /// when the pool is full, out of memory, or has no free budget.
 ///

@@ -380,13 +380,12 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         if (copy_from_user(&a, arg, sizeof(a)) != 0) return -EFAULT;
         if (!a.enabled)
             return zswap_disable();
-        if (a.max_pool_pct == 0 || a.max_pool_pct > 100) return -EINVAL;
-        // The percentage is checked above, so a failure here is the pool
-        // allocation.
-        if (zswap_enable(a.max_pool_pct, (int)a.compress_level,
-                         (int)a.writeback) != 0)
-            return -ENOMEM;
-        return 0;
+        // zswap_enable validates the percentage and returns a negated errno
+        // (-EINVAL / -ENOMEM) or 0.  A raised limit *grows* the pool; a lower one
+        // is refused (handles live in page tables).
+        int rc = zswap_enable(a.max_pool_pct, (int)a.compress_level,
+                              (int)a.writeback);
+        return rc < 0 ? rc : 0;
     }
 
     case CACT_ZMEM_ZRAM_CREATE: {

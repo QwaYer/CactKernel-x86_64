@@ -94,6 +94,23 @@ impl SlotAlloc {
         true
     }
 
+    /// Adopt a rebuilt free list over a possibly larger table: take the new
+    /// capacity, free-list head and payload budget, keeping the live count and
+    /// the charged bytes (growing a table neither allocates nor frees a slot).
+    /// Used by `zpool_grow`, where the blob table is the source of truth for
+    /// what is in use.
+    pub fn adopt(&mut self, capacity: u32, head: u32, budget_bytes: u64) {
+        self.capacity = capacity;
+        self.head = head;
+        self.budget_bytes = budget_bytes;
+    }
+
+    /// Set the payload budget without touching the free list (a budget-only
+    /// change; the caller keeps it at or above what is already charged).
+    pub fn set_budget(&mut self, budget_bytes: u64) {
+        self.budget_bytes = budget_bytes;
+    }
+
     /// Slots the pool was created with.
     pub fn capacity(&self) -> u32 {
         self.capacity
@@ -124,4 +141,24 @@ impl Default for SlotAlloc {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Rebuild `links` as a free list over an *externally known* liveness: slot `i`
+/// is linked exactly when `is_free(i)`.  Returns the head (`HANDLE_NONE` when
+/// nothing is free).
+///
+/// Used when a slot table grows: the table's blob pointers are the source of
+/// truth for what is in use, so the links are recomputed from them instead of
+/// being carried across the reallocation.
+pub fn rebuild_free_list(links: &mut [u32], is_free: impl Fn(u32) -> bool) -> u32 {
+    let mut head = HANDLE_NONE;
+    for i in (0..links.len()).rev() {
+        if is_free(i as u32) {
+            links[i] = head;
+            head = i as u32;
+        } else {
+            links[i] = HANDLE_NONE;
+        }
+    }
+    head
 }

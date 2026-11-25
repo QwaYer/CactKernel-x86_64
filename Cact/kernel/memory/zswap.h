@@ -15,10 +15,11 @@
  * (`rust_mm/src/fault/zswap.rs`); this header is the C ABI the /dev/zmem
  * control handler uses.
  *
- * The pool is created once, on the first zswap_enable(), and lives for the rest
- * of the kernel's life: zswap_disable() only stops accepting new pages, and
- * already-pooled pages drain back through fault-in.  The limit and level are
- * therefore fixed at first enable.
+ * The pool is created on the first zswap_enable() and lives for the rest of the
+ * kernel's life: zswap_disable() only stops accepting new pages, and already-
+ * pooled pages drain back through fault-in.  A later enable may still *grow* the
+ * pool (raising the limit) and re-level it; a lower limit is refused, since
+ * handles live in page tables and must stay valid.
  */
 
 /* Accounting snapshot, mirrored by `ZswapStats` in rust_mm/src/ffi.rs. */

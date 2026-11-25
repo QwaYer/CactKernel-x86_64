@@ -10,20 +10,28 @@
 //! (see `fault::swap_pte`).  With `writeback` on, a full pool first migrates one
 //! of its own pages to the device, freeing a slot, and the store is retried.
 //!
-//! The pool is created once by [`zswap_enable`] and **never freed**:
+//! The pool is created on the first [`zswap_enable`] and **never freed**:
 //! [`zswap_disable`] only stops new stores, and pooled pages drain back through
 //! fault-in.  That keeps the eviction/fault hot paths free of any lifetime lock
-//! — the pool pointer is written once and stays valid.  Changing the limit or
-//! the compression level after creation is therefore not supported yet.
+//! — the pool pointer is written once and stays valid.  A later enable may still
+//! *grow* the pool (raising the limit) and re-level it; shrinking is refused,
+//! since handles live in page tables and must stay valid.
 
 use core::ffi::c_void;
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 
-use crate::comp::zpool::{zpool_create, zpool_free, zpool_get_stats, zpool_load, zpool_store};
+use crate::comp::zpool::{
+    zpool_create, zpool_free, zpool_get_stats, zpool_grow, zpool_load, zpool_set_level,
+    zpool_store,
+};
 use crate::ffi::*;
 use crate::safe::{KStatic, flush_tlb, klog_msg, lock_acquire, lock_release};
 
 use super::swap_pte;
+
+/// Negated errno codes `zswap_enable` hands back to the ioctl layer.
+const EINVAL: i32 = 22;
+const ENOMEM: i32 = 12;
 
 /// The pool, set exactly once (under `G_INIT_LOCK` in [`zswap_enable`]) and
 /// never freed; an unlocked read is therefore sound, like `swap`'s own flags.
@@ -224,40 +232,68 @@ pub unsafe fn zswap_try_writeback(pd: *mut u64) -> bool {
     unsafe { zswap_writeback_one(pd) }
 }
 
-/// Enable the front-end: create the pool (pct% of RAM, zstd `level`) on first
-/// call and start accepting pages.  A later call only updates the enabled /
-/// writeback flags — the pool and level are fixed once created.
+/// Enable the front-end and point it at `max_pool_pct`% of RAM, compressing at
+/// zstd `level`.  The first call creates the pool; a later call *grows* it when
+/// the percentage is higher (handles are slot indices, so already-pooled pages
+/// keep theirs) and re-levels it — a zstd frame is self-describing, so live
+/// entries stay readable.  A lower percentage is refused: shrinking would have
+/// to invalidate handles held in page tables.  Returns 0, `-EINVAL` (bad
+/// percentage or a shrink) or `-ENOMEM` (no memory).
 #[unsafe(no_mangle)]
 pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) -> i32 {
     if max_pool_pct == 0 || max_pool_pct > 100 {
-        return -1;
+        return -EINVAL;
     }
     G_WRITEBACK.store(if writeback != 0 { 1 } else { 0 }, Ordering::Relaxed);
 
+    let total = crate::pmm::pmm_total_frames() as u64 * PAGE_SIZE as u64;
+    let budget = total / 100 * max_pool_pct as u64;
+    let pages64 = budget / PAGE_SIZE as u64;
+    // A handle lives in 20 PTE bits, so the pool may hold at most 2^20 pages.
+    if pages64 == 0 || pages64 > swap_pte::SLOT_MAX as u64 {
+        return -EINVAL;
+    }
+    let capacity = pages64 as u32;
+
     init_lock();
     lock_acquire(G_INIT_LOCK.as_ptr());
-    // SAFETY: pool creation is serialised by `G_INIT_LOCK`.
-    if (*unsafe { KStatic::get_mut(G_POOL.as_ptr()) }).is_null() {
-        let total = crate::pmm::pmm_total_frames() as u64 * PAGE_SIZE as u64;
-        let budget = total / 100 * max_pool_pct as u64;
-        let pages64 = budget / PAGE_SIZE as u64;
-        // A handle lives in 20 PTE bits, so the pool may hold at most 2^20 pages.
-        if pages64 == 0 || pages64 > swap_pte::SLOT_MAX as u64 {
-            lock_release(G_INIT_LOCK.as_ptr());
-            return -1;
-        }
-        let capacity = pages64 as u32;
+    // SAFETY: pool creation/growth is serialised by `G_INIT_LOCK`.
+    let pool = unsafe { *KStatic::get_mut(G_POOL.as_ptr()) };
+    let rc = if pool.is_null() {
         // SAFETY: `zpool_create` builds a fresh pool or returns null.
         let new_pool = unsafe { zpool_create(capacity, pages64 * PAGE_SIZE as u64, level) };
         if new_pool.is_null() {
-            lock_release(G_INIT_LOCK.as_ptr());
-            return -1;
+            -ENOMEM
+        } else {
+            // SAFETY: the pool pointer is written once, here, under `G_INIT_LOCK`.
+            *unsafe { KStatic::get_mut(G_POOL.as_ptr()) } = new_pool;
+            0
         }
-        // SAFETY: the pool pointer is written once, here, under `G_INIT_LOCK`.
-        *unsafe { KStatic::get_mut(G_POOL.as_ptr()) } = new_pool;
+    } else {
+        // The pool already exists: a raised limit grows it (handles are slot
+        // indices, so existing pooled pages keep theirs), and the level can
+        // change on the fly.  A *lower* limit is refused — shrinking would have
+        // to invalidate handles that live in page tables.
+        // SAFETY: `pool` is the live pool, serialised by `G_INIT_LOCK`.
+        unsafe { zpool_set_level(pool, level) };
+        let mut st = ZpoolStats::default();
+        // SAFETY: `pool` is live and `st` a local.
+        let have_stats = unsafe { zpool_get_stats(pool, &mut st) } == 0;
+        if !have_stats || capacity < st.capacity_pages {
+            -EINVAL
+        } else {
+            // SAFETY: `pool` is live; growing keeps `st.capacity_pages` handles valid.
+            let g = unsafe { zpool_grow(pool, capacity, pages64 * PAGE_SIZE as u64) };
+            if g == 0 { 0 } else { -ENOMEM }
+        }
+    };
+    if rc == 0 {
         G_LEVEL.store(level, Ordering::Relaxed);
     }
     lock_release(G_INIT_LOCK.as_ptr());
+    if rc != 0 {
+        return rc;
+    }
 
     G_ENABLED.store(1, Ordering::Relaxed);
     klog_msg(
