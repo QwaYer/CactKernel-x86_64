@@ -16,7 +16,7 @@
 
 use core::ffi::{c_int, c_void};
 
-use crate::ffi::{drm_copy_in, drm_copy_out, printk};
+use crate::ffi::{drm_copy_in, drm_copy_out};
 use crate::structs::{DrmDevice, DrmFile, GemObject, IrqSpinlock};
 
 extern "C" {
@@ -700,8 +700,6 @@ pub extern "C" fn drm_gem_dumb_create(file: *mut DrmFile, user: *mut c_void) -> 
         drm_gem_unref(obj);
         return -12;
     }
-    // SAFETY: static NUL-terminated string.
-    unsafe { printk(c"drm: DBG dumb map_offset ok\n".as_ptr() as *const u8) };
 
     let mut handle = 0u32;
     if drm_gem_handle_create(file, obj, &mut handle) != 0 {
