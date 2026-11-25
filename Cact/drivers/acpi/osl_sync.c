@@ -118,6 +118,7 @@ ACPI_STATUS AcpiOsInstallInterruptHandler(
     (void)Context;
     extern void (*acpi_sci_callback)(void);
     extern void acpi_sci_isr();
+    extern void irqstat_set_sci(unsigned int vector);
 
     /* ACPI maps the SCI to 0x20 + FADT.SciInterrupt.  SciInterrupt == 0 is
      * "no valid SCI IRQ" (the FADT may omit it and leave the SCI to the MADT
@@ -131,6 +132,7 @@ ACPI_STATUS AcpiOsInstallInterruptHandler(
 
     acpi_sci_callback = (void (*)(void))ServiceRoutine;
     set_idt_gate(0x20 + InterruptNumber, (uint64_t)(uintptr_t)acpi_sci_isr);
+    irqstat_set_sci(0x20u + InterruptNumber);
     return AE_OK;
 }
 

@@ -8,6 +8,7 @@
 #include "kernel.h"
 #include "idt.h"
 #include "klib.h"
+#include "irqstat.h"
 
 static void (*msidev_handlers[MSIDEV_VECTOR_COUNT])(void);
 static unsigned char msidev_vector_alloc[MSIDEV_VECTOR_COUNT];
@@ -73,6 +74,7 @@ void msidev_dispatch(unsigned int vector, struct context_frame *frame)
 {
     if (vector < MSIDEV_VECTOR_BASE || vector >= MSIDEV_VECTOR_END) return;
     unsigned int idx = vector - MSIDEV_VECTOR_BASE;
+    irqstat_note(vector);
     void (*h)(void) = msidev_handlers[idx];
     if (!h) return;
 
@@ -130,6 +132,15 @@ void msidev_ensure_enabled(pci_device_t *dev)
              (unsigned)cmd, (unsigned)want);
 }
 
+/* Label a device vector for /proc/interrupts with the function that owns it. */
+static void _name_vector(pci_device_t *dev, int vec)
+{
+    char nm[32];
+    snprintf(nm, sizeof(nm), "pci %02x:%02x.%u",
+             (unsigned)dev->bus, (unsigned)dev->dev, (unsigned)dev->fn);
+    irqstat_name((unsigned)vec, nm);
+}
+
 int msidev_register(pci_device_t *dev, void (*handler)(void))
 {
     if (!dev || !handler) return -1;
@@ -146,6 +157,7 @@ int msidev_register(pci_device_t *dev, void (*handler)(void))
         int vec = msidev_alloc_vector();
         if (vec > 0 && msidev_register_handler(vec, handler) == 0 &&
             pci_msix_enable(dev, vec, table, 0) == 0) {
+            _name_vector(dev, vec);
             return vec;
         }
         if (vec > 0) {
@@ -168,6 +180,7 @@ int msidev_register(pci_device_t *dev, void (*handler)(void))
         return -1;
     }
 
+    _name_vector(dev, vec);
     pr_debug("%s: %02x:%02x.%u on MSI vec 0x%x\n",
              "msidev", (unsigned)dev->bus, (unsigned)dev->dev,
              (unsigned)dev->fn, (unsigned)vec);

@@ -27,6 +27,11 @@ extern void uhci_isr();
 extern void ohci_isr();
 extern void pci_isr();
 
+// Per-vector counting stubs (device_isrs.asm): entry i is vector 0x21+i for
+// i < 15, then 0xF0+(i-15) for i < 23.  They replace the shared pci_isr on the
+// ISA/PCI-INTx vectors so each line can be counted for /proc/interrupts.
+extern uintptr_t irq_count_stub_table[];
+
 static struct idt_entry idt[256];
 static struct idt_ptr   idtp;
 
@@ -100,18 +105,12 @@ int init_idt(void) {
     // routed (masked in apic_init) and LINT0 is masked in lapic_init, so the
     // 8259 PIC cannot deliver it either.
     for (int i = 1; i < 16; i++)
-        set_idt_gate(0x20 + i, (uint64_t)(uintptr_t)pci_isr);
+        set_idt_gate(0x20 + i, irq_count_stub_table[i - 1]);
     // ACPI SCI vector set dynamically by AcpiOsInstallInterruptHandler.
 
     // IOAPIC PCI INTx vectors (GSI 16+ mapped to 0xF0+)
-    set_idt_gate(0xF0, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF1, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF2, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF3, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF4, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF5, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF6, (uint64_t)(uintptr_t)pci_isr);
-    set_idt_gate(0xF7, (uint64_t)(uintptr_t)pci_isr);
+    for (int i = 0; i < 8; i++)
+        set_idt_gate(0xF0 + i, irq_count_stub_table[15 + i]);
     // Reserved PCI range 0xF8-0xFD (0xF8/0xF9 become the C-state IPI gates),
     // the dedicated LAPIC timer vector 0xFE, and the spurious vector 0xFF.
     for (int i = 0xF8; i < LAPIC_TIMER_VECTOR; i++)

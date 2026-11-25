@@ -27,10 +27,12 @@
 #include "lapic_timer.h"
 #include "pat.h"
 #include "cact_acpi.h"
+#include "thermal.h"
 #include "ktime.h"
 #include "rtc.h"
 #include "tick.h"
 #include "apic.h"
+#include "irqstat.h"
 #include "energy.h"
 #include "smp.h"
 #include "msi.h"
@@ -253,6 +255,9 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     serial_init();                  // COM1 — printk/klog also go here (QEMU: -serial stdio)
     pr_info("%s: COM1 @ 115200 8N1\n", "serial");
 
+    irqstat_init();                 // /proc/interrupts per-vector counters and labels
+    pr_info("%s: per-vector interrupt accounting ready\n", "irqstat");
+
     // Display
     init_framebuffer();
 
@@ -334,6 +339,10 @@ void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     // after the namespace is loaded (acpi_init) so \_Sx can be evaluated.
     if (acpi_pm_init() == 0)
         pr_info("%s: power transitions ready\n", "power");
+
+    // ACPI thermal zones, for /proc/sensors.  Needs the namespace from
+    // acpi_init; a machine with none is not an error.
+    acpi_thermal_probe();
 
     // Master/Worker core map + C-state model (Step 1 of the energy governor).
     // Implementation is in Rust (sched/src/energy.rs); runs after apic_init so
