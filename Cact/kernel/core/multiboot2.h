@@ -185,7 +185,7 @@ extern mb2_module_info_t mb2_firmrepo_module;
 // netdrvrepo.tar.zst captured during multiboot2_parse(): the network driver
 // modules, served in place as /dev/netdrvrepo exactly like firmrepo.  Kept out
 // of the localbinrepo staging buffer (which is far too small for the driver
-// set) and left to userspace — firmextr streams a .cctk out of it, then modload
+// set) and left to userspace — zstd streams a .cctk out of it, then modload
 // maps it.
 extern mb2_module_info_t mb2_netdrvrepo_module;
 

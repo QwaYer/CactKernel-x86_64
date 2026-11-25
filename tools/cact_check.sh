@@ -234,7 +234,7 @@ fi
 # The firmrepo archive: the bootloader must have handed the kernel the
 # `firmrepo` module, and the supervisor must have copied it into tmpfs.  A
 # medium built without the module (or with an empty /dev/firmrepo) boots
-# cleanly and only shows up much later as firmextr's confusing "not a readable
+# cleanly and only shows up much later as zstd's confusing "not a readable
 # zstd archive" at the shell, so both halves are hard failures here.
 echo "cact-check: --- firmrepo archive ---"
 if grep -qF "devfs: firmrepo module " "$log"; then

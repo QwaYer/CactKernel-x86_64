@@ -9,7 +9,7 @@
 /* Firmware blobs live under /usr/lib/firmware/ (or /usr/lib/).  They are looked
  * up in two places, in order:
  *   1. the localbinrepo archive the bootloader hands the kernel as a multifile module;
- *   2. the VFS — a blob extracted there by firmextr (see CactUserBins) or
+ *   2. the VFS — a blob extracted there with zstd+tar (see CactZstd-x86_64) or
  *      installed by cactpkg.
  * A blob may be stored zstd-compressed (<name>.zst, as shipped by the firmware
  * mirror) and is unpacked on demand with the in-kernel zstd decompressor

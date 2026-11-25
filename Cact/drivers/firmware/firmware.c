@@ -64,7 +64,7 @@ static uint8_t *fw_load_zst_initfs(const char *path, uint32_t *out_len) {
 }
 
 /* ------------------------------------------------------------------ */
-/* VFS: a blob on disk — extracted by firmextr, or installed by cactpkg. */
+/* VFS: a blob on disk — extracted with zstd+tar, or installed by cactpkg. */
 /* ------------------------------------------------------------------ */
 
 static uint8_t *fw_load_vfs(const char *path, uint32_t *out_len) {

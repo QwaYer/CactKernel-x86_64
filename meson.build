@@ -377,7 +377,7 @@ cact_iso = custom_target('cact-iso',
 # fails loudly when the image is missing rather than silently reusing a stale
 # cact-full.iso.  The firmrepo archive (same LocalRepo tree, packed by its
 # `firmrepo` target) rides on the ISO as a second module — without it the
-# kernel boots with an empty /dev/firmrepo and firmextr has nothing to read.
+# kernel boots with an empty /dev/firmrepo and zstd has nothing to read.
 # The netdrvrepo archive (Network-for-Cact-x86_64's `netdrvrepo` target) is the
 # third module, served as /dev/netdrvrepo; it is optional, and its placeholder
 # line is dropped when the archive is absent.  The drvrepo archive

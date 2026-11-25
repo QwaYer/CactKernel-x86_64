@@ -180,7 +180,7 @@ void devfs_devices_init(void) {
     // /dev/firmrepo serves whatever GRUB handed over; report its size so a
     // boot medium without the `module2 … firmrepo` line — or with a module
     // that turned out to be empty — is visible in the log instead of surfacing
-    // as an empty archive at firmextr's first read.
+    // as an empty archive at zstd's first read.
     if (mb2_firmrepo_module.mod_start)
         pr_info("%s: firmrepo module %s, %u KiB (served as /dev/firmrepo)\n",
                 "devfs", mb2_firmrepo_module.name,
@@ -228,7 +228,7 @@ void devfs_devices_init(void) {
     if (cf)
         cf->node.size = mb2_localbinrepo_module.mod_size;
 
-    // /dev/netdrvrepo serves the network driver archive in place for firmextr to
+    // /dev/netdrvrepo serves the network driver archive in place for zstd to
     // stream a .cctk out of (then modload maps it).  Same "size 0 means no
     // module" contract as the two above.
     devfs_entry_t *nr =
