@@ -6,7 +6,7 @@
 #include "kernel.h"
 #include "memory.h"
 #include "klib.h"
-#include "cctkfs_tree.h"
+#include "localbinrepo_tree.h"
 
 // usrfs serves /usr: the on-disk ext4 /usr directory overlaid with a
 // synthesized tree of the archive's "/usr/..." entries.  /usr/bin, /usr/sbin
@@ -17,7 +17,7 @@ static vfs_node_t    usrfs_root;
 static vfs_node_t   *ext4_root   = 0;
 static int           usrfs_ready = 0;
 static uint32_t      usrfs_disk_count;
-static cctkfs_tree_t usr_tree;
+static localbinrepo_tree_t usr_tree;
 
 // Names mounted on the usrfs root by the other overlays (see mntfs_init).
 static const char *const usr_exclude[] = { "bin", "sbin", "lib", 0 };
@@ -49,7 +49,7 @@ static vfs_node_t *_root_walk(vfs_node_t *dir, const char *name) {
         vfs_node_t *disk = usr->ops->walk(usr, name);
         if (disk) return disk;
     }
-    return cctkfs_tree_walk(&usr_tree, name);
+    return localbinrepo_tree_walk(&usr_tree, name);
 }
 
 static vfs_dirent_t sup_de;
@@ -61,9 +61,9 @@ static vfs_dirent_t *_root_readdir(vfs_node_t *dir, uint32_t index) {
         if (e) return e;
     }
     uint32_t j = index - usrfs_disk_count;
-    cctkfs_iter_t it;
-    for (vfs_node_t *n = cctkfs_tree_first(&usr_tree, &it); n;
-         n = cctkfs_iter_next(&it)) {
+    localbinrepo_iter_t it;
+    for (vfs_node_t *n = localbinrepo_tree_first(&usr_tree, &it); n;
+         n = localbinrepo_iter_next(&it)) {
         if (_on_disk(n->name)) continue;
         if (j == 0) {
             strlcpy(sup_de.name, n->name, 128);
@@ -88,12 +88,12 @@ static void _root_listdir(vfs_node_t *dir) {
             any = 1;
         }
     }
-    cctkfs_iter_t it;
-    for (vfs_node_t *n = cctkfs_tree_first(&usr_tree, &it); n;
-         n = cctkfs_iter_next(&it)) {
+    localbinrepo_iter_t it;
+    for (vfs_node_t *n = localbinrepo_tree_first(&usr_tree, &it); n;
+         n = localbinrepo_iter_next(&it)) {
         if (_on_disk(n->name)) continue;
         printk("  "); printk(n->name);
-        printk(n->type == VFS_DIRECTORY ? "/" : "  [cctkfs]");
+        printk(n->type == VFS_DIRECTORY ? "/" : "  [localbinrepo]");
         printk("\n");
         any = 1;
     }
@@ -160,13 +160,13 @@ void usrfs_init(vfs_node_t *ext4_node) {
         }
     }
 
-    cctkfs_tree_build(&usr_tree, "/usr/", 0644, usr_exclude);
+    localbinrepo_tree_build(&usr_tree, "/usr/", 0644, usr_exclude);
     usrfs_count_disk();
 
     uint32_t files = 0, dirs = 0;
-    cctkfs_tree_count(&usr_tree, &files, &dirs);
+    localbinrepo_tree_count(&usr_tree, &files, &dirs);
 
-    pr_info("%s: root ready (%u on disk, %u cctkfs files, %u dirs)\n",
+    pr_info("%s: root ready (%u on disk, %u localbinrepo files, %u dirs)\n",
             "usrfs", usrfs_disk_count, files, dirs);
 
     usrfs_ready = 1;

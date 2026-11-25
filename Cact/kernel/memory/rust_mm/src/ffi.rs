@@ -79,7 +79,7 @@ pub const HEAP_MAGIC: u32 = 0xDEAD_BEEF;
 ///
 /// 0 … 512 MB covers:
 ///   BIOS / IVT / ROM        0x0000_0000 – 0x000F_FFFF
-///   Kernel text/data/BSS    0x0010_0000 – (kernel_end, 24 MB cctkfs stage)
+///   Kernel text/data/BSS    0x0010_0000 – (kernel_end, 24 MB localbinrepo stage)
 ///   Static page-tables BSS  up to 0x00BF_FFFF
 ///   Low user VA region      `USER_HEAP_START` (0x0800_0000) … ELF image +
 ///                           `brk` heap, which overlaps the reservation and so

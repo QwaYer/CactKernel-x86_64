@@ -121,8 +121,8 @@ devfs_driver_t drv_fb = {
     .read=_fb_read, .write=_fb_write, .ioctl=_fb_ioctl
 };
 
-// /dev/firmrepo, /dev/cctkfs — the two Multiboot2 modules GRUB hands over:
-// the compressed firmrepo archive and the cctkfs image.  Both are far too big
+// /dev/firmrepo, /dev/localbinrepo — the two Multiboot2 modules GRUB hands over:
+// the compressed firmrepo archive and the localbinrepo image.  Both are far too big
 // to stage a second time, so they stay in place in physical memory and are
 // served read-only.  The module's physical range lies inside the boot
 // reservation, whose low identity alias a process PD can shadow (the ELF image
@@ -142,13 +142,13 @@ static int _firmrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     return _module_read(&mb2_firmrepo_module, off, size, buf);
 }
 
-static int _cctkfs_read(void *p, uint64_t off, uint32_t size, char *buf) {
+static int _localbinrepo_read(void *p, uint64_t off, uint32_t size, char *buf) {
     (void)p;
-    return _module_read(&mb2_cctkfs_module, off, size, buf);
+    return _module_read(&mb2_localbinrepo_module, off, size, buf);
 }
 
 devfs_driver_t drv_firmrepo = { .read=_firmrepo_read };
-devfs_driver_t drv_cctkfs    = { .read=_cctkfs_read };
+devfs_driver_t drv_localbinrepo = { .read=_localbinrepo_read };
 
 // Register this file's devices.  Each driver group registers the nodes it
 // owns, so devfs_init() stays a generic bootstrap and carries no device list.
@@ -175,10 +175,10 @@ void devfs_devices_init(void) {
     else
         pr_warn("%s: no firmrepo module — /dev/firmrepo reads empty\n", "devfs");
 
-    if (mb2_cctkfs_module.mod_start)
-        pr_info("%s: cctkfs module %s, %u KiB (served as /dev/cctkfs)\n",
-                "devfs", mb2_cctkfs_module.name,
-                (unsigned)(mb2_cctkfs_module.mod_size / 1024));
+    if (mb2_localbinrepo_module.mod_start)
+        pr_info("%s: localbinrepo module %s, %u KiB (served as /dev/localbinrepo)\n",
+                "devfs", mb2_localbinrepo_module.name,
+                (unsigned)(mb2_localbinrepo_module.mod_size / 1024));
 
     devfs_entry_t *lr =
         register_chrdev("firmrepo", DEVFS_F_CHAR, &drv_firmrepo, 0);
@@ -188,11 +188,11 @@ void devfs_devices_init(void) {
     if (lr)
         lr->node.size = mb2_firmrepo_module.mod_size;
 
-    // /dev/cctkfs serves the boot cctkfs image in place, so the installer can
+    // /dev/localbinrepo serves the boot localbinrepo image in place, so the installer can
     // put the image being booted — not a stale copy bundled inside it — onto a
     // target disk.  Same "size 0 means no module" contract as /dev/firmrepo.
     devfs_entry_t *cf =
-        register_chrdev("cctkfs", DEVFS_F_CHAR, &drv_cctkfs, 0);
+        register_chrdev("localbinrepo", DEVFS_F_CHAR, &drv_localbinrepo, 0);
     if (cf)
-        cf->node.size = mb2_cctkfs_module.mod_size;
+        cf->node.size = mb2_localbinrepo_module.mod_size;
 }

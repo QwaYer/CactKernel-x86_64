@@ -300,7 +300,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
 
 static int usb_mod_image_errno(int rc) {
     switch (rc) {
-    case -ENOENT: return -ENOENT;   // no such module in the cctkfs image
+    case -ENOENT: return -ENOENT;   // no such module in the localbinrepo image
     case -ENOMEM: return -ENOMEM;   // relocation image too large
     case -EACCES: return -EACCES;   // HMAC signature rejected
     default:      return -EINVAL;   // not ET_REL / corrupt / unresolved symbol

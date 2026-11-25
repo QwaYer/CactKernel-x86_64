@@ -13,7 +13,7 @@ int font_load_boot(const char *path) {
     uint32_t       size;
 
     if (!path || initfs_modblob_get(path, &blob, &size) != 0) {
-        pr_err("%s: boot font not staged in cctkfs (%s)\n",
+        pr_err("%s: boot font not staged in localbinrepo (%s)\n",
                "font", path ? path : "(null)");
         return FONT_ERR_NOT_FOUND;
     }

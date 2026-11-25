@@ -12,10 +12,10 @@
 #define FW_DIR "/usr/lib/firmware/"
 
 /* ------------------------------------------------------------------ */
-/* cctkfs: blobs baked into the initfs image the bootloader hands us.  */
+/* localbinrepo: blobs baked into the initfs image the bootloader hands us.  */
 /* ------------------------------------------------------------------ */
 
-/* Look a path up in the cctkfs archive and return a private copy.  The archive
+/* Look a path up in the localbinrepo archive and return a private copy.  The archive
  * itself is a shared staging buffer, so callers must not hold into it across
  * other lookups. */
 static uint8_t *fw_load_initfs(const char *path, uint32_t *out_len) {
@@ -167,7 +167,7 @@ int request_firmware(const char *name, const uint8_t **data, uint32_t *len) {
         copy = fw_load_any(path, &size);
     }
     if (!copy) {
-        pr_warn("firmware: %s not found in cctkfs or vfs\n", name);
+        pr_warn("firmware: %s not found in localbinrepo or vfs\n", name);
         return -1;
     }
 

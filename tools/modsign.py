@@ -4,7 +4,7 @@
 
 """modsign.py — CactOS loadable-module signing (vermagic + ECDSA P-256).
 
-Shared library and CLI used by cact_sign.py, cact_sign_cctkfs.py and
+Shared library and CLI used by cact_sign.py, cact_sign_localbinrepo.py and
 gen_module_keys.py.
 
 * vermagic() reproduces the kernel's ksym_vermagic(): a 32-bit FNV-1a hash over

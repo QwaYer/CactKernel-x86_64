@@ -5,7 +5,7 @@
  * Loadable filesystem-module loader (multi-slot).
  *
  * Mirrors pci_load_module() but for non-PCI filesystems: it loads an ET_REL
- * module (typically `ext4.cctk`) from the staged cctkfs image, verifies its
+ * module (typically `ext4.cctk`) from the staged localbinrepo image, verifies its
  * ECDSA P-256 signature + vermagic tag, relocates it, and resolves the generic
  * `fs_mount` / `fs_unmount` entry symbols.  Up to FS_MOD_MAX modules can be resident at
  * once; mntfs and the /dev/sys mount ioctl select a module by instance name
@@ -308,7 +308,7 @@ static int load_module_image(const char *path, uint8_t **image_out,
 // load_module_image() codes -> errno for the /dev/sys module ioctl.
 static int fs_mod_image_errno(int rc) {
     switch (rc) {
-    case -ENOENT: return -ENOENT;   // no such module in the cctkfs image
+    case -ENOENT: return -ENOENT;   // no such module in the localbinrepo image
     case -ENOMEM: return -ENOMEM;   // relocation image too large
     case -EACCES: return -EACCES;   // HMAC signature rejected
     default:      return -EINVAL;   // not ET_REL / corrupt / unresolved symbol

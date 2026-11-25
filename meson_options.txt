@@ -8,7 +8,7 @@ option('linker', type: 'combo', choices: ['lld', 'ld'], value: 'ld',
   description: 'Linker for the final kernel link; lld needs BLOCK(4K) removed from linker.ld')
 
 option('local_repo', type: 'string', value: '',
-  description: 'Directory holding cctkfs.img for the iso-full target (default: ../LocalRepoCactOS)')
+  description: 'Directory holding localbinrepo.img for the iso-full target (default: ../LocalRepoCactOS)')
 
 option('acpica_fetch', type: 'boolean', value: true,
   description: 'Clone ACPICA during configure if it is missing (needs network)')

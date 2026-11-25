@@ -46,10 +46,10 @@ CactKernel is one piece of a larger workspace. Typical pieces:
 | Component | Role |
 |-----------|------|
 | **[CactLib-x86_32](https://github.com/QwaYer/CactLibc-x86_32)** | Userspace **`clibc.so`** (plus the **`ld.so`** dynamic linker). Every `SYS_*` number must match the kernel’s [`syscalls.h`](Cact/kernel/core/syscall/syscalls.h) and `ioctl_abi.h`. After any syscall change: rebuild libc and **re-link all ELFs** (init, shell, demos). |
-| **[LocalRepoCactOS](../LocalRepoCactOS-x86_32)** | Builds relocatable **`.cctk`** PCI modules, stages ELF binaries under **`lib/bin/`**, and packs a single GRUB module **`cctkfs.img`**. GRUB loads it as `module2 /boot/cctkfs.img cctkfs` (see [`grub.cfg`](grub.cfg)). |
-| **[`CactBridge-x86/build.py`](../CactBridge-x86/build.py)** | One-shot: rebuilds every sibling (drivers → **`cctkfs.img`** → kernel) and packs the bootable **`build/cact-non-gui.iso`** / **`cact-gui.iso`**; **`--run`** boots it in QEMU (the empty **ext4** disk is created by [`build_disk.sh`](build_disk.sh) on first run). |
+| **[LocalRepoCactOS](../LocalRepoCactOS-x86_32)** | Builds relocatable **`.cctk`** PCI modules, stages ELF binaries under **`lib/bin/`**, and packs a single GRUB module **`localbinrepo.img`**. GRUB loads it as `module2 /boot/localbinrepo.img localbinrepo` (see [`grub.cfg`](grub.cfg)). |
+| **[`CactBridge-x86/build.py`](../CactBridge-x86/build.py)** | One-shot: rebuilds every sibling (drivers → **`localbinrepo.img`** → kernel) and packs the bootable **`build/cact-non-gui.iso`** / **`cact-gui.iso`**; **`--run`** boots it in QEMU (the empty **ext4** disk is created by [`build_disk.sh`](build_disk.sh) on first run). |
 
-**Why `cctkfs` exists:** the kernel copies the Multiboot2 "cctkfs" module into a large **`.bss`** staging buffer **before paging** (`initfs_modblob_load`). At runtime, **binfs / sbinfs / libfs / usrfs** overlay files from that archive on top of ext4 (e.g. **`/usr/bin/init`**, **`/usr/lib/clibc.so`**, optional **`/usr/lib/modules/*.cctk`** drivers), and the bare **`/bin`, `/sbin`, `/lib`** are symlinks into **`/usr`**. PCI dynamic loading reads ET_REL blobs from the same archive. All modules are verified with an **ECDSA P-256** signature against the kernel's embedded public key (plus a ksym-ABI `vermagic`) before loading.
+**Why `localbinrepo` exists:** the kernel copies the Multiboot2 "localbinrepo" module into a large **`.bss`** staging buffer **before paging** (`initfs_modblob_load`). At runtime, **binfs / sbinfs / libfs / usrfs** overlay files from that archive on top of ext4 (e.g. **`/usr/bin/init`**, **`/usr/lib/clibc.so`**, optional **`/usr/lib/modules/*.cctk`** drivers), and the bare **`/bin`, `/sbin`, `/lib`** are symlinks into **`/usr`**. PCI dynamic loading reads ET_REL blobs from the same archive. All modules are verified with an **ECDSA P-256** signature against the kernel's embedded public key (plus a ksym-ABI `vermagic`) before loading.
 
 The **`firmrepo`** module is a **second** archive (`firmrepo.tar.zst`), too big to stage: the kernel keeps it in place on the boot medium and serves it through **`/dev/firmrepo`** (compressed), so `firmextr` and package tooling can stream it without copying it into RAM.
 
@@ -57,7 +57,7 @@ From the workspace root (QEMU-oriented full rebuild):
 
 ```sh
 python3 CactBridge-x86/build.py --non-gui-iso      # full ISO (+ QEMU with --run)
-# Kernel only (expects ../LocalRepoCactOS-x86_32/cctkfs.img already packed):
+# Kernel only (expects ../LocalRepoCactOS-x86_32/localbinrepo.img already packed):
 cd CactKernel-x86_64 && meson setup build-meson --cross-file cross/x86_64-cact-clang.ini && ninja -C build-meson
 ```
 
@@ -92,7 +92,7 @@ Every source directory owns a `meson.build` and produces its own static library;
 ```sh
 meson setup build-meson --cross-file cross/x86_64-cact-clang.ini
 ninja -C build-meson             # kernel.bin + cact.iso (kernel-only GRUB)
-ninja -C build-meson iso-full    # cact-full.iso with cctkfs.img + firmrepo.tar.zst
+ninja -C build-meson iso-full    # cact-full.iso with localbinrepo.img + firmrepo.tar.zst
 ninja -C build-meson check       # headless QEMU boot check (COM1: userspace, vermagic, firmrepo)
 ninja -C build-meson clean
 ninja -C build-meson rust-clean  # cargo clean in the four Rust crates
@@ -100,23 +100,23 @@ ninja -C build-meson acpica-clean
 ./build_disk.sh                  # empty ext4 build/nvme.img for ./run_qemu.sh
 ```
 
-Useful options: `-Dkern_debug=true` (`-g -Og`, for GDB), `-Dlinker=ld|lld`, `-Dlocal_repo=/path` (where `cctkfs.img` lives), `-Dacpica_fetch=false` (never clone ACPICA during configure).
+Useful options: `-Dkern_debug=true` (`-g -Og`, for GDB), `-Dlinker=ld|lld`, `-Dlocal_repo=/path` (where `localbinrepo.img` lives), `-Dacpica_fetch=false` (never clone ACPICA during configure).
 
-**ISO with bundled `cctkfs.img` (`iso-full`)**
+**ISO with bundled `localbinrepo.img` (`iso-full`)**
 
 ```sh
 meson configure build-meson -Dlocal_repo=../LocalRepoCactOS-x86_32
-ninja -C build-meson iso-full   # signs cctkfs.img via tools/cact_sign_cctkfs.py
+ninja -C build-meson iso-full   # signs localbinrepo.img via tools/cact_sign_localbinrepo.py
 ```
 
 `iso-full` is a run_target: it always regenerates, and fails loudly when
-`cctkfs.img` is missing. It rides **two** GRUB modules on the ISO — the **`cctkfs`**
+`localbinrepo.img` is missing. It rides **two** GRUB modules on the ISO — the **`localbinrepo`**
 archive and the compressed **`firmrepo.tar.zst`** archive (served in place as
 `/dev/firmrepo`, so `firmextr` and package tooling have something to read).
 
 **QEMU:** [`./run_qemu.sh`](./run_qemu.sh) picks up **`build-meson/cact-full.iso`** (then **`build-meson/cact.iso`**); override with **`CACT_ISO`**.
 
-> 🧩 **`python3`** is only needed to pack **`cctkfs.img`** in LocalRepoCactOS and for **`tools/cact_sign_cctkfs.py`** — not for the default kernel build (`grub.cfg.kernelonly`).
+> 🧩 **`python3`** is only needed to pack **`localbinrepo.img`** in LocalRepoCactOS and for **`tools/cact_sign_localbinrepo.py`** — not for the default kernel build (`grub.cfg.kernelonly`).
 
 **Successful build footer** (version from [`VERSION`](VERSION), commit from `git`) — printed by `meson setup`:
 
@@ -165,12 +165,12 @@ CactKernel-x86_64/
 │   ├── drivers/
 │   │   ├── acpi/        ACPICA engine — AML interpreter, MADT/APIC/FADT tables, C-states, power
 │   │   ├── block/       blkdev, page cache, partition scan (MBR/GPT)
-│   │   ├── firmware/    request_firmware()/release_firmware() for modules (cctkfs blobs, .zst)
+│   │   ├── firmware/    request_firmware()/release_firmware() for modules (localbinrepo blobs, .zst)
 │   │   ├── dmi/         SMBIOS board identity (vendor/product/BIOS) for quirks and /proc/dmi
 │   │   ├── gpu/         DRM uapi + KMS core (crates kms + rust_drm) — GEM, dumb buffers, modeset
 │   │   ├── input/       USB HID only (PS/2 removed in 2.0)
 │   │   ├── timer/       ktime (TSC primary, ACPI PM fallback), LAPIC scheduler tick, CMOS RTC, tick counter
-│   │   ├── initfs/      cctkfs staging + module blob reader
+│   │   ├── initfs/      localbinrepo staging + module blob reader
 │   │   ├── pci/         enumerator, PCIe ECAM, MSI/MSI-X, ELF module loader, mod_tag verify
 │   │   ├── quirks/      per-machine quirk blacklist (board DMI + PCI-ID rows, one table)
 │   │   ├── tty/         VT console + line discipline (Alt+F<n>)
@@ -181,7 +181,7 @@ CactKernel-x86_64/
 │   ├── fs/
 │   │   ├── rust_vfs/    Rust VFS core, struct file, dcache, generic page cache, pipe
 │   │   ├── vfs/         C filesystem implementations — devfs, procfs, mntfs, etcfs, tmpfs,
-│   │   │                binfs, sbinfs, libfs, usrfs, varfs, cctkfs_tree, vfsdev, fs_mod
+│   │   │                binfs, sbinfs, libfs, usrfs, varfs, localbinrepo_tree, vfsdev, fs_mod
 │   │   ├── mqueue/      POSIX message queues (queue filesystem mounted at /dev/mqueue)
 │   │   ├── pty/         /dev/ptmx + /dev/pts/<n>
 │   │   ├── pipe/        /dev/pipe registration (the pipe itself lives in rust_vfs)
@@ -194,7 +194,7 @@ CactKernel-x86_64/
 ├── meson.build
 ├── VERSION
 ├── linker.ld
-├── grub.cfg              # multiboot2 kernel + cctkfs + firmrepo modules
+├── grub.cfg              # multiboot2 kernel + localbinrepo + firmrepo modules
 ├── grub.cfg.kernelonly   # kernel-only multiboot (the cact.iso default, -Diso_grub_cfg)
 ├── grub.cfg.ramroot      # RAM-first userland variant
 ├── build_disk.sh         # raw ext4 image for QEMU AHCI/NVMe
@@ -213,9 +213,9 @@ Boot is split into **three phases**: early `init()` (identity map, no user IRQs 
 | Step | What happens |
 |------|----------------|
 | 1 | **Multiboot2** parse — memory map, framebuffer tag, modules (the `firmrepo` archive is recorded separately and served in place) |
-| 2 | **cctkfs staging** — `initfs_modblob_load()` copies the GRUB "cctkfs" module from its physical address into kernel **`.bss`** before paging is enabled |
+| 2 | **localbinrepo staging** — `initfs_modblob_load()` copies the GRUB "localbinrepo" module from its physical address into kernel **`.bss`** before paging is enabled |
 | 3 | **Framebuffer** — `fb_init()`; if no FB tag / zero size → halt (blind) |
-| 4 | **Console font** — `font_load_boot()` parses the PSF2 file staged in cctkfs; a missing/broken font is a **panic** (the kernel cannot draw a glyph) |
+| 4 | **Console font** — `font_load_boot()` parses the PSF2 file staged in localbinrepo; a missing/broken font is a **panic** (the kernel cannot draw a glyph) |
 | 5 | Magic check (`0x36D76289`) |
 | 6 | **`kernel_setup_hardware()`** — see Phase B |
 | 7 | **`create_task(kernel_bootstrap_main)`** — deferred work that needs the scheduler |
@@ -248,7 +248,7 @@ Order matters (e.g. **blkdev** before PCI so AHCI/NVMe can register).
 |---|--------|
 | 1 | **`pcidev_probe_all()`** — attach/scan PCI devices now that a task context exists (module loading itself is a **userspace** concern — nothing is auto-loaded) |
 | 2 | **`mntfs_init`** — parse mount table, **mount ext4** on NVMe/AHCI (may **`sema_down`** waiting for IRQ completions — **illegal** from the raw boot stack, hence this thread). With no filesystem module it falls back to a **virtual nodisk root** and the kernel still boots to `/usr/bin/init` |
-| 3 | **`create_elf_task("usr/bin/init")`** — first userspace process; binary resolved through **binfs** (ext4 `/usr/bin` + **cctkfs** overlay), then the console log level drops to `NOTICE` |
+| 3 | **`create_elf_task("usr/bin/init")`** — first userspace process; binary resolved through **binfs** (ext4 `/usr/bin` + **localbinrepo** overlay), then the console log level drops to `NOTICE` |
 
 **Typical serial / FB banner:**
 
@@ -266,7 +266,7 @@ Kernel is ready. Launching init…
 
 ## 🧠 Memory map (`rust_mm`)
 
-The PMM installs every **available** frame the **Multiboot2 memory map** reports — low RAM below the PCI hole *and* any RAM above 4 GiB — so `-m 6G` manages all 6 GiB. `pmm::ram_end()` is the page-aligned top of usable RAM *below* the hole (default `PCI_HOLE_START`, `0xC000_0000`, e.g. `0xE000_0000` on a 3.5 GiB-hole board); physical addresses in `[ram_end, 4 GiB)` are device MMIO. The kernel reaches a frame — and every device register — through the **direct map** (`0xFFFF_8000_0000_0000`). The **identity map is gone** once `init_paging` runs, bar a single page: the AP trampoline at `0x8000`, which a woken core must execute at its physical address before it can jump to the higher half. Nothing else is identity-mapped, so no user VA window can displace a live frame — `USER_FRAME_CEIL` is gone with it. The free-frame bitmap and the per-frame refcounts are **sized at boot from the memory map** and carved out of the boot reservation (no 4 GiB static arrays); the direct map is built to match, giving above-4-GiB RAM windows a page directory from `kalloc`. The user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM extent. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB cctkfs staging buffer, static page tables, the trampoline page, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`) and its own arrays.
+The PMM installs every **available** frame the **Multiboot2 memory map** reports — low RAM below the PCI hole *and* any RAM above 4 GiB — so `-m 6G` manages all 6 GiB. `pmm::ram_end()` is the page-aligned top of usable RAM *below* the hole (default `PCI_HOLE_START`, `0xC000_0000`, e.g. `0xE000_0000` on a 3.5 GiB-hole board); physical addresses in `[ram_end, 4 GiB)` are device MMIO. The kernel reaches a frame — and every device register — through the **direct map** (`0xFFFF_8000_0000_0000`). The **identity map is gone** once `init_paging` runs, bar a single page: the AP trampoline at `0x8000`, which a woken core must execute at its physical address before it can jump to the higher half. Nothing else is identity-mapped, so no user VA window can displace a live frame — `USER_FRAME_CEIL` is gone with it. The free-frame bitmap and the per-frame refcounts are **sized at boot from the memory map** and carved out of the boot reservation (no 4 GiB static arrays); the direct map is built to match, giving above-4-GiB RAM windows a page directory from `kalloc`. The user/kernel **VA** split (`USER_STACK_TOP`) is independent of the RAM extent. Frames inside the **low 512 MiB** reservation (BIOS, kernel image incl. the 24 MiB localbinrepo staging buffer, static page tables, the trampoline page, *and the low user VA region* — ELF images, libc, ld.so, the brk heap) are permanently marked used; the PMM then raises that boundary past the Multiboot2 module RAM (`pmm_reserve_boot_images`) and its own arrays.
 
 | Symbol | Value | Meaning |
 |--------|-------|---------|
@@ -397,18 +397,18 @@ deeply each core may idle:
 | **Block** | blkdev, page cache, **partition scan** (MBR/GPT) | The block layer is in-tree (`BLKDEV_MAX_DISKS` 8, 16 partitions/disk); the **AHCI**/**NVMe** drivers themselves ship as **`.cctk`** (sibling repos, `AHCI-for-Cact-x86_32` / `NVMe-for-Cact-x86_32`) |
 | **USB** | xHCI, HID, hub | ~32 KiB host stack (USB 3.x); root-port and hub hotplug run in dedicated tasks — PS/2 removed in 2.0 |
 | **Input** | USB HID keyboard & mouse | Software key repeat (SET_IDLE(0)) and indicator LEDs (Num/Caps/Scroll) |
-| **Video** | Linear FB 32 bpp, PSF2 console font from cctkfs (`/usr/share/consolefont.psf`, ×2 scale), PAT WC + WB shadow blit | |
+| **Video** | Linear FB 32 bpp, PSF2 console font from localbinrepo (`/usr/share/consolefont.psf`, ×2 scale), PAT WC + WB shadow blit | |
 | **GPU / DRM / KMS** | In-tree DRM uapi + KMS core (`Cact/drivers/gpu`; Rust `rust_drm` + `kms`): GEM, dumb buffers, mmap, atomic modeset, planes, cursors, syncobj, PRIME | No display driver in-tree — virtio-gpu / Intel ship out-of-tree as **`.cctk`** |
 | **TTY / VT** | VT console `/dev/ttyN` (`tty0` = the active VT), allocated on demand up to `TTY_MAX_VT` 63, each with `termios` + line discipline (canonical/raw) and a replay ring; `Alt+F<n>` switch | |
-| **Firmware** | `request_firmware()` / `release_firmware()` (ksym) — stage a blob from **cctkfs**, transparently **`.zst`**-decompressed | Build-time table only (no on-demand loader/workqueue) |
+| **Firmware** | `request_firmware()` / `release_firmware()` (ksym) — stage a blob from **localbinrepo**, transparently **`.zst`**-decompressed | Build-time table only (no on-demand loader/workqueue) |
 | **Zstd** | In-kernel zstd decompressor (`Cact/drivers/zstd`, vendored from Linux `lib/zstd`) | Used by the firmware loader to expand `.zst` blobs (whole-buffer, single-frame, ≤4 GiB) |
-| **PCI** | Config scan, **PCIe ECAM**, MSI/MSI-X vector pool, driver table, **modblob** loader, ECDSA P-256 + vermagic verification | Loads ET_REL modules from **cctkfs** or path (user-driven via kmod syscalls) |
+| **PCI** | Config scan, **PCIe ECAM**, MSI/MSI-X vector pool, driver table, **modblob** loader, ECDSA P-256 + vermagic verification | Loads ET_REL modules from **localbinrepo** or path (user-driven via kmod syscalls) |
 | **DMI / SMBIOS** | Board identity (`Cact/drivers/dmi`): entry point from the **EFI configuration table** under UEFI, else the **F-segment** scan; 64-bit (`_SM3_`) and 32-bit (`_SM_`) entry points | Feeds the board quirks and `/proc/dmi` |
 | **Quirks** | One blacklist table (`Cact/drivers/quirks`): board rows matched on SMBIOS vendor/product (HP 290 G1 `_OSC`) and PCI rows matched on vendor/device ID (Intel 300-series xHCI) → quirk bits | The only file that grows when a new machine needs a workaround |
 | **Network** | **virtio-net** (`.cctk`); in-kernel **802.11** engine (`cact80211`) for Wi-Fi radios | Default NIC under QEMU; other NICs packaged as **`.cctk`** (e.g. Marvell **Yukon**); **RT3070** USB Wi-Fi via the `RT2800USB` module, whose driver is now a *dumb radio* |
 | **ACPI** | ACPICA — RSDP, MADT, FADT, APIC table parsing, `_CST` C-states, power (S5/reset) and **S3 suspend/resume** | Since 2.0 |
 
-All out-of-tree PCI drivers register their interrupt through the kernel's **`msidev_register()`** — **MSI-X** when the device offers it, otherwise a single **MSI** message — instead of PIC IRQ lines; per-machine exceptions live under `Cact/drivers/quirks/`. Extra PCI drivers live in **`*-for-Cact-x86_32`** repositories; **`ninja -C CactOS-x86_32/build-meson drivers`** (workspace integrator) installs them into **`LocalRepoCactOS-x86_32/lib/`** and packs **`cctkfs.img`**.
+All out-of-tree PCI drivers register their interrupt through the kernel's **`msidev_register()`** — **MSI-X** when the device offers it, otherwise a single **MSI** message — instead of PIC IRQ lines; per-machine exceptions live under `Cact/drivers/quirks/`. Extra PCI drivers live in **`*-for-Cact-x86_32`** repositories; **`ninja -C CactOS-x86_32/build-meson drivers`** (workspace integrator) installs them into **`LocalRepoCactOS-x86_32/lib/`** and packs **`localbinrepo.img`**.
 
 ---
 
@@ -492,7 +492,7 @@ linear scanout, vblank IRQ, hardware cursor) — and nothing is auto-loaded:
 
 | FS | Status | Notes |
 |----|--------|-------|
-| **ext4** | Active (**`.cctk`**) | Out-of-tree module ([`EXT4-for-Cact-x86_32`](https://github.com/QwaYer/EXT4-for-Cact-x86_32)) — read/write, inodes; loaded from **cctkfs** |
+| **ext4** | Active (**`.cctk`**) | Out-of-tree module ([`EXT4-for-Cact-x86_32`](https://github.com/QwaYer/EXT4-for-Cact-x86_32)) — read/write, inodes; loaded from **localbinrepo** |
 | **VFS** | Active | Up to **`VFS_MOUNT_MAX` (32)** simultaneous mount points, symlink pool with **ELOOP** detection, `rwx` permission bits, `struct file` with fd table |
 | **devfs** | Active | Device nodes as VFS files |
 | **procfs** | Active | e.g. `/proc/cmd`, `meminfo`, module listings |
@@ -500,10 +500,10 @@ linear scanout, vblank IRQ, hardware cursor) — and nothing is auto-loaded:
 | **etcfs** | Active | passwd-like uid ↔ name mapping |
 | **tmpfs** | Active | RAM-backed files |
 | **posixmq** | Active | POSIX message queues — a small filesystem mounted at **`/dev/mqueue`** whose files *are* queues (`Cact/fs/mqueue`, `CACT_MQCTL_*`): `mq_open` is open-or-create, `mq_unlink` is `unlink`, and send/receive (prioritised) are ioctls on the descriptor |
-| **binfs** | Active | **`/usr/bin`** + a synthesized **cctkfs** tree (**`cctkfs_tree`** builds the archive hierarchy); **`/bin`** → **`/usr/bin`** symlink |
-| **sbinfs** | Active | **`/usr/sbin`** + synthesized cctkfs tree; **`/sbin`** → **`/usr/sbin`** symlink |
-| **libfs** | Active | **`/usr/lib`** + synthesized cctkfs tree — **`modules/`**, **`firmware/`**, **`cactpkg/repo/`** and the whole **`cact-install/`** tree are reachable; **`/lib`** → **`/usr/lib`** symlink |
-| **usrfs** | Active | **`/usr`** + synthesized cctkfs tree (**`include/`**, **`share/`** and anything nested); **`bin`/`sbin`/`lib`** belong to their own mounts |
+| **binfs** | Active | **`/usr/bin`** + a synthesized **localbinrepo** tree (**`localbinrepo_tree`** builds the archive hierarchy); **`/bin`** → **`/usr/bin`** symlink |
+| **sbinfs** | Active | **`/usr/sbin`** + synthesized localbinrepo tree; **`/sbin`** → **`/usr/sbin`** symlink |
+| **libfs** | Active | **`/usr/lib`** + synthesized localbinrepo tree — **`modules/`**, **`firmware/`**, **`cactpkg/repo/`** and the whole **`cact-install/`** tree are reachable; **`/lib`** → **`/usr/lib`** symlink |
+| **usrfs** | Active | **`/usr`** + synthesized localbinrepo tree (**`include/`**, **`share/`** and anything nested); **`bin`/`sbin`/`lib`** belong to their own mounts |
 | **varfs** | Active | **`/var`** layout |
 | **pipes** | Active | `pipe()` integrated with the fd table |
 | **memfd / eventfd / timerfd / signalfd / epoll** | Active | fd-type singletons created through `/dev/<name>` (`CACT_MEMFDCTL_*` 0x3800 … `CACT_EPOLLCTL_*` 0x3C00): anonymous memory files, event counters, timers, signal-watching descriptors, and readiness multiplexing (epoll is its own fd with `EPOLL_CTL`/`EPOLL_WAIT`) |

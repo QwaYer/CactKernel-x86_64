@@ -2,9 +2,9 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 CactOS Project
 
-"""cact_sign_cctkfs.py — Sign all .cctk modules inside a cctkfs archive.
+"""cact_sign_localbinrepo.py — Sign all .cctk modules inside a localbinrepo archive.
 
-Reads cctkfs.img, signs each module data blob with an ECDSA P-256 signature
+Reads localbinrepo.img, signs each module data blob with an ECDSA P-256 signature
 (see tools/modsign.py), rebuilds the archive with properly aligned signed
 blobs, and writes a CRC-32 container checksum into the header.
 
@@ -22,8 +22,8 @@ import zlib
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import modsign  # noqa: E402
 
-CCTKFS_MAGIC  = 0x53464B43
-CCTKFS_CKSUM_OFF = 28
+LOCALBINREPO_MAGIC  = 0x53464B43
+LOCALBINREPO_CKSUM_OFF = 28
 
 
 def align_up(val: int, align: int) -> int:
@@ -31,14 +31,14 @@ def align_up(val: int, align: int) -> int:
 
 
 def set_checksum(data: bytearray) -> None:
-    data[CCTKFS_CKSUM_OFF:CCTKFS_CKSUM_OFF + 4] = b'\x00\x00\x00\x00'
+    data[LOCALBINREPO_CKSUM_OFF:LOCALBINREPO_CKSUM_OFF + 4] = b'\x00\x00\x00\x00'
     crc = zlib.crc32(bytes(data)) & 0xFFFFFFFF
-    struct.pack_into("<I", data, CCTKFS_CKSUM_OFF, crc)
+    struct.pack_into("<I", data, LOCALBINREPO_CKSUM_OFF, crc)
 
 
 def main():
     if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <cctkfs.img>", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} <localbinrepo.img>", file=sys.stderr)
         sys.exit(1)
 
     path = sys.argv[1]
@@ -47,17 +47,17 @@ def main():
         img = f.read()
 
     if len(img) < 32:
-        print("cctkfs: file too small", file=sys.stderr)
+        print("localbinrepo: file too small", file=sys.stderr)
         sys.exit(1)
 
     magic, version, total_size, count, entries_off, names_off, names_size, _ = \
         struct.unpack_from("<IIIIIIII", img, 0)
 
-    if magic != CCTKFS_MAGIC:
-        print(f"cctkfs: bad magic 0x{magic:08X}", file=sys.stderr)
+    if magic != LOCALBINREPO_MAGIC:
+        print(f"localbinrepo: bad magic 0x{magic:08X}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"cctkfs: {count} modules, {total_size} bytes")
+    print(f"localbinrepo: {count} modules, {total_size} bytes")
 
     entries = []
     for i in range(count):
@@ -123,7 +123,7 @@ def main():
 
     out = bytearray()
     out.extend(struct.pack("<IIIIIIII",
-        CCTKFS_MAGIC, 1, 0,
+        LOCALBINREPO_MAGIC, 1, 0,
         count, HEADER_SIZE, new_names_off, new_names_size, 0))
 
     cur_data_off = new_data_off
@@ -152,8 +152,8 @@ def main():
     with open(path, "wb") as f:
         f.write(out)
 
-    ck = out[CCTKFS_CKSUM_OFF:CCTKFS_CKSUM_OFF + 4]
-    print(f"cctkfs: done — {count} modules signed, "
+    ck = out[LOCALBINREPO_CKSUM_OFF:LOCALBINREPO_CKSUM_OFF + 4]
+    print(f"localbinrepo: done — {count} modules signed, "
           f"total_size={total_size}, "
           f"crc32=0x{ck.hex()}")
     sys.exit(0)

@@ -4,7 +4,7 @@
 
 # Launch QEMU for CactKernel.
 # On the first run without a disk: ./build_disk.sh is called automatically (empty ext4).
-# Full cycle (drivers + cctkfs + ISO): ../CactBridge-x86/build.py --non-gui-iso
+# Full cycle (drivers + localbinrepo + ISO): ../CactBridge-x86/build.py --non-gui-iso
 # Fixed: the monitor is moved to a virtual console (Ctrl+Alt+2 in the QEMU window),
 # so that it does not conflict with the serial port stdio.
 #
@@ -39,7 +39,7 @@ fi
 ISO="${CACT_ISO:-}"
 if [[ -z "$ISO" ]]; then
   # Meson build dir. The full ISO is preferred: the kernel-only image panics
-  # without the cctkfs module (see README).
+  # without the localbinrepo module (see README).
   for cand in build-meson/cact-full.iso build-meson/cact.iso; do
     if [[ -f "$SCRIPT_DIR/$cand" ]]; then
       ISO="$SCRIPT_DIR/$cand"

@@ -5,7 +5,7 @@
 #include "ksym.h"
 #include "klib.h"
 #include "kernel.h"
-#include "cctkfs.h"
+#include "localbinrepo.h"
 #include "mod_pubkey_gen.h"
 
 /* ECDSA P-256 / SHA-256 verify-only — implemented in cact_crypto (Rust, no_std). */

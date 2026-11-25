@@ -165,7 +165,7 @@ struct mb2_tag_module {
 } __attribute__((packed));
 
 // Captured module info passed back from multiboot2_parse(); the first module
-// whose cmdline starts with "cctkfs" is recorded, and the first starting with
+// whose cmdline starts with "localbinrepo" is recorded, and the first starting with
 // "firmrepo" is recorded separately.
 #define MB2_MODULE_NAME_MAX 32
 typedef struct {
@@ -174,8 +174,8 @@ typedef struct {
     char     name[MB2_MODULE_NAME_MAX];
 } mb2_module_info_t;
 
-// cctkfs staging module captured during multiboot2_parse() (defined in multiboot2.c)
-extern mb2_module_info_t mb2_cctkfs_module;
+// localbinrepo staging module captured during multiboot2_parse() (defined in multiboot2.c)
+extern mb2_module_info_t mb2_localbinrepo_module;
 
 // firmrepo.tar.zst captured during multiboot2_parse().  It is NOT staged: it
 // stays in place in physical memory (RAM is identity-mapped) and /dev/firmrepo

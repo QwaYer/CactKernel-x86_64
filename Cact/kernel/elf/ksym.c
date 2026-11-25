@@ -212,7 +212,7 @@ static const ksym_entry_t ksym_table[] = {
     { "usb_set_configuration", (uintptr_t)usb_set_configuration },
     { "usb_set_interface",     (uintptr_t)usb_set_interface },
 
-    /* Firmware — modules stage blobs (rt2870.bin) out of cctkfs. */
+    /* Firmware — modules stage blobs (rt2870.bin) out of localbinrepo. */
     { "request_firmware", (uintptr_t)request_firmware },
     { "release_firmware", (uintptr_t)release_firmware },
 

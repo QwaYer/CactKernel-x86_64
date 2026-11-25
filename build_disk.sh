@@ -5,7 +5,7 @@
 # ==============================================================================
 # Cact — an empty ext4 disk for QEMU
 # ==============================================================================
-# Creates only a formatted ext4 with no files. Userland — via cctkfs on the ISO.
+# Creates only a formatted ext4 with no files. Userland — via localbinrepo on the ISO.
 #
 # Usage:
 #   ./build_disk.sh
@@ -45,5 +45,5 @@ e2fsck -fn "$IMG" >/dev/null 2>&1 || { red "e2fsck failed"; exit 1; }
 green "Disk image ready (empty ext4, no files copied):"
 echo "  $IMG"
 echo
-echo "Userland is supplied by the cctkfs module on the ISO; rebuild via CactOS-x86_32."
+echo "Userland is supplied by the localbinrepo module on the ISO; rebuild via CactOS-x86_32."
 green "Run: ./run_qemu.sh"

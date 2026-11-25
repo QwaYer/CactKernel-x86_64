@@ -55,7 +55,7 @@ uint32_t cact_mmio_window_base(void);               /* rust_mm: pmm.rs */
 
 /* Hard reservation floor: nothing below RESERVED_END is given to kalloc() or
  * the heap, whatever the boot reservation turns out to be.  It clears the
- * whole kernel image including the cctkfs staging buffer in .bss
+ * whole kernel image including the localbinrepo staging buffer in .bss
  * (INITFS_MODBLOB_MAX_IMAGE, 24 MiB) *and* the low user VA region
  * (USER_HEAP_START … the reachable brk end, i.e. the ELF image + heap), which
  * overlaps the reservation. */

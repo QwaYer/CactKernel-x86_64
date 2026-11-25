@@ -19,7 +19,7 @@
 #   3. ../CactBridge-x86/build/cact-check.iso     (preferred: cactcheck as init,
 #                                                   runs the userspace tests)
 #   4. ../CactBridge-x86/build/cact-non-gui.iso   (kernel only, no test runner)
-#   5. build-meson/cact-full.iso                  (kernel + LocalRepo cctkfs)
+#   5. build-meson/cact-full.iso                  (kernel + LocalRepo localbinrepo)
 #
 # Environment overrides:
 #   CACT_CHECK_TIMEOUT   seconds before the boot is considered hung (default 120)
@@ -59,7 +59,7 @@ if [[ -z "$iso" ]]; then
 fi
 if [[ -z "$iso" || ! -f "$iso" ]]; then
   echo "cact-check: no bootable ISO found — build one first:" >&2
-  echo "  ninja -C build-meson iso-full   (needs LocalRepoCactOS-x86_32/cctkfs.img)" >&2
+  echo "  ninja -C build-meson iso-full   (needs LocalRepoCactOS-x86_32/localbinrepo.img)" >&2
   echo "  or: ../CactBridge-x86/build.py --non-gui-iso" >&2
   exit 2
 fi
@@ -173,7 +173,7 @@ fail_re+='|cgoct: firmrepo staged'
 
 # Markers that must be present for the check to pass.  Empty: the boot is judged
 # on reaching userspace, on the ksym vermagic matching the signer, and on the
-# firmrepo/cctkfs pipeline below.
+# firmrepo/localbinrepo pipeline below.
 required=(
 )
 
@@ -255,15 +255,15 @@ else
   echo "cact-check:   ok    cgoct did not stage firmrepo into tmpfs (served in place)"
 fi
 
-# The boot cctkfs image: the kernel serves the module in place as /dev/cctkfs,
+# The boot localbinrepo image: the kernel serves the module in place as /dev/localbinrepo,
 # which is what cact-install lays onto a target disk (the media carries no copy
 # of the image).  The node is only there if the module was handed over, so its
 # absence is a hard failure — an installer run would find no image source.
-echo "cact-check: --- cctkfs image device ---"
-if grep -qF "devfs: cctkfs module " "$log"; then
-  grep -Fm1 "devfs: cctkfs module " "$log" | sed 's/^/cact-check:   ok    /'
+echo "cact-check: --- localbinrepo image device ---"
+if grep -qF "devfs: localbinrepo module " "$log"; then
+  grep -Fm1 "devfs: localbinrepo module " "$log" | sed 's/^/cact-check:   ok    /'
 else
-  echo "cact-check:   MISS  no cctkfs module in the boot log — /dev/cctkfs reads empty" >&2
+  echo "cact-check:   MISS  no localbinrepo module in the boot log — /dev/localbinrepo reads empty" >&2
   rc=1
 fi
 

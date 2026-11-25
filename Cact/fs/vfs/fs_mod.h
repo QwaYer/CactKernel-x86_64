@@ -11,7 +11,7 @@
 // Loadable filesystem modules (.cctk).
 //
 // A filesystem module is a relocatable ET_REL image (typically ext4.cctk)
-// staged in the cctkfs module blob. It exports:
+// staged in the localbinrepo module blob. It exports:
 //     vfs_node_t *fs_mount(blkdev_t *dev);   // mount, return root or NULL
 //     int         fs_unmount(void);          // optional teardown
 // The loader keeps up to FS_MOD_MAX modules resident at once ("multi-slot"),
@@ -27,7 +27,7 @@
 typedef vfs_node_t* (*fs_mount_fn_t)(blkdev_t *dev);
 typedef int         (*fs_unmount_fn_t)(void);
 
-// Load a filesystem module from the staged cctkfs image and resolve its
+// Load a filesystem module from the staged localbinrepo image and resolve its
 // entry points. Returns 0 on success, negative error otherwise.
 int fs_mod_load(const char *path);
 

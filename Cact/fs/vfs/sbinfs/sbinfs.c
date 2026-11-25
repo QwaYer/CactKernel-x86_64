@@ -6,7 +6,7 @@
 #include "kernel.h"
 #include "memory.h"
 #include "klib.h"
-#include "cctkfs_tree.h"
+#include "localbinrepo_tree.h"
 
 // sbinfs serves /usr/sbin: the on-disk ext4 /usr/sbin directory overlaid with a
 // synthesized tree of every "/usr/sbin/..." entry in the boot archive (the
@@ -16,7 +16,7 @@ static vfs_node_t    sbinfs_root;
 static vfs_node_t   *ext4_root   = 0;
 static int           sbinfs_ready = 0;
 static uint32_t      sbinfs_disk_count;
-static cctkfs_tree_t sbin_tree;
+static localbinrepo_tree_t sbin_tree;
 
 // Resolve ext4 /usr/sbin lazily (usrmerge: admin tools live under /usr).
 static vfs_node_t *_sbin_dir(void) {
@@ -49,7 +49,7 @@ static vfs_node_t *_root_walk(vfs_node_t *dir, const char *name) {
         vfs_node_t *disk = sd->ops->walk(sd, name);
         if (disk) return disk;
     }
-    return cctkfs_tree_walk(&sbin_tree, name);
+    return localbinrepo_tree_walk(&sbin_tree, name);
 }
 
 static vfs_dirent_t sup_de;
@@ -61,9 +61,9 @@ static vfs_dirent_t *_root_readdir(vfs_node_t *dir, uint32_t index) {
         if (e) return e;
     }
     uint32_t j = index - sbinfs_disk_count;
-    cctkfs_iter_t it;
-    for (vfs_node_t *n = cctkfs_tree_first(&sbin_tree, &it); n;
-         n = cctkfs_iter_next(&it)) {
+    localbinrepo_iter_t it;
+    for (vfs_node_t *n = localbinrepo_tree_first(&sbin_tree, &it); n;
+         n = localbinrepo_iter_next(&it)) {
         if (_on_disk(n->name)) continue;
         if (j == 0) {
             strlcpy(sup_de.name, n->name, 128);
@@ -88,12 +88,12 @@ static void _root_listdir(vfs_node_t *dir) {
             any = 1;
         }
     }
-    cctkfs_iter_t it;
-    for (vfs_node_t *n = cctkfs_tree_first(&sbin_tree, &it); n;
-         n = cctkfs_iter_next(&it)) {
+    localbinrepo_iter_t it;
+    for (vfs_node_t *n = localbinrepo_tree_first(&sbin_tree, &it); n;
+         n = localbinrepo_iter_next(&it)) {
         if (_on_disk(n->name)) continue;
         printk("  "); printk(n->name);
-        printk(n->type == VFS_DIRECTORY ? "/" : "  [cctkfs]");
+        printk(n->type == VFS_DIRECTORY ? "/" : "  [localbinrepo]");
         printk("\n");
         any = 1;
     }
@@ -164,13 +164,13 @@ void sbinfs_init(vfs_node_t *ext4_node) {
             usr->ops->mkdir(usr, "sbin");
     }
 
-    cctkfs_tree_build(&sbin_tree, "/usr/sbin/", 0755, 0);
+    localbinrepo_tree_build(&sbin_tree, "/usr/sbin/", 0755, 0);
     sbinfs_count_disk();
 
     uint32_t files = 0, dirs = 0;
-    cctkfs_tree_count(&sbin_tree, &files, &dirs);
+    localbinrepo_tree_count(&sbin_tree, &files, &dirs);
 
-    pr_info("%s: root ready (%u on disk, %u cctkfs files, %u dirs)\n",
+    pr_info("%s: root ready (%u on disk, %u localbinrepo files, %u dirs)\n",
             "sbinfs", sbinfs_disk_count, files, dirs);
 
     sbinfs_ready = 1;

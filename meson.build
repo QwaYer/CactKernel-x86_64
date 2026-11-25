@@ -341,7 +341,7 @@ else
   _lr = get_option('local_repo')
   local_repo = _lr.startswith('/') ? _lr : src_root / _lr
 endif
-cctkfs_img = local_repo / 'cctkfs.img'
+localbinrepo_img = local_repo / 'localbinrepo.img'
 
 iso_inputs = [kernel_bin]
 iso_inputs += files(get_option('iso_grub_cfg'))
@@ -353,14 +353,14 @@ cact_iso = custom_target('cact-iso',
   build_by_default: true)
 
 # Unlike the kernel-only image this one depends on an artifact living outside
-# the build tree (cctkfs.img), so it is a run_target: always rebuilt, and it
+# the build tree (localbinrepo.img), so it is a run_target: always rebuilt, and it
 # fails loudly when the image is missing rather than silently reusing a stale
 # cact-full.iso.  The firmrepo archive (same LocalRepo tree, packed by its
 # `firmrepo` target) rides on the ISO as a second module — without it the
 # kernel boots with an empty /dev/firmrepo and firmextr has nothing to read.
 run_target('iso-full',
   command: [bash, iso_script, kernel_bin, src_root / 'grub.cfg',
-            build_root / 'isodir-full', build_root / 'cact-full.iso', cctkfs_img,
+            build_root / 'isodir-full', build_root / 'cact-full.iso', localbinrepo_img,
             local_repo / 'firmrepo.tar.zst'])
 
 # P2.3: one command that boots an image headless, greps the boot-log markers off

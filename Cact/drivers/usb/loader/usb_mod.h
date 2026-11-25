@@ -25,7 +25,7 @@
  * Returns 1 if it does, 0 if not, negative on read/validation error. */
 int  usb_mod_detect(const char *path);
 
-/* Load a USB driver module from the staged cctkfs image and call its
+/* Load a USB driver module from the staged localbinrepo image and call its
  * usb_driver_init().  Returns 0 on success, negative errno otherwise. */
 int  usb_mod_load(const char *path);
 

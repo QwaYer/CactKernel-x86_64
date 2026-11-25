@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* Copyright (C) 2026 CactOS Project */
 
-#include "cctkfs_tree.h"
+#include "localbinrepo_tree.h"
 #include "initfs_modblob.h"
 #include "kernel.h"
 #include "memory.h"
@@ -84,7 +84,7 @@ static void _dir_listdir(vfs_node_t *dir) {
     if (!d || !d->child) { printk("  (empty)\n"); return; }
     for (tree_node_t *c = d->child; c; c = c->next) {
         printk("  "); printk(c->node.name);
-        printk(c->node.type == VFS_DIRECTORY ? "/" : "  [cctkfs]");
+        printk(c->node.type == VFS_DIRECTORY ? "/" : "  [localbinrepo]");
         printk("\n");
     }
 }
@@ -149,7 +149,7 @@ static int _excluded(const char *const *exclude, const char *name, int len) {
 }
 
 /* Insert "<prefix-relative path>", creating the directories in between. */
-static void _insert(cctkfs_tree_t *tree, const char *rel, const uint8_t *data,
+static void _insert(localbinrepo_tree_t *tree, const char *rel, const uint8_t *data,
                     uint32_t size) {
     tree_node_t  *root  = (tree_node_t *)tree->root;
     tree_node_t **headp = &root->child;
@@ -182,7 +182,7 @@ static void _insert(cctkfs_tree_t *tree, const char *rel, const uint8_t *data,
     }
 }
 
-void cctkfs_tree_build(cctkfs_tree_t *tree, const char *prefix,
+void localbinrepo_tree_build(localbinrepo_tree_t *tree, const char *prefix,
                        uint32_t root_file_mode, const char *const *exclude) {
     if (!tree || tree->root) return;                   /* build once */
 
@@ -208,23 +208,23 @@ void cctkfs_tree_build(cctkfs_tree_t *tree, const char *prefix,
 
 /* ── accessors ──────────────────────────────────────────────────────────── */
 
-static tree_node_t *_root_of(cctkfs_tree_t *tree) {
+static tree_node_t *_root_of(localbinrepo_tree_t *tree) {
     return (tree && tree->root) ? (tree_node_t *)tree->root : 0;
 }
 
-vfs_node_t *cctkfs_tree_walk(cctkfs_tree_t *tree, const char *name) {
+vfs_node_t *localbinrepo_tree_walk(localbinrepo_tree_t *tree, const char *name) {
     tree_node_t *root = _root_of(tree);
     if (!root) return 0;
     return _list_walk(root->child, name);
 }
 
-vfs_node_t *cctkfs_tree_first(cctkfs_tree_t *tree, cctkfs_iter_t *it) {
+vfs_node_t *localbinrepo_tree_first(localbinrepo_tree_t *tree, localbinrepo_iter_t *it) {
     tree_node_t *root = _root_of(tree);
     it->cur = root ? root->child : 0;
     return it->cur ? &((tree_node_t *)it->cur)->node : 0;
 }
 
-vfs_node_t *cctkfs_iter_next(cctkfs_iter_t *it) {
+vfs_node_t *localbinrepo_iter_next(localbinrepo_iter_t *it) {
     tree_node_t *n = (tree_node_t *)it->cur;
     if (!n) return 0;
     it->cur = n->next;
@@ -242,7 +242,7 @@ static void _count(tree_node_t *list, uint32_t *files, uint32_t *dirs) {
     }
 }
 
-void cctkfs_tree_count(cctkfs_tree_t *tree, uint32_t *files, uint32_t *dirs) {
+void localbinrepo_tree_count(localbinrepo_tree_t *tree, uint32_t *files, uint32_t *dirs) {
     tree_node_t *root = _root_of(tree);
     if (root) _count(root->child, files, dirs);
 }

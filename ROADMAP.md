@@ -86,7 +86,7 @@ Ordered by how hard each gap blocks a port:
   for a BAR; the only WC helper is `pat_enable_wc_for_framebuffer()`. MTRR is not
   used for this — there is no range allocator.
 - **No runtime firmware loader.** `request_firmware` (ksym) can stage a blob
-  that ships in the build-time cctkfs table, but there is no on-demand loader or
+  that ships in the build-time localbinrepo table, but there is no on-demand loader or
   workqueue, so GuC/HuC/DMC blobs have no practical path into kernel memory.
 - **No ACPI OpRegion, `_DSM` or VBT reader.** The AML interpreter is linked, but
   there is no address-space handler, no video-BIOS-table parsing, and no ACPI
@@ -132,7 +132,7 @@ An out-of-tree port (`Intel-GPU-for-Cact-x86_32`, `i915.cctk`, from Linux i915
 pipe/plane scanout with console handoff, and vblank/flip/hardware cursor.  It is
 **no longer part of the 2.0.0 build**: `Intel-GPU` was removed from
 `CactBridge-x86/drivers.list` (the single list the integrator also reads), so the
-module is no longer built, staged or packed into `cctkfs.img`.  The port is
+module is no longer built, staged or packed into `localbinrepo.img`.  The port is
 heavily 64-bit-bound, so it belongs to the 3.0.0 x86_64 line, not the last 32-bit
 release; the source repo stays out-of-tree for that work.  The kernel-side
 facilities it needed remain on the gap list above, and `ksym.c` keeps its

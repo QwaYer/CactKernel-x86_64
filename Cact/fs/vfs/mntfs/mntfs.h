@@ -19,7 +19,7 @@
 // then the standard directories are created on the root and the subsystem
 // filesystems are mounted on top:
 //
-//   /bin /sbin /lib /usr /etc /var   overlay cctkfs-on-ext4 (or RAM userland)
+//   /bin /sbin /lib /usr /etc /var   overlay localbinrepo-on-ext4 (or RAM userland)
 //   /tmp  tmpfs
 //   /dev  devfs (char/service nodes) + vfsdev block nodes
 //   /proc procfs

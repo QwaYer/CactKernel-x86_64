@@ -4,14 +4,15 @@
 #include "initfs_modblob.h"
 #include "klib.h"
 #include "kernel.h"
-#include "cctkfs.h"
+#include "localbinrepo.h"
 
 CACT_STATIC_ASSERT(sizeof(uint32_t) == 4);
 
 /* ------------------------------------------------------------------ */
-/* CRC-32 (IEEE 802.3) — container-level integrity for the cctkfs     */
-/* archive.  Each module is still individually signed (ECDSA P-256);  */
-/* this CRC32 only guards against accidental corruption of the index.  */
+/* CRC-32 (IEEE 802.3) — container-level integrity for the            */
+/* localbinrepo archive.  Each module is still individually signed    */
+/* (ECDSA P-256); this CRC32 only guards against accidental           */
+/* corruption of the index.                                           */
 /* ------------------------------------------------------------------ */
 static const uint32_t crc32_tab[256] = {
     0x00000000u, 0x77073096u, 0xEE0E612Cu, 0x990951BAu,
@@ -86,7 +87,7 @@ static uint32_t compute_image_crc32(const uint8_t *img, uint32_t total) {
     uint32_t c = 0xFFFFFFFFu;
     for (uint32_t i = 0; i < total; i++) {
         uint8_t b = img[i];
-        if (i >= CCTKFS_CKSUM_OFF && i < CCTKFS_CKSUM_OFF + 4)
+        if (i >= LOCALBINREPO_CKSUM_OFF && i < LOCALBINREPO_CKSUM_OFF + 4)
             b = 0;
         c = crc32_tab[(c ^ b) & 0xFFu] ^ (c >> 8);
     }
@@ -94,33 +95,33 @@ static uint32_t compute_image_crc32(const uint8_t *img, uint32_t total) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Staging area for the cctkfs image handed to us by GRUB.            */
+/* Staging area for the localbinrepo image handed to us by GRUB.            */
 /* ------------------------------------------------------------------ */
-static uint8_t  cctkfs_stage[INITFS_MODBLOB_MAX_IMAGE];
-static uint32_t cctkfs_size;
-static int      cctkfs_ready;
+static uint8_t  localbinrepo_stage[INITFS_MODBLOB_MAX_IMAGE];
+static uint32_t localbinrepo_size;
+static int      localbinrepo_ready;
 
-static const cctkfs_hdr_t   *hdr_ptr(void) {
-    return (const cctkfs_hdr_t *)cctkfs_stage;
+static const localbinrepo_hdr_t   *hdr_ptr(void) {
+    return (const localbinrepo_hdr_t *)localbinrepo_stage;
 }
-static const cctkfs_entry_t *entries_ptr(void) {
-    return (const cctkfs_entry_t *)(cctkfs_stage + hdr_ptr()->entries_off);
+static const localbinrepo_entry_t *entries_ptr(void) {
+    return (const localbinrepo_entry_t *)(localbinrepo_stage + hdr_ptr()->entries_off);
 }
 static const char *names_ptr(void) {
-    return (const char *)(cctkfs_stage + hdr_ptr()->names_off);
+    return (const char *)(localbinrepo_stage + hdr_ptr()->names_off);
 }
 
 static int validate_header(uint32_t size) {
-    if (size < sizeof(cctkfs_hdr_t)) return -1;
-    const cctkfs_hdr_t *h = hdr_ptr();
-    if (h->magic   != CCTKFS_MAGIC)   return -2;
-    if (h->version != CCTKFS_VERSION) return -3;
+    if (size < sizeof(localbinrepo_hdr_t)) return -1;
+    const localbinrepo_hdr_t *h = hdr_ptr();
+    if (h->magic   != LOCALBINREPO_MAGIC)   return -2;
+    if (h->version != LOCALBINREPO_VERSION) return -3;
     if (h->total_size != size)        return -4;
-    if (h->entries_off < sizeof(cctkfs_hdr_t)) return -5;
+    if (h->entries_off < sizeof(localbinrepo_hdr_t)) return -5;
     if (h->names_off + h->names_size < h->names_off ||
         h->names_off + h->names_size > size)          return -6;
-    if (h->count > (UINT32_MAX / sizeof(cctkfs_entry_t))) return -7;
-    uint32_t entries_end = h->entries_off + h->count * sizeof(cctkfs_entry_t);
+    if (h->count > (UINT32_MAX / sizeof(localbinrepo_entry_t))) return -7;
+    uint32_t entries_end = h->entries_off + h->count * sizeof(localbinrepo_entry_t);
     if (entries_end < h->entries_off ||
         entries_end > h->names_off)    return -7;
 
@@ -128,9 +129,9 @@ static int validate_header(uint32_t size) {
      * checksum == 0  →  backward-compatible with old images that
      *                    had the field named 'reserved' (zero-initialised). */
     if (h->checksum != 0) {
-        uint32_t expected = compute_image_crc32(cctkfs_stage, size);
+        uint32_t expected = compute_image_crc32(localbinrepo_stage, size);
         if (h->checksum != expected) {
-            pr_err("initfs: cctkfs checksum mismatch: got 0x0x%x, expected 0x0x%x",
+            pr_err("initfs: localbinrepo checksum mismatch: got 0x0x%x, expected 0x0x%x",
                    (unsigned)(h->checksum), (unsigned)(expected));
             return -8;
         }
@@ -140,32 +141,32 @@ static int validate_header(uint32_t size) {
 }
 
 int initfs_modblob_load(uint32_t phys_addr, uint32_t size) {
-    pr_debug("initfs: staging cctkfs module from phys 0x%x (%u bytes)",
+    pr_debug("initfs: staging localbinrepo module from phys 0x%x (%u bytes)",
              (unsigned)phys_addr, (unsigned)size);
     if (!phys_addr || !size) {
-        pr_err("initfs: no cctkfs module supplied by bootloader\n");
+        pr_err("initfs: no localbinrepo module supplied by bootloader\n");
         return -1;
     }
     if (size > INITFS_MODBLOB_MAX_IMAGE) {
-        pr_err("initfs: cctkfs image too large (0x%x > stage 0x%x)\n",
+        pr_err("initfs: localbinrepo image too large (0x%x > stage 0x%x)\n",
                (unsigned)size, (unsigned)INITFS_MODBLOB_MAX_IMAGE);
         return -2;
     }
 
     /* GRUB places the module in low physical memory.  We are still in
      * flat protected mode without paging, so a plain memcpy works. */
-    memcpy(cctkfs_stage, (const void *)(uintptr_t)phys_addr, size);
-    cctkfs_size = size;
+    memcpy(localbinrepo_stage, (const void *)(uintptr_t)phys_addr, size);
+    localbinrepo_size = size;
 
     int rc = validate_header(size);
     if (rc != 0) {
-        pr_err("initfs: cctkfs header invalid (size 0x%x, rc %d)",
+        pr_err("initfs: localbinrepo header invalid (size 0x%x, rc %d)",
                (unsigned)size, (int)rc);
-        cctkfs_size = 0;
+        localbinrepo_size = 0;
         return rc;
     }
 
-    cctkfs_ready = 1;
+    localbinrepo_ready = 1;
 
     pr_info("initfs: ready: %d mods, %d B",
             (int)((int)hdr_ptr()->count), (int)((int)size));
@@ -181,7 +182,7 @@ static int name_eq(const char *want, const char *blob, uint32_t off,
     return want[len] == '\0';
 }
 
-/* basename helpers: cctkfs entries are stored as canonical paths like
+/* basename helpers: localbinrepo entries are stored as canonical paths like
  * "/usr/lib/modules/foo.cctk", but callers may use any equivalent location, e.g.
  * "/usr/lib/foo.cctk" or just "foo.cctk".
  * Fall back to a basename match so all of those resolve to the same module. */
@@ -203,9 +204,9 @@ static int basename_eq(const char *want_basename,
 
 int initfs_modblob_get(const char *path, const uint8_t **out_data,
                     uint32_t *out_size) {
-    if (!cctkfs_ready || !path || !out_data || !out_size) return -1;
-    const cctkfs_hdr_t   *h = hdr_ptr();
-    const cctkfs_entry_t *e = entries_ptr();
+    if (!localbinrepo_ready || !path || !out_data || !out_size) return -1;
+    const localbinrepo_hdr_t   *h = hdr_ptr();
+    const localbinrepo_entry_t *e = entries_ptr();
     const char           *n = names_ptr();
 
     for (uint32_t i = 0; i < h->count; i++) {
@@ -213,12 +214,12 @@ int initfs_modblob_get(const char *path, const uint8_t **out_data,
         if (name_end < e[i].name_off || name_end > h->names_size) continue;
         if (!name_eq(path, n, e[i].name_off, e[i].name_len)) continue;
         uint32_t data_end = e[i].data_off + e[i].data_size;
-        if (data_end < e[i].data_off || data_end > cctkfs_size) {
+        if (data_end < e[i].data_off || data_end > localbinrepo_size) {
             pr_err("initfs: entry %u data range invalid (off 0x%x size 0x%x)",
                    (unsigned)i, (unsigned)e[i].data_off, (unsigned)e[i].data_size);
             return -1;
         }
-        *out_data = cctkfs_stage + e[i].data_off;
+        *out_data = localbinrepo_stage + e[i].data_off;
         *out_size = e[i].data_size;
         return 0;
     }
@@ -230,8 +231,8 @@ int initfs_modblob_get(const char *path, const uint8_t **out_data,
         if (name_end < e[i].name_off || name_end > h->names_size) continue;
         if (!basename_eq(want_bn, n, e[i].name_off, e[i].name_len)) continue;
         uint32_t data_end = e[i].data_off + e[i].data_size;
-        if (data_end < e[i].data_off || data_end > cctkfs_size) return -1;
-        *out_data = cctkfs_stage + e[i].data_off;
+        if (data_end < e[i].data_off || data_end > localbinrepo_size) return -1;
+        *out_data = localbinrepo_stage + e[i].data_off;
         *out_size = e[i].data_size;
         return 0;
     }
@@ -240,22 +241,22 @@ int initfs_modblob_get(const char *path, const uint8_t **out_data,
 }
 
 int initfs_modblob_count(void) {
-    return cctkfs_ready ? (int)hdr_ptr()->count : 0;
+    return localbinrepo_ready ? (int)hdr_ptr()->count : 0;
 }
 
 int initfs_modblob_at(int idx, const char **out_path,
                    const uint8_t **out_data, uint32_t *out_size) {
-    if (!cctkfs_ready) return -1;
-    const cctkfs_hdr_t   *h = hdr_ptr();
+    if (!localbinrepo_ready) return -1;
+    const localbinrepo_hdr_t   *h = hdr_ptr();
     if (idx < 0 || (uint32_t)idx >= h->count) return -1;
-    const cctkfs_entry_t *e = &entries_ptr()[idx];
+    const localbinrepo_entry_t *e = &entries_ptr()[idx];
     uint32_t data_end = e->data_off + e->data_size;
-    if (data_end < e->data_off || data_end > cctkfs_size) return -1;
+    if (data_end < e->data_off || data_end > localbinrepo_size) return -1;
     /* Names in the blob are NUL-terminated (the packer guarantees it). */
     uint32_t name_end = e->name_off + e->name_len;
     if (name_end < e->name_off || name_end > h->names_size) return -1;
     *out_path = names_ptr() + e->name_off;
-    *out_data = cctkfs_stage + e->data_off;
+    *out_data = localbinrepo_stage + e->data_off;
     *out_size = e->data_size;
     return 0;
 }

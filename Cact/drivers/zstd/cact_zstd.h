@@ -10,7 +10,7 @@
 /*
  * In-kernel zstd decompressor (ported from Linux 7.3.0-rc4, lib/zstd + xxhash).
  *
- * The firmware loader stages compressed blobs (*.zst) out of the cctkfs image
+ * The firmware loader stages compressed blobs (*.zst) out of the localbinrepo image
  * and unpacks them here.  Only single-frame, whole-buffer decompression is
  * exposed: a firmware blob is small and read in one piece, so the streaming
  * API is not needed.

@@ -7,8 +7,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Path of the console font inside the boot cctkfs archive (see font_boot.c). */
-#define CONSOLE_FONT_CCTKFS_PATH "/usr/share/consolefont.psf"
+/* Path of the console font inside the boot localbinrepo archive (see font_boot.c). */
+#define CONSOLE_FONT_LOCALBINREPO_PATH "/usr/share/consolefont.psf"
 
 /* Parser sanity limits.  The console rasteriser scales glyphs by
  * FB_CONSOLE_FONT_SCALE (2), so a 32x64 font already yields a 64x128 cell —
@@ -58,7 +58,7 @@ int font_glyph_index(const console_font_t *f, uint32_t codepoint);
 /* Pointer to the glyph bitmap, or NULL when the glyph index is invalid. */
 const uint8_t *font_glyph_bits(const console_font_t *f, uint32_t glyph);
 
-/* Load the boot console font from the cctkfs archive entry `path` and make
+/* Load the boot console font from the localbinrepo archive entry `path` and make
  * it the active font.  The font blob stays in the kernel .bss staging area,
  * so no heap is touched.  Returns FONT_OK or a FONT_ERR_* code. */
 int font_load_boot(const char *path);

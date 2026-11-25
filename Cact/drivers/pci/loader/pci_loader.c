@@ -6,7 +6,7 @@
 #include "pci_driver.h"
 #include "pci_enum.h"
 #include "initfs_modblob.h"
-#include "cctkfs.h"
+#include "localbinrepo.h"
 #include "vfs.h"
 #include "memory.h"
 #include "kernel.h"

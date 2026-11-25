@@ -14,8 +14,8 @@
 #define MB2_ALIGN         8u
 
 // Module info captured from MB2_TAG_MODULE; written by multiboot2_parse(),
-// consumed by init() to stage the cctkfs image into kernel .bss.
-mb2_module_info_t mb2_cctkfs_module;
+// consumed by init() to stage the localbinrepo image into kernel .bss.
+mb2_module_info_t mb2_localbinrepo_module;
 mb2_module_info_t mb2_firmrepo_module;
 
 // Highest end address over all MB2 module tags: the RAM the bootloader loaded
@@ -75,9 +75,9 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                       multiboot_info_t*  out,
                       mb2_mmap_table_t*  mmap_out)
 {
-    mb2_cctkfs_module.mod_start = 0;
-    mb2_cctkfs_module.mod_size  = 0;
-    mb2_cctkfs_module.name[0]   = '\0';
+    mb2_localbinrepo_module.mod_start = 0;
+    mb2_localbinrepo_module.mod_size  = 0;
+    mb2_localbinrepo_module.name[0]   = '\0';
     mb2_firmrepo_module.mod_start = 0;
     mb2_firmrepo_module.mod_size  = 0;
     mb2_firmrepo_module.name[0]   = '\0';
@@ -202,7 +202,7 @@ void multiboot2_parse(uint32_t mb2_info_addr,
             // Highest module end over the whole tag list: see mb2_modules_end.
             if (t->mod_end > mb2_modules_end) mb2_modules_end = t->mod_end;
 
-            // Where the bootloader put it.  cctkfs and firmrepo are both
+            // Where the bootloader put it.  localbinrepo and firmrepo are both
             // served *in place* (RAM is identity-mapped), so this physical
             // range is the only address the module ever has; it lies inside the
             // boot reservation the PMM logs right after this parse.
@@ -213,12 +213,12 @@ void multiboot2_parse(uint32_t mb2_info_addr,
                     (unsigned)((t->mod_end - t->mod_start) / 1024));
 
             // Only record the first module of each kind; any later ones ignored.
-            if (mb2_cctkfs_module.mod_start == 0 &&
-                starts_with(t->string, "cctkfs"))
+            if (mb2_localbinrepo_module.mod_start == 0 &&
+                starts_with(t->string, "localbinrepo"))
             {
-                mb2_cctkfs_module.mod_start = t->mod_start;
-                mb2_cctkfs_module.mod_size  = t->mod_end - t->mod_start;
-                copy_module_name(mb2_cctkfs_module.name, t->string,
+                mb2_localbinrepo_module.mod_start = t->mod_start;
+                mb2_localbinrepo_module.mod_size  = t->mod_end - t->mod_start;
+                copy_module_name(mb2_localbinrepo_module.name, t->string,
                                  MB2_MODULE_NAME_MAX);
             }
             if (mb2_firmrepo_module.mod_start == 0 &&

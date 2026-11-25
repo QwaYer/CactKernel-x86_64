@@ -68,13 +68,13 @@ int detect_memory() {
 }
 
 /* The framebuffer console has no built-in font: the PSF2 file must be staged
- * inside the cctkfs archive.  When it is absent or unusable the kernel cannot
+ * inside the localbinrepo archive.  When it is absent or unusable the kernel cannot
  * draw a single glyph, so there is nothing left to do but panic. */
 static void boot_font_panic(int rc) __attribute__((noreturn));
 static void boot_font_panic(int rc) {
     const char *reason;
     switch (rc) {
-    case FONT_ERR_NOT_FOUND:    reason = "console font not found in cctkfs";  break;
+    case FONT_ERR_NOT_FOUND:    reason = "console font not found in localbinrepo";  break;
     case FONT_ERR_BAD_SIZE:     reason = "console font blob too small";        break;
     case FONT_ERR_NOT_PSF2:     reason = "console font is not a PSF2 file";    break;
     case FONT_ERR_BAD_VERSION:  reason = "console font: unsupported PSF2 version"; break;
@@ -514,11 +514,11 @@ void init(uint32_t magic, uint32_t mb2_info_addr) {
     multiboot2_parse(mb2_info_addr, &mbi_storage, &mmap_storage);
     multiboot_info_t* mbi = &mbi_storage;
 
-    /* Stage the cctkfs blob into kernel .bss BEFORE pmm_init / init_heap
+    /* Stage the localbinrepo blob into kernel .bss BEFORE pmm_init / init_heap
      * — at this point we are still in flat protected mode without paging,
      * so a plain memcpy from the physical address GRUB chose is safe. */
-    initfs_modblob_load(mb2_cctkfs_module.mod_start,
-                     mb2_cctkfs_module.mod_size);
+    initfs_modblob_load(mb2_localbinrepo_module.mod_start,
+                     mb2_localbinrepo_module.mod_size);
 
     // Must initialise framebuffer before any output
     fb_init(mbi);
@@ -529,9 +529,9 @@ void init(uint32_t magic, uint32_t mb2_info_addr) {
     }
 
     // The framebuffer console has no embedded font: parse the PSF2 file
-    // staged in the cctkfs image before any glyph is drawn.
+    // staged in the localbinrepo image before any glyph is drawn.
     {
-        int frc = font_load_boot(CONSOLE_FONT_CCTKFS_PATH);
+        int frc = font_load_boot(CONSOLE_FONT_LOCALBINREPO_PATH);
         if (frc != FONT_OK)
             boot_font_panic(frc);
     }
