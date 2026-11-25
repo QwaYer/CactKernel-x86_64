@@ -120,7 +120,7 @@ dropped when the archive is absent).
 
 **QEMU:** [`./run_qemu.sh`](./run_qemu.sh) picks up **`build-meson/cact-full.iso`** (then **`build-meson/cact.iso`**); override with **`CACT_ISO`**.
 
-> 🧩 **`python3`** is only needed to pack **`localbinrepo.img`** in LocalRepoCactOS and for **`tools/cact_sign_localbinrepo.py`** — not for the default kernel build (`grub.cfg.kernelonly`).
+> 🧩 **`python3`** is only needed to pack **`localbinrepo.img`** in LocalRepoCactOS and for **`tools/cact_sign_localbinrepo.py`** — not for the default kernel build.  The GRUB **menus** and the ISO packer live in **grubrepo** (`-Dgrub_repo`, default `../grubrepo`).
 
 **Successful build footer** (version from [`VERSION`](VERSION), commit from `git`) — printed by `meson setup`:
 
@@ -198,11 +198,8 @@ CactKernel-x86_64/
 ├── meson.build
 ├── VERSION
 ├── linker.ld
-├── grub.cfg              # multiboot2 kernel + localbinrepo + firmrepo modules
-├── grub.cfg.kernelonly   # kernel-only multiboot (the cact.iso default, -Diso_grub_cfg)
-├── grub.cfg.ramroot      # RAM-first userland variant
 ├── build_disk.sh         # raw ext4 image for QEMU AHCI/NVMe
-├── tools/                # utility scripts (modsign.py, gen_module_keys.py, cact_sign*.py, cact_check.sh, cact_make_iso.sh, …)
+├── tools/                # utility scripts (modsign.py, gen_module_keys.py, cact_sign*.py, cact_check.sh, …)
 └── run_qemu.sh           # launches QEMU; runs build_disk.sh if nvme.img missing
 ```
 
