@@ -421,6 +421,14 @@ pub extern "C" fn kalloc() -> *mut u8 {
         }
         round += 1;
 
+        // A kalloc running *inside* an eviction (the eviction's zpool/zram store
+        // allocated) must not start another pass: it could pick the page being
+        // evicted and free its frame twice.  Fail this allocation instead — the
+        // caller is expected to handle null.
+        if crate::fault::swap::eviction_in_progress() {
+            return core::ptr::null_mut();
+        }
+
         // An empty slab page is the cheapest memory to get back, so hand the slab
         // caches' free slabs to the PMM before evicting a user page or killing a
         // task.  (kalloc released PAGE_LOCK above, and slab_shrink_all only takes
