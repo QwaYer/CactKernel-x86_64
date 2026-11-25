@@ -53,6 +53,7 @@ pub mod alloc;
 pub mod vmm;
 pub mod fault;
 pub mod process;
+pub mod comp;
 
 /// Console sink for the panic path: forwards formatting output to `printk` in
 /// NUL-terminated chunks.  No allocation and no locking — the CPU is already

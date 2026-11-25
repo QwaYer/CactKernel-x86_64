@@ -437,6 +437,27 @@ pub struct OomStats {
     pub last_killed_pid: u32,
 }
 
+/// Compressed-page pool accounting (`comp::zpool`), mirrored by `zpool_stats_t`
+/// in `Cact/kernel/memory/zpool.h` for `/proc/zmem` and zram's `/proc` output.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct ZpoolStats {
+    /// Slots the pool was created with (its logical page capacity).
+    pub capacity_pages: u32,
+    /// Slots currently holding a stored page.
+    pub live_pages: u32,
+    /// Cumulative pages stored (monotonic, for a hit-rate read).
+    pub pages_stored: u32,
+    /// Cumulative pages loaded back out (monotonic).
+    pub pages_loaded: u32,
+    /// Payload budget in bytes (`capacity_pages * PAGE_SIZE` unless raised).
+    pub budget_bytes: u64,
+    /// Bytes of compressed payload currently held.
+    pub stored_bytes: u64,
+    /// Uncompressed size of the live pages (`live_pages * PAGE_SIZE`).
+    pub original_bytes: u64,
+}
+
 /// Flat MMAP entry passed from the C multiboot2 parser.
 /// Must match `mb2_mmap_flat_t` in multiboot2.h exactly.
 /// base and len are 64-bit to preserve the full MB2 values (PAE-awareness).
