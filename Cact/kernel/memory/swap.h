@@ -47,6 +47,9 @@ int          swap_is_enabled(void);
 struct blkdev;
 int          swap_enable_device(struct blkdev *part);
 void         swap_notify_device_gone(struct blkdev *part);
+/* Detach the backing store on request (swapoff).  Only safe when nothing is
+ * swapped out — the caller checks the slot bitmap first. */
+void         swap_detach_device(struct blkdev *dev);
 /* True when `dev` is the device swap is currently paging against — a caller
  * that wants to destroy `dev` (zram) must refuse while this holds. */
 int          swap_is_backing_device(struct blkdev *dev);

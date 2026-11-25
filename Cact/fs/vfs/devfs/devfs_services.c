@@ -31,6 +31,7 @@
 #include "rtc.h"
 #include "zram.h"
 #include "zswap.h"
+#include "swap.h"
 
 // devfs_services.c — kernel-service devices exposed through devfs.
 //
@@ -351,6 +352,17 @@ static int _sys_ioctl(void *p, uint32_t cmd, void *arg) {
 
 devfs_driver_t drv_sys = { .ioctl = _sys_ioctl };
 
+// A device name may be given bare ("zram0", what blkdev_find() keys on) or as a
+// /dev path ("/dev/zram0", what a user types and what swapon(8)-style tools
+// pass); strip the optional prefix.
+static const char *zmem_blkdev_name(const char *p) {
+    static const char pfx[] = "/dev/";
+    int i = 0;
+    while (pfx[i] && p[i] == pfx[i])
+        i++;
+    return pfx[i] ? p : p + i;
+}
+
 // ── /dev/zmem ─────────────────────────────────────────────────────────────
 // The single atomic control node for the compressed-memory backends (zram and
 // zswap).  Root only, like /dev/sys: these change how the whole system's memory
@@ -397,6 +409,36 @@ static int _zmem_ioctl(void *p, uint32_t cmd, void *arg) {
         if (rc == ZRAM_DESTROY_OK)   return 0;
         if (rc == ZRAM_DESTROY_BUSY) return -EBUSY;
         return -ENODEV;
+    }
+
+    case CACT_ZMEM_SWAP_ATTACH: {
+        if (!arg) return -EINVAL;
+        if (!validate_user_str((const char *)arg)) return -EFAULT;
+        char *kname = copy_path_from_user((char *)arg);
+        if (!kname) return -EFAULT;
+        blkdev_t *dev = blkdev_find(zmem_blkdev_name(kname));
+        kfree(kname);
+        if (!dev) return -ENODEV;
+        // A partition attaches through its own table (the partition layer does
+        // that itself); this is for whole devices like zramN.
+        if (dev->parent) return -EINVAL;
+        return swap_enable_device(dev) == 0 ? 0 : -EINVAL;
+    }
+
+    case CACT_ZMEM_SWAP_DETACH: {
+        if (!arg) return -EINVAL;
+        if (!validate_user_str((const char *)arg)) return -EFAULT;
+        char *kname = copy_path_from_user((char *)arg);
+        if (!kname) return -EFAULT;
+        blkdev_t *dev = blkdev_find(zmem_blkdev_name(kname));
+        kfree(kname);
+        if (!dev) return -ENODEV;
+        if (!swap_is_backing_device(dev)) return -EINVAL;
+        // Refuse while pages are still swapped out: CactOS has no swapoff
+        // migration, so releasing the device would strand them.
+        if (swap_get_stats().used_slots != 0) return -EBUSY;
+        swap_detach_device(dev);
+        return 0;
     }
 
     default:

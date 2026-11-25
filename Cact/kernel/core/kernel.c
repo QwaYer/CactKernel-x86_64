@@ -193,6 +193,18 @@ int swap_is_backing_device(blkdev_t *dev)
     return dev != 0 && dev == swap_backing_dev;
 }
 
+// Detach the backing store on request (swapoff): swap stops and the device is
+// released.  Only safe when nothing is swapped out — the caller has checked the
+// slot bitmap, since CactOS does not migrate pooled slots back to RAM.
+void swap_detach_device(blkdev_t *dev)
+{
+    if (!dev || dev != swap_backing_dev)
+        return;
+    swap_backing_dev = 0;
+    swap_disable();
+    pr_info("%s: disabled on %s (swapoff)\n", "swap", dev->name);
+}
+
 // Main hardware initialisation sequence
 void kernel_setup_hardware(multiboot_info_t *mbi, mb2_mmap_table_t *mmap) {
     // Randomise stack canary before any function-prologue checks
