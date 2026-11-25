@@ -184,6 +184,15 @@ pub static mut task_list_head: *mut TaskStruct = ptr::null_mut();
 #[no_mangle]
 pub static mut next_pid: u32 = 1;
 
+/// Newest task id handed out; `sched_next_pid() - 1` is the number of tasks
+/// created since boot (Linux /proc/stat `processes`).
+#[no_mangle]
+pub extern "C" fn sched_next_pid() -> u32 {
+    // SAFETY: `next_pid` is a scheduler-owned counter; an aligned u32 load is
+    // atomic on x86_64 and needs no lock.
+    unsafe { next_pid }
+}
+
 #[export_name = "scheduler_lock"]
 pub static mut SCHEDULER_LOCK: irq_spinlock_t = irq_spinlock_t::new();
 

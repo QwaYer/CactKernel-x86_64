@@ -9,7 +9,7 @@
 
 use core::cell::SyncUnsafeCell;
 use core::ptr;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use crate::task::{TaskStruct, TaskState, SCHEDULER_LOCK};
 use crate::sync::{irq_spinlock_acquire, irq_spinlock_release};
 use crate::ffi;
@@ -92,6 +92,15 @@ impl MlfqState {
 static MLFQ_STATE: SyncUnsafeCell<MlfqState> = SyncUnsafeCell::new(MlfqState::new());
 
 static REAP_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Count of committed context switches, for /proc/stat's `ctxt`.
+static CTXT: AtomicU64 = AtomicU64::new(0);
+
+/// Context switches since boot (Linux /proc/stat `ctxt`).
+#[no_mangle]
+pub extern "C" fn sched_ctxt_count() -> u64 {
+    CTXT.load(Ordering::Relaxed)
+}
 
 #[inline]
 fn mlfq_state_mut() -> *mut MlfqState {
@@ -694,6 +703,8 @@ pub unsafe extern "C" fn schedule() {
 
     // SAFETY: disables interrupts around the context switch.
     unsafe { ffi::cli() };
+    // One more committed switch, for /proc/stat's `ctxt`.
+    CTXT.fetch_add(1, Ordering::Relaxed);
     crate::percpu::schedule_guard().store(0, Ordering::Release);
     // SAFETY: `prev` is live; its saved-stack-pointer slot is handed to the switch routine.
     let prev_esp_slot = unsafe { core::ptr::addr_of_mut!((*prev).esp) };
