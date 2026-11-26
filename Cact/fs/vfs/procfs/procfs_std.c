@@ -456,7 +456,7 @@ int _meminfo_read(uint64_t off, uint32_t size, char *buf) {
 //
 // /proc/zmem — the read side of the compressed-memory interface: the zswap
 // pool plus every zram device, with original/compressed sizes so the
-// compression the hardware pays for is visible (what `zmemctl` reports and
+// compression the hardware pays for is visible (what `zmem` reports and
 // `free`-style tools can read).  Written by /dev/zmem's ioctls and by the
 // zram=/zswap= command line; see Cact/kernel/memory/{zram,zswap}.h.
 int _zmem_read(uint64_t off, uint32_t size, char *buf) {
