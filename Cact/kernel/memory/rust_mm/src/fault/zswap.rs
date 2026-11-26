@@ -52,6 +52,16 @@ static G_LOADS: AtomicU32 = AtomicU32::new(0);
 static G_WRITEBACKS: AtomicU32 = AtomicU32::new(0);
 /// Clock hand for the writeback scan (see [`zswap_writeback_one`]).
 static G_WB_CLOCK: AtomicU32 = AtomicU32::new(USER_SPACE_START);
+/// Scratch frame reserved for writeback (see [`zswap_writeback_one`]).
+///
+/// Writeback decompresses a pooled page into a frame before handing it to the
+/// device, but it runs *inside* eviction — which happens only once the PMM has
+/// no free frame left and has suppressed its own reclaim (`EVICT_BUSY`) — so
+/// `kalloc` can never supply one there.  One frame is therefore taken at
+/// `zswap_enable(writeback=1)` and kept for the life of the kernel (the pool it
+/// serves is never freed either).  Used serially: only one eviction runs at a
+/// time, so only one writeback does.
+static G_WB_FRAME: KStatic<*mut u8> = KStatic::new(core::ptr::null_mut());
 
 /// Read the pool pointer (see the `G_POOL` note for why this needs no lock).
 fn pool() -> *mut c_void {
@@ -193,27 +203,27 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
             let pte = unsafe { (*entry).load(Ordering::Acquire) };
             if swap_pte::in_zswap(pte) {
                 let handle = swap_pte::decode(pte);
-                let frame = crate::pmm::kalloc();
+                // Use the frame reserved at enable, not `kalloc`: writeback runs
+                // inside eviction, where the PMM is empty and its reclaim is
+                // suppressed, so `kalloc` would always fail (see `G_WB_FRAME`).
+                // SAFETY: `G_WB_FRAME` is set once under `G_INIT_LOCK` before any
+                // writeback can run, and is never freed.
+                let frame = unsafe { *KStatic::get_mut(G_WB_FRAME.as_ptr()) };
                 if frame.is_null() {
                     return false;
                 }
                 if !pool_load_keep(p, handle, frame) {
-                    // SAFETY: `frame` is a live PMM frame.
-                    unsafe { crate::pmm::free_page(frame) };
                     return false;
                 }
                 let mut slot: u32 = 0;
                 let frame_phys = crate::vmm::paging::v2p(frame);
-                // SAFETY: `frame_phys` is a live frame and `slot` a live local.
+                // SAFETY: `frame_phys` is the reserved frame's live address and
+                // `slot` a live local.
                 if unsafe { crate::fault::swap::swap_out_page(frame_phys, &mut slot) } != 0 {
                     // Nowhere to put it: leave the pool entry (and the PTE) as
                     // they were — nothing has been freed yet.
-                    // SAFETY: `frame` is a live PMM frame.
-                    unsafe { crate::pmm::free_page(frame) };
                     return false;
                 }
-                // SAFETY: `frame` is a live PMM frame.
-                unsafe { crate::pmm::free_page(frame) };
                 // SAFETY: `p` is the live pool and `handle` is a live entry.
                 unsafe { zpool_free(p, handle) };
 
@@ -278,6 +288,21 @@ pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) ->
 
     init_lock();
     lock_acquire(G_INIT_LOCK.as_ptr());
+
+    // Reserve the writeback scratch frame first — see `G_WB_FRAME`: it can only
+    // be taken while the PMM still has frames, and taking it before the pool
+    // leaves a failure with nothing to undo.
+    if writeback != 0 && unsafe { *KStatic::get_mut(G_WB_FRAME.as_ptr()) }.is_null() {
+        let f = crate::pmm::kalloc();
+        if f.is_null() {
+            lock_release(G_INIT_LOCK.as_ptr());
+            return -ENOMEM;
+        }
+        // SAFETY: the reservation is written once, under `G_INIT_LOCK`, before
+        // any eviction can reach the writeback path.
+        *unsafe { KStatic::get_mut(G_WB_FRAME.as_ptr()) } = f;
+    }
+
     // SAFETY: pool creation/growth is serialised by `G_INIT_LOCK`.
     let pool = unsafe { *KStatic::get_mut(G_POOL.as_ptr()) };
     let rc = if pool.is_null() {
