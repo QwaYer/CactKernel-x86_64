@@ -60,9 +60,13 @@ int unix_sock_set_nonblock(vfs_node_t *node, int on);
 #endif
 
 file_t *_get_file(int fd) {
-    if (!current_task) return 0;
+    if (!current_task || !current_task->proc) return 0;
     if (fd < 0 || fd >= MAX_FD) return 0;
-    return current_task->proc->fds->files[fd];
+    /* A kernel task, or a task whose thread group is being torn down, can have
+     * no fd table: report "no such fd" rather than dereferencing a NULL table. */
+    task_fd_table_t *fds = current_task->proc->fds;
+    if (!fds) return 0;
+    return fds->files[fd];
 }
 
 sysret_t sys_open(char *name, int flags) {
@@ -102,6 +106,9 @@ sysret_t sys_open(char *name, int flags) {
     if (!f) { kfree(kname); return -1; }
     f->flags = (uint32_t)flags;
 
+    if (!current_task->proc || !current_task->proc->fds) {
+        file_unref(f); kfree(kname); return -1;
+    }
     for (int i = 3; i < MAX_FD; i++) {
         if (!current_task->proc->fds->files[i]) {
             current_task->proc->fds->files[i] = f;
