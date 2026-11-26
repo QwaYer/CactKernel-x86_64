@@ -188,13 +188,19 @@ pub extern "C" fn swap_enable(slots: u32) -> i32 {
 /// device cannot hand them to a new page.
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_disable() {
-    // SAFETY: leaving the bitmap alone; only the enable flag and the advertised
-    // capacity change.
+    // SAFETY: only the enable flag and the advertised capacity change; the slot
+    // bitmap, its counters and the slot *bound* stay put.
     *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 0;
-    // SAFETY: withdraw the advertised capacity.
-    *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } = 0;
-    // SAFETY: `G_STATS.total_slots` follows `G_TOTAL_SLOTS`; `used_slots` is
-    // deliberately left alone, see above.
+    // SAFETY: `G_STATS.total_slots` is the *advertised* capacity; `used_slots` is
+    // deliberately left alone.
+    //
+    // `G_TOTAL_SLOTS` itself is deliberately NOT cleared: it bounds `read_slot`
+    // and `bitmap_free`, and the `swapoff` migration (which runs immediately
+    // after this, via `swap_migrate_begin`) still has to read and release the
+    // slots that were in use.  Zeroing it made every migration read fail its own
+    // bound check (`slot >= 0` is always true once the bound is gone), so
+    // `swapoff` could never fault a page back in — it reported -ENOMEM with RAM
+    // to spare.
     (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).total_slots = 0;
 }
 
