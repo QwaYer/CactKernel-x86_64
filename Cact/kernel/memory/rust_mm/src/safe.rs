@@ -108,6 +108,30 @@ pub fn current_page_dir() -> *mut u64 {
     get_current_pd()
 }
 
+/// The page directory of the running task, falling back to `CR3` when it has
+/// none (a kernel thread, or during early boot).
+///
+/// This is what a reclaim must scan, not `CR3`: a `#PF` installs the *kernel*
+/// page map in `CR3` for the duration of its PTE walks (see `Cr3Guard`) and
+/// operates on the faulting task's own map explicitly, so a `kalloc` triggered
+/// from inside a fault sees the kernel map in `CR3` — one that holds no user
+/// pages, leaving eviction with nothing to pick.  The fault's own pd is the
+/// address space the pressure came from.
+pub fn current_task_page_dir() -> *mut u64 {
+    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may
+    // return null, which the check below handles.
+    let t = unsafe { crate::ffi::cact_current_task_get() };
+    if !t.is_null() {
+        // SAFETY: `t` is the live current task; `page_directory` is a valid
+        // pointer or null, checked before use.
+        let pd = unsafe { (*t).page_directory };
+        if !pd.is_null() {
+            return pd;
+        }
+    }
+    current_page_dir()
+}
+
 /// Print a null-terminated byte string via the kernel console.
 pub fn kprint_str(s: *const u8) {
     if !s.is_null() {

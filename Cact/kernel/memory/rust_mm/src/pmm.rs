@@ -493,9 +493,10 @@ pub extern "C" fn kalloc() -> *mut u8 {
         } else if crate::fault::swap::swap_is_enabled()
             || crate::fault::zswap::zswap_is_enabled()
         {
-            let pd = crate::safe::current_page_dir();
-            // SAFETY: `pd` is the live page directory read from CR3 above, and
-            // eviction only walks/mutates that directory's own user PTEs.
+            let pd = crate::safe::current_task_page_dir();
+            // SAFETY: `pd` is the live page directory of the running task (or
+            // `CR3` when it has none — see `current_task_page_dir`), and eviction
+            // only walks/mutates that directory's own user PTEs.
             if !pd.is_null() && unsafe { crate::fault::swap::swap_evict_page(pd) } == 0 {
                 true
             } else {
