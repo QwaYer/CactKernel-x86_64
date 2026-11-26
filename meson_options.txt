@@ -16,7 +16,7 @@ option('acpica_fetch', type: 'boolean', value: true,
 option('acpica_repo', type: 'string', value: 'https://github.com/acpica/acpica.git',
   description: 'ACPICA git repository used by the configure-time fetch')
 
-option('grub_repo', type: 'string', value: '../grubrepo',
+option('grub_repo', type: 'string', value: '../GrubRepo-for-Cact-x86',
   description: 'grubrepo: GRUB menus + make-iso.sh used by the iso targets (relative or absolute)')
 
 option('iso_grub_cfg', type: 'string', value: 'menu-kernel-only.cfg',
