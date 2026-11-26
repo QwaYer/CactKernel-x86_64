@@ -65,6 +65,7 @@ const _ABI_CHECK: () = {
     assert!(offset_of!(TaskStruct, pid)             == 24, "pid offset mismatch");
     assert!(offset_of!(TaskStruct, state)           == 28, "state offset mismatch");
     assert!(offset_of!(TaskStruct, is_kernel)       == 32, "is_kernel offset mismatch");
+    assert!(offset_of!(TaskStruct, reap_off_cpu)    == 33, "reap_off_cpu offset mismatch");
     assert!(offset_of!(TaskStruct, next)            == 40, "next offset mismatch");
     assert!(offset_of!(TaskStruct, queue_next)      == 48, "queue_next offset mismatch");
     assert!(offset_of!(TaskStruct, priority)        == 56, "priority offset mismatch");

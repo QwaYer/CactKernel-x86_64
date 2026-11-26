@@ -302,6 +302,11 @@ struct task_struct {
     uint32_t pid;
     task_state state;
     uint8_t  is_kernel;
+    /* 1 once the task has left its CPU (set by sched_park_prev); the reapers
+     * only free a Zombie after this, so a task a tick killed while running is
+     * never freed underneath itself. */
+    uint8_t  reap_off_cpu;
+    uint8_t  _pad_task0[2];
     struct task_struct* next;
     struct task_struct* queue_next;
     uint32_t priority;

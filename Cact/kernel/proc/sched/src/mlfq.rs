@@ -493,7 +493,13 @@ pub unsafe extern "C" fn sched_park_prev(prev: *mut TaskStruct) {
             // SAFETY: `prev` is live and the lock is held.
             unsafe { park_enqueue(prev, migrate_to) };
         }
-        TaskState::Zombie => {}
+        TaskState::Zombie => {
+            // `prev` has committed its switch away (this runs on the incoming
+            // stack — see `switch_to`), so only now is it safe for a reaper to
+            // free it.  `task_reap`/`sched_waitpid` require `reap_off_cpu`.
+            // SAFETY: `prev` is live and the lock is held.
+            unsafe { (*prev).reap_off_cpu = 1 };
+        }
     }
 
     // SAFETY: the lock was acquired above.
@@ -721,6 +727,18 @@ pub unsafe extern "C" fn schedule() {
     if !cur.is_null() {
         // SAFETY: `cur` is the live task now running.
         unsafe { crate::task::task_handle_signals(cur) };
+        // A pending terminating signal marks the freshly-resumed task `Zombie`
+        // here.  Returning to our caller would carry a `Zombie` task back to
+        // ring 3 (or into an interrupt epilogue), so switch away again: the task
+        // is off the run queues, the second switch parks it, and this call
+        // therefore never returns to it.
+        // SAFETY: `cur` is the live running task.
+        let now_zombie = matches!(unsafe { (*cur).state }, TaskState::Zombie);
+        if now_zombie {
+            // SAFETY: `schedule` is re-entered here with the lock free; its `schedule_guard`
+            // was cleared before the switch above, so this is a fresh entry.
+            unsafe { schedule() };
+        }
     }
 }
 
@@ -816,7 +834,7 @@ pub unsafe extern "C" fn on_timer_tick() {
     cur_t.ticks_used += 1;
     let quantum = crate::mlfq_policy::quantum_for(cur_t.priority);
 
-    let need_preempt = cur_t.ticks_used >= quantum;
+    let mut need_preempt = cur_t.ticks_used >= quantum;
 
     if need_preempt {
         cur_t.priority = crate::mlfq_policy::demote_on_quantum(cur_t.priority);
@@ -849,6 +867,16 @@ pub unsafe extern "C" fn on_timer_tick() {
     if !live.is_null() {
         // SAFETY: `live` is the live task now running.
         unsafe { crate::task::task_handle_signals(live) };
+        // A terminating signal acted on above marks the *running* task `Zombie`
+        // while it is still on this CPU.  It must not be left to run on into
+        // userspace, so force the switch now instead of waiting for the next
+        // preemption (`sched_park_prev` then parks it: a `Zombie` is off the run
+        // queues, so it is not re-enqueued).
+        // SAFETY: `live` is the live running task.
+        let now_zombie = matches!(unsafe { (*live).state }, TaskState::Zombie);
+        if now_zombie {
+            need_preempt = true;
+        }
     }
 
     if me == 0 {

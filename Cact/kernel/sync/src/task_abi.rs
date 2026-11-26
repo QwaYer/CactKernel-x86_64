@@ -44,7 +44,13 @@ pub struct TaskStruct {
     pub pid:            u32,              // 24
     pub state:          TaskState,        // 28 (u32)
     pub is_kernel:      u8,               // 32
-    pub _pad0:          [u8; 3],          // 33
+    /// Set once `switch_to` has committed and this task has left its CPU
+    /// (`sched_park_prev`).  The reapers (`task_reap`, `sched_waitpid`) free a
+    /// `Zombie` only after this is 1: a task a tick marked terminally stopped
+    /// while it was still running would otherwise have its `ProcMeta` and kernel
+    /// stack freed underneath itself.
+    pub reap_off_cpu:   u8,               // 33
+    pub _pad0:          [u8; 2],          // 34
     pub next:           *mut TaskStruct,  // 40
     pub queue_next:     *mut TaskStruct,  // 48
     pub priority:       u32,              // 56

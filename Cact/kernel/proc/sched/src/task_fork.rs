@@ -448,7 +448,7 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
     // SAFETY: `cur` is the live current task (non-null checked above).
     let cur_pid = unsafe { (*cur).pid };
 
-    loop {
+    'wait: loop {
         // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; it is released on every
         // exit path of this loop and re-acquired at the top.
         unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
@@ -475,6 +475,25 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
             let t_state = unsafe { (*t).state };
             if t_parent == cur_pid && (target_pid <= 0 || t_pid == target_pid as u32) {
                 if matches!(t_state, TaskState::Zombie) {
+                    // SAFETY: `t` is live.
+                    let child_off_cpu = unsafe { (*t).reap_off_cpu };
+                    if child_off_cpu == 0 {
+                        // The child has exited but has not committed its switch
+                        // away (`sched_park_prev`) yet, so some CPU is still
+                        // running it — freeing it now would pull its stack out
+                        // from under it.  Yield and rescan: the transition is a
+                        // few instructions away, and nothing would wake a parked
+                        // parent for it.
+                        // SAFETY: the lock was acquired above.
+                        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+                        if options & WNOHANG != 0 {
+                            return 0;
+                        }
+                        // SAFETY: `schedule` is the scheduler's core switch routine, called with
+                        // the lock free.
+                        unsafe { crate::mlfq::schedule() };
+                        continue 'wait;
+                    }
                     let child_pid  = t_pid;
                     // SAFETY: `t_proc` is live.
                     let child_exit = unsafe { (*t_proc).exit_code };
@@ -764,8 +783,13 @@ pub unsafe extern "C" fn task_reap() {
             let cur_proc = unsafe { (*cur).proc };
             // SAFETY: `cur_proc` is that task's live `ProcMeta`.
             let parent_pid_val = unsafe { (*cur_proc).parent_pid };
-            let reapable = parent_pid_val == 0
-                || find_task_by_pid(parent_pid_val).is_null();
+            // SAFETY: `cur` is live.
+            let off_cpu = unsafe { (*cur).reap_off_cpu };
+            // Only a task that has committed its switch away (`sched_park_prev`)
+            // may be freed: a `Zombie` some CPU is still running must not have
+            // its `ProcMeta` and kernel stack pulled out from under it.
+            let reapable = off_cpu != 0
+                && (parent_pid_val == 0 || find_task_by_pid(parent_pid_val).is_null());
             if reapable {
                 // SAFETY: `cur` is live and the lock is held.
                 unsafe { task_list_remove(cur) };
