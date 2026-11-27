@@ -734,7 +734,7 @@ fn reap_task_free(t: *mut TaskStruct, last: bool) {
         } else {
             // SAFETY: the tracker is part of this dying task's `ProcMeta`, exclusively owned
             // here (kernel tasks have no shared group state).
-            unsafe { cact_mm::proc_free_pages(core::ptr::addr_of_mut!(p.mm)) };
+            cact_mm::proc_free_pages(core::ptr::addr_of_mut!(p.mm));
         }
 
         // SAFETY: `t` is live.

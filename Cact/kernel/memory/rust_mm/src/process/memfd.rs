@@ -16,8 +16,9 @@
 
 use crate::ffi::*;
 use crate::alloc::heap::{kfree, kmalloc};
-use crate::pmm::{kalloc, free_page};
-use crate::safe::{KStatic, lock_acquire, lock_release, zero_page, kprint_str};
+use crate::pmm::kalloc;
+use crate::safe::{lock_acquire, lock_release, zero_page, kprint_str};
+use kernel_rust::cell::KCell;
 
 pub const MEMFD_MAX: usize = 128;
 /// Initial slot count of an object's frame-pointer array (4 MiB worth); the
@@ -81,27 +82,29 @@ const MEMFD_EMPTY: MemFd = MemFd {
     valid: 0,
 };
 
-static MEMFD_TABLE: KStatic<[MemFd; MEMFD_MAX]> =
-    KStatic::new([MEMFD_EMPTY; MEMFD_MAX]);
-static MEMFD_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
-static MEMFD_INITIALIZED: KStatic<i32> = KStatic::new(0);
+static MEMFD_TABLE: KCell<[MemFd; MEMFD_MAX]> =
+    KCell::new([MEMFD_EMPTY; MEMFD_MAX]);
+static MEMFD_LOCK: KCell<IrqSpinlock> = KCell::new(IrqSpinlock::new());
+static MEMFD_INITIALIZED: KCell<i32> = KCell::new(0);
 
 fn memfd_ensure_init() {
-    // SAFETY: `MEMFD_INITIALIZED` is a boot/first-use latch; a benign race can only
-    // cause the idempotent `irq_spinlock_init` to run twice.
-    if *unsafe { KStatic::get_mut(MEMFD_INITIALIZED.as_ptr()) } != 0 {
+    // Boot/first-use latch; a benign race can only cause the idempotent
+    // `irq_spinlock_init` to run twice.
+    if MEMFD_INITIALIZED.get() != 0 {
         return;
     }
     irq_spinlock_init(MEMFD_LOCK.as_ptr());
-    // SAFETY: single-threaded first-use init: the latch is set after the lock is
+    // Single-threaded first-use init: the latch is set after the lock is
     // initialised.
-    *unsafe { KStatic::get_mut(MEMFD_INITIALIZED.as_ptr()) } = 1;
+    MEMFD_INITIALIZED.set(1);
 }
 
 fn handle_valid(h: i32) -> bool {
-    // SAFETY: `MEMFD_TABLE` read; every `handle_valid` caller holds `MEMFD_LOCK`,
-    // so the entry cannot be freed under us.
-    h >= 1 && (h as usize) <= MEMFD_MAX && (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(h - 1) as usize].valid != 0
+    // Every `handle_valid` caller holds `MEMFD_LOCK`, so the entry cannot be
+    // freed under us.
+    h >= 1
+        && (h as usize) <= MEMFD_MAX
+        && MEMFD_TABLE.with(|table| table[(h - 1) as usize].valid != 0)
 }
 
 fn ceil_pages(bytes: u64) -> u64 {
@@ -129,16 +132,14 @@ fn ensure_capacity_locked(s: &mut MemFd, need_pages: u32) -> bool {
     if new_arr.is_null() {
         return false;
     }
-    // SAFETY: `new_arr` is a fresh `kmalloc` block of `cap` slots (checked
-    // non-null); zeroing all `cap` slots is in bounds, copying the
-    // `num_pages <= pages_cap` live entries out of the old array is in bounds
-    // for both, and the old block is freed exactly once and replaced.
-    unsafe {
-        core::ptr::write_bytes(new_arr, 0, cap as usize);
-        if !s.pages.is_null() {
-            core::ptr::copy_nonoverlapping(s.pages, new_arr, s.num_pages as usize);
-            kfree(s.pages as *mut u8);
-        }
+    // `new_arr` is a fresh `kmalloc` block of `cap` slots (checked non-null);
+    // zeroing all `cap` slots is in bounds, copying the `num_pages <= pages_cap`
+    // live entries out of the old array is in bounds for both, and the old block
+    // is freed exactly once and replaced.
+    kernel_rust::ptr::write_bytes(new_arr, 0, cap as usize);
+    if !s.pages.is_null() {
+        kernel_rust::ptr::copy_nonoverlapping(s.pages, new_arr, s.num_pages as usize);
+        kfree(s.pages as *mut u8);
     }
     s.pages = new_arr;
     s.pages_cap = cap;
@@ -159,16 +160,16 @@ fn grow_locked(s: &mut MemFd, need_pages: u32) -> bool {
         if p.is_null() {
             // Roll back the frames allocated in this call.
             for j in start..i {
-                // SAFETY: slot `j < num_pages <= pages_cap` still holds a live
-                // frame allocated above; one reference is released per slot.
-                unsafe { free_page(*s.pages.add(j as usize)) };
-                unsafe { *s.pages.add(j as usize) = core::ptr::null_mut() };
+                // Slot `j < num_pages <= pages_cap` still holds a live frame
+                // allocated above; one reference is released per slot.
+                kernel_rust::mem::free_page(kernel_rust::ptr::read(s.pages.wrapping_add(j as usize)));
+                kernel_rust::ptr::write(s.pages.wrapping_add(j as usize), core::ptr::null_mut());
             }
             return false;
         }
         zero_page(p);
-        // SAFETY: `i < need_pages <= pages_cap`, so the slot exists.
-        unsafe { *s.pages.add(i as usize) = p };
+        // `i < need_pages <= pages_cap`, so the slot exists.
+        kernel_rust::ptr::write(s.pages.wrapping_add(i as usize), p);
     }
     s.num_pages = need_pages;
     true
@@ -176,81 +177,81 @@ fn grow_locked(s: &mut MemFd, need_pages: u32) -> bool {
 
 /// Free the object once both reference counters are zero.  Caller holds lock.
 fn maybe_free_locked(slot: usize) {
-    // SAFETY: `MEMFD_TABLE[slot]` freed while `MEMFD_LOCK` is held (the `_locked`
+    // `MEMFD_TABLE[slot]` is freed while `MEMFD_LOCK` is held (the `_locked`
     // suffix records that contract).
-    let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[slot];
-    if s.valid == 0 || s.fds != 0 || s.maps != 0 {
-        return;
-    }
-    for i in 0..s.num_pages as usize {
-        // SAFETY: `i < num_pages <= pages_cap` and `pages` is this object's live
-        // array, so the slot load is in bounds.
-        let p = unsafe { *s.pages.add(i) };
-        if !p.is_null() {
-            // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-            unsafe { free_page(p) };
+    MEMFD_TABLE.with(|table| {
+        let s = &mut table[slot];
+        if s.valid == 0 || s.fds != 0 || s.maps != 0 {
+            return;
         }
-    }
-    // SAFETY: `s.pages` is this object's own `kmalloc` block (or null) and this
-    // is the single release for it; the slot becomes reusable only after the
-    // reset below.
-    if !s.pages.is_null() {
-        kfree(s.pages as *mut u8);
-        s.pages = core::ptr::null_mut();
-    }
-    s.pages_cap = 0;
-    s.num_pages = 0;
-    s.size = 0;
-    s.name_len = 0;
-    s.flags = 0;
-    s.valid = 0;
+        for i in 0..s.num_pages as usize {
+            // `i < num_pages <= pages_cap` and `pages` is this object's live
+            // array, so the slot load is in bounds.
+            let p = kernel_rust::ptr::read(s.pages.wrapping_add(i));
+            if !p.is_null() {
+                // The frame is live and PMM-managed; this call releases exactly
+                // one reference to it.
+                kernel_rust::mem::free_page(p);
+            }
+        }
+        // `s.pages` is this object's own `kmalloc` block (or null) and this is
+        // the single release for it; the slot becomes reusable only after the
+        // reset below.
+        if !s.pages.is_null() {
+            kfree(s.pages as *mut u8);
+            s.pages = core::ptr::null_mut();
+        }
+        s.pages_cap = 0;
+        s.num_pages = 0;
+        s.size = 0;
+        s.name_len = 0;
+        s.flags = 0;
+        s.valid = 0;
+    });
 }
 
-/// # Safety
-///
-/// `name` must be null or point to at least `name_len` readable bytes that stay
-/// valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memfd_create(name: *const u8, name_len: u32, flags: i32) -> i32 {
+pub extern "C" fn memfd_create(name: *const u8, name_len: u32, flags: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
 
-    // SAFETY: `MEMFD_TABLE` mutated for the whole of `memfd_create`, with
+    // `MEMFD_TABLE` is mutated for the whole of `memfd_create`, with
     // `MEMFD_LOCK` held.
-    let table = unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) };
-    let slot: usize = table.iter().position(|e| e.valid == 0).unwrap_or(MEMFD_MAX);
-    if slot == MEMFD_MAX {
+    MEMFD_TABLE.with(|table| {
+        let slot: usize = table.iter().position(|e| e.valid == 0).unwrap_or(MEMFD_MAX);
+        if slot == MEMFD_MAX {
+            lock_release(MEMFD_LOCK.as_ptr());
+            kprint_str(c"[MEMFD] memfd_create: table full\n".as_ptr() as *const u8);
+            return -1;
+        }
+
+        let s = &mut table[slot];
+        let mut len = name_len as usize;
+        if len > MEMFD_NAME_MAX - 1 {
+            len = MEMFD_NAME_MAX - 1;
+        }
+        s.name[0] = 0;
+        if !name.is_null() && len > 0 {
+            // C passes a kernel buffer of at least `len` readable bytes.
+            kernel_rust::ptr::copy_nonoverlapping(name, s.name.as_mut_ptr(), len);
+        }
+        s.name[len] = 0;
+        s.name_len = len as u32;
+        s.size = 0;
+        s.num_pages = 0;
+        // A reusable slot has already released its frame array in
+        // `maybe_free_locked` (the only path that clears `valid`), so the block
+        // is allocated lazily by the first `grow_locked`.
+        s.pages_cap = 0;
+        s.flags = flags as u32;
+        s.seals = 0;
+        s.fds = 0;
+        s.maps = 0;
+        s.valid = 1;
+
         lock_release(MEMFD_LOCK.as_ptr());
-        kprint_str(c"[MEMFD] memfd_create: table full\n".as_ptr() as *const u8);
-        return -1;
-    }
-
-    let s = &mut table[slot];
-    let mut len = name_len as usize;
-    if len > MEMFD_NAME_MAX - 1 {
-        len = MEMFD_NAME_MAX - 1;
-    }
-    s.name[0] = 0;
-    if !name.is_null() && len > 0 {
-        // SAFETY: C passes a kernel buffer of at least `len` readable bytes.
-        unsafe { core::ptr::copy_nonoverlapping(name, s.name.as_mut_ptr(), len) };
-    }
-    s.name[len] = 0;
-    s.name_len = len as u32;
-    s.size = 0;
-    s.num_pages = 0;
-    // A reusable slot has already released its frame array in
-    // `maybe_free_locked` (the only path that clears `valid`), so the block is
-    // allocated lazily by the first `grow_locked`.
-    s.pages_cap = 0;
-    s.flags = flags as u32;
-    s.seals = 0;
-    s.fds = 0;
-    s.maps = 0;
-    s.valid = 1;
-
-    lock_release(MEMFD_LOCK.as_ptr());
-    (slot + 1) as i32
+        (slot + 1) as i32
+    })
 }
 
 /// Increment the fd reference count (node open / fork).  Returns handle.
@@ -262,9 +263,9 @@ pub extern "C" fn memfd_ref(handle: i32) -> i32 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1].fds` incremented under `MEMFD_LOCK`, after
+    // `MEMFD_TABLE[handle-1].fds` incremented under `MEMFD_LOCK`, after
     // `handle_valid` confirmed the entry.
-    (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize].fds += 1;
+    MEMFD_TABLE.with(|table| table[(handle - 1) as usize].fds += 1);
     lock_release(MEMFD_LOCK.as_ptr());
     handle
 }
@@ -279,11 +280,12 @@ pub extern "C" fn memfd_close(handle: i32) -> i32 {
         return -1;
     }
     let slot = (handle - 1) as usize;
-    // SAFETY: `MEMFD_TABLE[slot].fds` read under `MEMFD_LOCK`.
-    if (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[slot].fds > 0 {
-        // SAFETY: decrement of the same reference count, still under `MEMFD_LOCK`.
-        (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[slot].fds -= 1;
-    }
+    // `MEMFD_TABLE[slot].fds` read/decremented under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| {
+        if table[slot].fds > 0 {
+            table[slot].fds -= 1;
+        }
+    });
     maybe_free_locked(slot);
     lock_release(MEMFD_LOCK.as_ptr());
     0
@@ -298,8 +300,8 @@ pub extern "C" fn memfd_map_inc(handle: i32) -> i32 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1].maps` incremented under `MEMFD_LOCK`.
-    (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize].maps += 1;
+    // `MEMFD_TABLE[handle-1].maps` incremented under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| table[(handle - 1) as usize].maps += 1);
     lock_release(MEMFD_LOCK.as_ptr());
     0
 }
@@ -314,11 +316,12 @@ pub extern "C" fn memfd_map_dec(handle: i32) -> i32 {
         return -1;
     }
     let slot = (handle - 1) as usize;
-    // SAFETY: `MEMFD_TABLE[slot].maps` read under `MEMFD_LOCK`.
-    if (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[slot].maps > 0 {
-        // SAFETY: decrement of the same mapping count, under `MEMFD_LOCK`.
-        (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[slot].maps -= 1;
-    }
+    // `MEMFD_TABLE[slot].maps` read/decremented under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| {
+        if table[slot].maps > 0 {
+            table[slot].maps -= 1;
+        }
+    });
     maybe_free_locked(slot);
     lock_release(MEMFD_LOCK.as_ptr());
     0
@@ -329,8 +332,8 @@ pub extern "C" fn memfd_size(handle: i32) -> i64 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
     let size = if handle_valid(handle) {
-        // SAFETY: `MEMFD_TABLE[handle-1].size` read under `MEMFD_LOCK`.
-        (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize].size as i64
+        // `MEMFD_TABLE[handle-1].size` read under `MEMFD_LOCK`.
+        MEMFD_TABLE.with(|table| table[(handle - 1) as usize].size as i64)
     } else {
         -1
     };
@@ -343,18 +346,20 @@ pub(crate) fn memfd_grow_to(handle: i32, end: u32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
     let res = if handle_valid(handle) {
-        // SAFETY: `MEMFD_TABLE[handle-1]` mutated by `memfd_grow_to`, which holds
+        // `MEMFD_TABLE[handle-1]` is mutated by `memfd_grow_to`, which holds
         // `MEMFD_LOCK`.
-        let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-        let pages = ceil_pages(end as u64);
-        if pages <= MEMFD_PAGES_MAX as u64 && grow_locked(s, pages as u32) {
-            if end as u64 > s.size {
-                s.size = end as u64;
+        MEMFD_TABLE.with(|table| {
+            let s = &mut table[(handle - 1) as usize];
+            let pages = ceil_pages(end as u64);
+            if pages <= MEMFD_PAGES_MAX as u64 && grow_locked(s, pages as u32) {
+                if end as u64 > s.size {
+                    s.size = end as u64;
+                }
+                0
+            } else {
+                -1
             }
-            0
-        } else {
-            -1
-        }
+        })
     } else {
         -1
     };
@@ -373,16 +378,18 @@ pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
     let page = if handle_valid(handle) {
-        // SAFETY: `MEMFD_TABLE[handle-1]` read under `MEMFD_LOCK`; the returned frame
-        // stays owned by the memfd while `MEMFD_LOCK` is held and is refcounted by
-        // `page_ref_inc` for the caller.
-        let s = &(unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-        if idx < s.num_pages {
-            // SAFETY: `idx < num_pages <= pages_cap`, so the slot is in bounds.
-            unsafe { *s.pages.add(idx as usize) }
-        } else {
-            core::ptr::null_mut()
-        }
+        // `MEMFD_TABLE[handle-1]` is read under `MEMFD_LOCK`; the returned frame
+        // stays owned by the memfd while `MEMFD_LOCK` is held and is refcounted
+        // by `page_ref_inc` for the caller.
+        MEMFD_TABLE.with(|table| {
+            let s = &table[(handle - 1) as usize];
+            if idx < s.num_pages {
+                // `idx < num_pages <= pages_cap`, so the slot is in bounds.
+                kernel_rust::ptr::read(s.pages.wrapping_add(idx as usize))
+            } else {
+                core::ptr::null_mut()
+            }
+        })
     } else {
         core::ptr::null_mut()
     };
@@ -390,12 +397,8 @@ pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
     page
 }
 
-/// # Safety
-///
-/// `buf` must be null or point to at least `size` writable bytes that stay
-/// valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> i32 {
+pub extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
     }
@@ -408,55 +411,53 @@ pub unsafe extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1]` read under `MEMFD_LOCK`; `grow_locked` (and
+    // `MEMFD_TABLE[handle-1]` is read under `MEMFD_LOCK`; `grow_locked` (and
     // thus its refcounted frames) cannot be freed while we hold the lock.
-    let s = &(unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    if off >= s.size {
+    MEMFD_TABLE.with(|table| {
+        let s = &table[(handle - 1) as usize];
+        if off >= s.size {
+            lock_release(MEMFD_LOCK.as_ptr());
+            return 0;
+        }
+        let mut n = size;
+        // Overflow-safe replacement for the C `off + n < off` guard: a wrapped
+        // sum is treated exactly like the original overflow test.
+        let end_fits = match off.checked_add(n as u64) {
+            Some(end) => end <= s.size,
+            None => false,
+        };
+        if !end_fits {
+            n = (s.size - off) as u32;
+        }
+        let mut copied = 0u32;
+        let mut pos = off;
+        while copied < n {
+            let page_idx = (pos / PAGE_SIZE as u64) as u32;
+            let in_page = (pos % PAGE_SIZE as u64) as u32;
+            let chunk = core::cmp::min(n - copied, PAGE_SIZE - in_page);
+            // `page_idx < num_pages` (the caller is bounded by `size`, which
+            // never exceeds `num_pages` frames) and `num_pages <= pages_cap`, so
+            // the slot load is in bounds.
+            let page = kernel_rust::ptr::read(s.pages.wrapping_add(page_idx as usize));
+            // `in_page < PAGE_SIZE` and `page` is a live frame, so this is a
+            // valid pointer to `chunk <= PAGE_SIZE - in_page` readable bytes.
+            let src = page.wrapping_add(in_page as usize);
+            // `copied < size` and `buf` is a valid C buffer of at least `size`
+            // bytes, so this is a valid pointer to `chunk` writable bytes.
+            let dst = buf.wrapping_add(copied as usize);
+            // `src`/`dst` are the in-bounds pointers computed above and the two
+            // ranges are distinct (a mapped frame vs the caller's buffer).
+            kernel_rust::ptr::copy_nonoverlapping(src, dst, chunk as usize);
+            copied += chunk;
+            pos += chunk as u64;
+        }
         lock_release(MEMFD_LOCK.as_ptr());
-        return 0;
-    }
-    let mut n = size;
-    // Overflow-safe replacement for the C `off + n < off` guard: a wrapped
-    // sum is treated exactly like the original overflow test.
-    let end_fits = match off.checked_add(n as u64) {
-        Some(end) => end <= s.size,
-        None => false,
-    };
-    if !end_fits {
-        n = (s.size - off) as u32;
-    }
-    let mut copied = 0u32;
-    let mut pos = off;
-    while copied < n {
-        let page_idx = (pos / PAGE_SIZE as u64) as u32;
-        let in_page = (pos % PAGE_SIZE as u64) as u32;
-        let chunk = core::cmp::min(n - copied, PAGE_SIZE - in_page);
-        // SAFETY: `page_idx < num_pages` (the caller is bounded by `size`, which
-        // never exceeds `num_pages` frames) and `num_pages <= pages_cap`, so the
-        // slot load is in bounds.
-        let page = unsafe { *s.pages.add(page_idx as usize) };
-        // SAFETY: `in_page < PAGE_SIZE` and `page` is a live frame, so this is a
-        // valid pointer to `chunk <= PAGE_SIZE - in_page` readable bytes.
-        let src = unsafe { page.add(in_page as usize) };
-        // SAFETY: `copied < size` and `buf` is a valid C buffer of at least `size`
-        // bytes, so this is a valid pointer to `chunk` writable bytes.
-        let dst = unsafe { buf.add(copied as usize) };
-        // SAFETY: `src`/`dst` are the in-bounds pointers computed above and the two
-        // ranges are distinct (a mapped frame vs the caller's buffer).
-        unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk as usize) };
-        copied += chunk;
-        pos += chunk as u64;
-    }
-    lock_release(MEMFD_LOCK.as_ptr());
-    copied as i32
+        copied as i32
+    })
 }
 
-/// # Safety
-///
-/// `buf` must be null or point to at least `size` readable bytes that stay
-/// valid for the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) -> i32 {
+pub extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
     }
@@ -474,46 +475,48 @@ pub unsafe extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1]` read/updated under `MEMFD_LOCK`; the frames
-    // it owns stay live for the duration of the copy.
-    let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    // F_SEAL_WRITE: a sealed object refuses further writes.
-    if s.seals & F_SEAL_WRITE != 0 {
-        lock_release(MEMFD_LOCK.as_ptr());
-        return -1;
-    }
-    if !grow_locked(s, ceil_pages(end) as u32) {
-        lock_release(MEMFD_LOCK.as_ptr());
-        return -1;
-    }
-    if end > s.size {
-        s.size = end;
-    }
+    // `MEMFD_TABLE[handle-1]` is read/updated under `MEMFD_LOCK`; the frames it
+    // owns stay live for the duration of the copy.
+    MEMFD_TABLE.with(|table| {
+        let s = &mut table[(handle - 1) as usize];
+        // F_SEAL_WRITE: a sealed object refuses further writes.
+        if s.seals & F_SEAL_WRITE != 0 {
+            lock_release(MEMFD_LOCK.as_ptr());
+            return -1;
+        }
+        if !grow_locked(s, ceil_pages(end) as u32) {
+            lock_release(MEMFD_LOCK.as_ptr());
+            return -1;
+        }
+        if end > s.size {
+            s.size = end;
+        }
 
-    let mut written = 0u32;
-    let mut pos = off;
-    while written < size {
-        let page_idx = (pos / PAGE_SIZE as u64) as u32;
-        let in_page = (pos % PAGE_SIZE as u64) as u32;
-        let chunk = core::cmp::min(size - written, PAGE_SIZE - in_page);
-        // SAFETY: `page_idx < num_pages` (the `grow_locked` above covers `end`,
-        // and `end <= num_pages * PAGE_SIZE`) and `num_pages <= pages_cap`, so
-        // the slot load is in bounds.
-        let page = unsafe { *s.pages.add(page_idx as usize) };
-        // SAFETY: `written < size` and `buf` is a valid C buffer of at least `size`
-        // bytes, so this is a valid pointer to `chunk` readable bytes.
-        let src = unsafe { buf.add(written as usize) };
-        // SAFETY: `in_page < PAGE_SIZE` and `page` is a live frame, so this is a
-        // valid pointer to `chunk <= PAGE_SIZE - in_page` writable bytes.
-        let dst = unsafe { page.add(in_page as usize) };
-        // SAFETY: `src`/`dst` are the in-bounds pointers computed above and the two
-        // ranges are distinct (the caller's buffer vs a mapped frame).
-        unsafe { core::ptr::copy_nonoverlapping(src, dst, chunk as usize) };
-        written += chunk;
-        pos += chunk as u64;
-    }
-    lock_release(MEMFD_LOCK.as_ptr());
-    written as i32
+        let mut written = 0u32;
+        let mut pos = off;
+        while written < size {
+            let page_idx = (pos / PAGE_SIZE as u64) as u32;
+            let in_page = (pos % PAGE_SIZE as u64) as u32;
+            let chunk = core::cmp::min(size - written, PAGE_SIZE - in_page);
+            // `page_idx < num_pages` (the `grow_locked` above covers `end`, and
+            // `end <= num_pages * PAGE_SIZE`) and `num_pages <= pages_cap`, so
+            // the slot load is in bounds.
+            let page = kernel_rust::ptr::read(s.pages.wrapping_add(page_idx as usize));
+            // `written < size` and `buf` is a valid C buffer of at least `size`
+            // bytes, so this is a valid pointer to `chunk` readable bytes.
+            let src = buf.wrapping_add(written as usize);
+            // `in_page < PAGE_SIZE` and `page` is a live frame, so this is a
+            // valid pointer to `chunk <= PAGE_SIZE - in_page` writable bytes.
+            let dst = page.wrapping_add(in_page as usize);
+            // `src`/`dst` are the in-bounds pointers computed above and the two
+            // ranges are distinct (the caller's buffer vs a mapped frame).
+            kernel_rust::ptr::copy_nonoverlapping(src, dst, chunk as usize);
+            written += chunk;
+            pos += chunk as u64;
+        }
+        lock_release(MEMFD_LOCK.as_ptr());
+        written as i32
+    })
 }
 
 #[unsafe(no_mangle)]
@@ -527,26 +530,27 @@ pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1]` mutated under `MEMFD_LOCK`.
-    let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    // The seals are exactly what Wayland's shm pool leans on: F_SEAL_SHRINK
-    // stops a client shrinking the pool out from under the compositor.
-    if (new_size < s.size && s.seals & F_SEAL_SHRINK != 0)
-        || (new_size > s.size && s.seals & F_SEAL_GROW != 0)
-    {
-        lock_release(MEMFD_LOCK.as_ptr());
-        return -1;
-    }
-    if new_size > s.size
-        && !grow_locked(s, ceil_pages(new_size) as u32) {
+    // `MEMFD_TABLE[handle-1]` is mutated under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| {
+        let s = &mut table[(handle - 1) as usize];
+        // The seals are exactly what Wayland's shm pool leans on: F_SEAL_SHRINK
+        // stops a client shrinking the pool out from under the compositor.
+        if (new_size < s.size && s.seals & F_SEAL_SHRINK != 0)
+            || (new_size > s.size && s.seals & F_SEAL_GROW != 0)
+        {
             lock_release(MEMFD_LOCK.as_ptr());
             return -1;
         }
-    // Shrink only reduces the logical size; the backing frames are left in
-    // place until object destruction so live MAP_SHARED mappings stay valid.
-    s.size = new_size;
-    lock_release(MEMFD_LOCK.as_ptr());
-    0
+        if new_size > s.size && !grow_locked(s, ceil_pages(new_size) as u32) {
+            lock_release(MEMFD_LOCK.as_ptr());
+            return -1;
+        }
+        // Shrink only reduces the logical size; the backing frames are left in
+        // place until object destruction so live MAP_SHARED mappings stay valid.
+        s.size = new_size;
+        lock_release(MEMFD_LOCK.as_ptr());
+        0
+    })
 }
 
 /// Add seals to a memfd (F_ADD_SEALS).  Linux's rule: only an object created
@@ -560,15 +564,17 @@ pub extern "C" fn memfd_add_seals(handle: i32, seals: u32) -> i32 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1]` mutated under `MEMFD_LOCK`.
-    let s = &mut (unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    if s.flags & MFD_ALLOW_SEALING == 0 || s.seals & F_SEAL_SEAL != 0 {
+    // `MEMFD_TABLE[handle-1]` is mutated under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| {
+        let s = &mut table[(handle - 1) as usize];
+        if s.flags & MFD_ALLOW_SEALING == 0 || s.seals & F_SEAL_SEAL != 0 {
+            lock_release(MEMFD_LOCK.as_ptr());
+            return -1;
+        }
+        s.seals |= seals;
         lock_release(MEMFD_LOCK.as_ptr());
-        return -1;
-    }
-    s.seals |= seals;
-    lock_release(MEMFD_LOCK.as_ptr());
-    0
+        0
+    })
 }
 
 /// The memfd's seal bits (F_GET_SEALS), or -1 when the handle is not a memfd.
@@ -580,9 +586,11 @@ pub extern "C" fn memfd_get_seals(handle: i32) -> i32 {
         lock_release(MEMFD_LOCK.as_ptr());
         return -1;
     }
-    // SAFETY: `MEMFD_TABLE[handle-1]` read under `MEMFD_LOCK`.
-    let s = &(unsafe { KStatic::get_mut(MEMFD_TABLE.as_ptr()) })[(handle - 1) as usize];
-    let seals = s.seals as i32;
-    lock_release(MEMFD_LOCK.as_ptr());
-    seals
+    // `MEMFD_TABLE[handle-1]` is read under `MEMFD_LOCK`.
+    MEMFD_TABLE.with(|table| {
+        let s = &table[(handle - 1) as usize];
+        let seals = s.seals as i32;
+        lock_release(MEMFD_LOCK.as_ptr());
+        seals
+    })
 }

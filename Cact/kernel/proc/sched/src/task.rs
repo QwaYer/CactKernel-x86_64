@@ -467,7 +467,7 @@ pub unsafe fn proc_shared_free(s: *mut ProcShared) {
     }
     // SAFETY: `s` is live and owned here; freeing its tracker releases the process page array and
     // the address space it names.
-    unsafe { cact_mm::proc_free_pages(core::ptr::addr_of_mut!((*s).mm)) };
+    cact_mm::proc_free_pages(unsafe { core::ptr::addr_of_mut!((*s).mm) });
     // `s` is the live allocation owned here.
     cact_mm::kfree((s as *mut c_void) as *mut u8);
 }
