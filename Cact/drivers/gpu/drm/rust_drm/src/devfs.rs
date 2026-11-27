@@ -9,15 +9,12 @@
 use core::ffi::{c_int, c_void};
 
 use crate::device::device_table;
+use crate::ffi::log_line;
 use crate::file::drm_fill_node;
 use crate::structs::DrmDevice;
 use crate::vfs::{
     cstr_eq, fmt_indexed, register_chrdev, DevfsDriver, VfsDirent, VfsNode, DEVFS_F_DIR,
 };
-
-extern "C" {
-
-}
 
 static mut READY: c_int = 0;
 
@@ -122,25 +119,10 @@ pub extern "C" fn drm_devfs_init() -> c_int {
     // `addr_of_mut!` forms a pointer to the static `DRIVER` table without creating
     // a reference, which needs no `unsafe` on its own.
     let driver = core::ptr::addr_of_mut!(DRIVER);
-    // SAFETY: `register_chrdev` is the devfs C service that records the driver
-    // table; `driver` is the live static table and `devfs_lock` serialises this
-    // one-time registration.
-    if unsafe {
-        register_chrdev(
-            c"dri".as_ptr() as *const u8,
-            DEVFS_F_DIR,
-            driver,
-            core::ptr::null_mut(),
-        )
-    }
-    .is_null()
-    {
-        // SAFETY: static NUL-terminated string.
-        unsafe {
-            crate::ffi::printk(
-                c"\x013drm: cannot register /dev/dri\n".as_ptr() as *const u8,
-            );
-        }
+    // `register_chrdev` records the driver table; `driver` is the live static
+    // table and the devfs lock serialises this one-time registration.
+    if register_chrdev(c"dri", DEVFS_F_DIR, driver as *mut c_void, core::ptr::null_mut()).is_null() {
+        log_line(b'3', format_args!("drm: cannot register /dev/dri"));
         return -1;
     }
     // SAFETY: as above — publishing the one-time init flag.

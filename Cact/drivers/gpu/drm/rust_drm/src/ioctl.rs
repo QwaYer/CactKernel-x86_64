@@ -11,8 +11,11 @@
 
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::net::ktime_get_usec;
+use kernel_rust::sync::sleep_ticks;
+
 use crate::event::{drm_crtc_vblank_advance, drm_file_queue_event};
-use crate::ffi::{drm_copy_in, drm_copy_out, drm_ioctl_nr, drm_ioctl_size};
+use crate::ffi::{drm_copy_in, drm_copy_out, drm_ioctl_nr, drm_ioctl_size, log_line};
 use crate::gem::{
     drm_gem_handle_close, drm_gem_handle_create, drm_gem_handle_lookup, drm_gem_prime_fd_to_handle,
     drm_gem_prime_handle_to_fd, drm_gem_ref,
@@ -38,11 +41,6 @@ const _DRM_VBLANK_HIGH_CRTC_SHIFT: u32 = 1;
  * only moves with time, so a client asking for a far-future sequence must not
  * be able to pin the CPU. */
 const VBLANK_WAIT_TICKS: u32 = 30;
-
-extern "C" {
-    /// Scheduler sleep, in 100 Hz ticks (`proc.h`); also used by rust_net.
-    fn sched_sleep_ticks(ticks: u32);
-}
 
 /* ── uapi structs ───────────────────────────────────────────────────────── */
 
@@ -188,12 +186,7 @@ pub extern "C" fn drm_ioctl_dispatch(file: *mut DrmFile, cmd: u32, arg: *mut c_v
     let size = drm_ioctl_size(cmd);
 
     if size > DRM_IOCTL_MAX_SIZE {
-        // SAFETY: fixed format string, no arguments.
-        unsafe {
-            crate::ffi::printk(
-                c"\x017drm: ioctl payload too large\n".as_ptr() as *const u8,
-            );
-        }
+        log_line(b'7', format_args!("drm: ioctl payload too large"));
         return -22;
     }
 
@@ -671,9 +664,8 @@ pub extern "C" fn drm_legacy_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void
                     // SAFETY: `crtc` is the live CRTC located above; the counter is
                     // re-read each iteration.
                     while unsafe { (*crtc).vblank_count } < target && ticks < VBLANK_WAIT_TICKS {
-                        // SAFETY: `sched_sleep_ticks` is a kernel service that suspends
-                        // the calling task for the requested number of ticks.
-                        unsafe { sched_sleep_ticks(1) };
+                        // `sleep_ticks` suspends the calling task for one tick.
+                        sleep_ticks(1);
                         ticks += 1;
                         drm_crtc_vblank_advance(crtc);
                     }
@@ -681,9 +673,8 @@ pub extern "C" fn drm_legacy_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void
 
                 // SAFETY: `crtc` is the live CRTC located above.
                 let seq = unsafe { (*crtc).vblank_count };
-                // SAFETY: `ktime_get_usec` is a kernel C service reading the monotonic
-                // clock.
-                let usec = unsafe { ktime_get_usec() } as u32;
+                // `ktime_get_usec` reads the monotonic clock since boot.
+                let usec = ktime_get_usec() as u32;
                 wv.vtype = 0;
                 wv.sequence = seq;
                 wv.signal = 0;
@@ -694,9 +685,5 @@ pub extern "C" fn drm_legacy_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void
             _ => -38, // -ENOSYS: not a legacy ioctl, try the KMS table
         }
     }
-}
-
-extern "C" {
-    fn ktime_get_usec() -> u64;
 }
 

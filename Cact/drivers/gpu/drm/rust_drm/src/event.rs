@@ -7,15 +7,13 @@
 //! Each client's queue is allocator-backed, so a slow reader accumulates as
 //! many events as it has not yet drained instead of being capped.
 
+use kernel_rust::net::ktime_get_usec;
+
 use crate::kms::mode_object::Crtc;
 use crate::structs::{DrmDevice, EventVblank};
 
 /* uapi/drm.h */
 const DRM_EVENT_VBLANK: u32 = 0x01;
-
-extern "C" {
-    fn ktime_get_usec() -> u64;
-}
 
 /// The CRTC's frame period in microseconds, from its mode's timings
 /// (`clock` is in kHz, so one frame is `htotal * vtotal` pixels).
@@ -52,8 +50,8 @@ pub extern "C" fn drm_crtc_vblank_advance(crtc: *mut Crtc) {
     }
     // SAFETY: `crtc` is the caller's live CRTC (checked non-null above).
     let period = unsafe { frame_period_usec(crtc) };
-    // SAFETY: `ktime_get_usec` is a kernel C service reading the monotonic clock.
-    let now = unsafe { ktime_get_usec() } as u32;
+    // `ktime_get_usec` reads the monotonic clock since boot.
+    let now = ktime_get_usec() as u32;
     // SAFETY: `crtc` is the caller's live CRTC; this borrow is consumed by the
     // counter updates below, and neither call above is in its live range.
     let crtc = unsafe { &mut *crtc };
@@ -125,8 +123,8 @@ pub extern "C" fn drm_file_queue_event(
         if f.is_null() {
             continue;
         }
-        // SAFETY: `ktime_get_usec` is a kernel C service reading the monotonic clock.
-        let tv_usec = unsafe { ktime_get_usec() } as u32;
+        // `ktime_get_usec` reads the monotonic clock since boot.
+        let tv_usec = ktime_get_usec() as u32;
         let ev = EventVblank {
             base: crate::structs::Event {
                 etype: event_type,

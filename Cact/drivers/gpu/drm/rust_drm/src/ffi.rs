@@ -15,18 +15,9 @@
 //! later slices.
 
 use core::ffi::{c_int, c_void};
+use core::fmt::{self, Write};
 
-extern "C" {
-    /// Kernel user-pointer validation / copy primitives (see syscall/validate.h).
-    fn validate_user_ptr(ptr: *const c_void, size: u32) -> c_int;
-    fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-    fn copy_to_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-
-    /// Kernel `printk`, declared variadic exactly as C has it.  The core calls
-    /// it with a fixed format string plus arguments where a log line needs
-    /// values (device registration reports its object counts).
-    pub(crate) fn printk(fmt: *const u8, ...);
-}
+use kernel_rust::{console, ptr, user};
 
 /* ── the _IOC encoding (mirrors uapi/drm_ioctl.h) ───────────────────────── */
 
@@ -40,6 +31,58 @@ const IOC_SIZESHIFT: u32 = IOC_TYPESHIFT + IOC_TYPEBITS;
 
 const IOC_NRMASK: u32 = (1 << IOC_NRBITS) - 1;
 const IOC_SIZEMASK: u32 = (1 << IOC_SIZEBITS) - 1;
+
+/* ── console logging (the C `printk` is variadic; this crate is not) ─────── */
+
+/// A fixed-buffer `core::fmt::Write` sink for assembling one console line.
+struct LogBuf {
+    b: [u8; 256],
+    n: usize,
+}
+
+impl Write for LogBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        for &c in s.as_bytes() {
+            if self.n + 2 >= self.b.len() {
+                break;
+            }
+            self.b[self.n] = c;
+            self.n += 1;
+        }
+        Ok(())
+    }
+}
+
+/// Emit one console line: `KERN_SOH` + `level`, `args`, then a newline.  The
+/// level is the C `printk` severity digit (`'3'` err, `'6'` info, …).
+pub(crate) fn log_line(level: u8, args: fmt::Arguments) {
+    let mut buf = LogBuf { b: [0u8; 256], n: 0 };
+    buf.b[0] = 0x01; // KERN_SOH
+    buf.b[1] = level;
+    buf.n = 2;
+    let _ = fmt::write(&mut buf, args);
+    buf.b[buf.n] = b'\n';
+    buf.b[buf.n + 1] = 0;
+    console::printk_bytes(&buf.b[..buf.n + 2]);
+}
+
+/// Read a NUL-terminated `*const u8` C string into `buf` and return it as a
+/// `&str` (lossy, truncated to the buffer).  A null pointer yields `""`.
+pub(crate) fn cstr<'a>(p: *const u8, buf: &'a mut [u8]) -> &'a str {
+    if p.is_null() {
+        return "";
+    }
+    let mut n = 0;
+    while n + 1 < buf.len() {
+        let b = ptr::read(ptr::add(p, n));
+        if b == 0 {
+            break;
+        }
+        buf[n] = b;
+        n += 1;
+    }
+    core::str::from_utf8(&buf[..n]).unwrap_or("?")
+}
 
 /// Sequence number of a DRM ioctl command.
 #[no_mangle]
@@ -71,18 +114,17 @@ pub extern "C" fn drm_copy_in(
     }
     let size = drm_ioctl_size(cmd);
     if size != expect {
-        // SAFETY: static NUL-terminated string.
-        unsafe { printk(c"drm: ioctl payload size mismatch\n".as_ptr() as *const u8) };
+        console::printk_bytes(b"drm: ioctl payload size mismatch\n\0");
         return -1;
     }
-    // SAFETY: `user` is a non-null userspace pointer the caller asked us to read;
-    // `validate_user_ptr` is the kernel's own range check for it.
-    if unsafe { validate_user_ptr(user, size) } == 0 {
+    // `user` is a non-null userspace pointer the caller asked us to read; the
+    // kernel's own range check guards it.
+    if !user::validate_user_ptr(user, size) {
         return -1;
     }
-    // SAFETY: the range check above passed, so `user` is a readable userspace range
+    // the range check above passed, so `user` is a readable userspace range
     // of `size` bytes and `dst` is a kernel buffer of the same size.
-    if unsafe { copy_from_user(dst, user, size) } != 0 {
+    if !user::copy_from_user(dst, user, size) {
         return -1;
     }
     0
@@ -94,14 +136,13 @@ pub extern "C" fn drm_copy_out(user: *mut c_void, src: *const c_void, size: u32)
     if user.is_null() || src.is_null() {
         return -1;
     }
-    // SAFETY: `user` is a non-null userspace pointer; `validate_user_ptr` is the
-    // kernel's own range check for it.
-    if unsafe { validate_user_ptr(user, size) } == 0 {
+    // `user` is a non-null userspace pointer; the kernel's own range check guards it.
+    if !user::validate_user_ptr(user, size) {
         return -1;
     }
-    // SAFETY: the range check above passed, so `user` is a writable userspace range
+    // the range check above passed, so `user` is a writable userspace range
     // of `size` bytes and `src` is a kernel buffer of the same size.
-    if unsafe { copy_to_user(user, src, size) } != 0 {
+    if !user::copy_to_user(user, src, size) {
         return -1;
     }
     0

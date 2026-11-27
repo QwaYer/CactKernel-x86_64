@@ -14,17 +14,14 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::ptr;
+
 use crate::devfs::{drm_devfs_add_device, drm_devfs_init};
-use crate::ffi::printk;
+use crate::ffi::{cstr, log_line};
 use crate::gem::drm_gem_unref;
 use crate::kms::framebuffer::{ClipRect, Framebuffer};
 use crate::kms::mode_object::{Connector, Crtc, Plane};
 use crate::structs::{DrmDevice, DriverOps, IrqSpinlock, ModeSet};
-
-extern "C" {
-
-    fn irq_spinlock_init(lock: *mut IrqSpinlock);
-}
 
 /// Every registered device, indexed by minor.  `None` marks a free minor.
 static mut DEVICES: Option<Vec<Option<*mut DrmDevice>>> = None;
@@ -106,8 +103,8 @@ pub extern "C" fn drm_dev_alloc(ops: *const DriverOps, priv_: *mut c_void) -> *m
         // SAFETY: `addr_of_mut!` forms a pointer to the fresh device's `lock` field
         // (the device is not published yet) without creating a reference.
         let lock = unsafe { core::ptr::addr_of_mut!((*dev).lock) };
-        // SAFETY: `lock` is that field and the device is exclusively owned here.
-        unsafe { irq_spinlock_init(lock) };
+        // `lock` is that field and the device is exclusively owned here.
+        ptr::as_mut(lock).init();
 
         if table.len() <= minor {
             table.push(Some(dev));
@@ -183,13 +180,7 @@ pub extern "C" fn drm_dev_register(dev: *mut DrmDevice) -> c_int {
     if drm_devfs_add_device(dev) != 0 {
         // SAFETY: `dev` is the live device; this reads its minor for the message.
         let minor = unsafe { (*dev).minor };
-        // SAFETY: `printk` takes a NUL-terminated format string plus its arguments.
-        unsafe {
-            printk(
-                c"\x013drm: cannot publish /dev/dri/card%d\n".as_ptr() as *const u8,
-                minor,
-            );
-        }
+        log_line(b'3', format_args!("drm: cannot publish /dev/dri/card{}", minor));
         return -1;
     }
 
@@ -200,15 +191,9 @@ pub extern "C" fn drm_dev_register(dev: *mut DrmDevice) -> c_int {
         let rc = load(dev);
         if rc != 0 {
             // SAFETY: `ops` is the driver's live ops table; this reads its name.
-            let name = unsafe { (*ops).name };
-            // SAFETY: `printk` takes a NUL-terminated format string plus arguments.
-            unsafe {
-                printk(
-                    c"\x013drm: '%s' load failed (%d)\n".as_ptr() as *const u8,
-                    name,
-                    rc,
-                );
-            }
+            let mut nbuf = [0u8; 64];
+            let name = cstr(unsafe { (*ops).name }, &mut nbuf);
+            log_line(b'3', format_args!("drm: '{}' load failed ({})", name, rc));
             return rc;
         }
     }
@@ -232,22 +217,15 @@ pub extern "C" fn drm_dev_register(dev: *mut DrmDevice) -> c_int {
     // SAFETY: `dev` is the live device; this reads its minor for the banner.
     let minor = unsafe { (*dev).minor };
     // SAFETY: `ops` is the driver's live ops table; this reads its name.
-    let name = unsafe { (*ops).name };
-    // SAFETY: `printk` takes a NUL-terminated format string plus its arguments.
-    unsafe {
-        printk(
-            c"\x016  %-11s : /dev/dri/card%d ready \u{2014} %s (%u crtc, %u conn, %u enc, %u plane, %u fb)\n"
-                .as_ptr() as *const u8,
-            c"drm".as_ptr() as *const u8,
-            minor,
-            name,
-            ncrtc,
-            nconn,
-            nenc,
-            nplane,
-            nfb,
-        );
-    }
+    let mut nbuf = [0u8; 64];
+    let name = cstr(unsafe { (*ops).name }, &mut nbuf);
+    log_line(
+        b'6',
+        format_args!(
+            "  {:<11} : /dev/dri/card{} ready \u{2014} {} ({} crtc, {} conn, {} enc, {} plane, {} fb)",
+            "drm", minor, name, ncrtc, nconn, nenc, nplane, nfb
+        ),
+    );
     0
 }
 

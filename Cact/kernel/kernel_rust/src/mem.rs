@@ -109,3 +109,12 @@ pub fn unpin_frames(frames: &[u64]) {
     // SAFETY: `frames` holds `phys` values from a prior `vmm_pin_range`.
     unsafe { sys::vmm_unpin_frames(frames.as_ptr(), frames.len() as u64) };
 }
+
+/// Translate kernel virtual `va` to its physical address in page directory
+/// `pd`; a null `pd` selects the kernel's own directory.  Returns 0 when `va`
+/// is not mapped.
+pub fn get_phys(pd: *mut u64, va: u64) -> u64 {
+    // SAFETY: `pd` is the caller's live page map (or null for the kernel's) and
+    // `va` a virtual address in it.
+    unsafe { sys::vmm_get_phys(pd, va) }
+}

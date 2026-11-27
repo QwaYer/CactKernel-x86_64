@@ -16,31 +16,15 @@
 
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::fs::{
+    alloc_fd, memfd_close, memfd_create, memfd_fd_handle, memfd_get_page, memfd_ref, memfd_size,
+    memfd_truncate, memfd_vnode_from_handle,
+};
+use kernel_rust::mem::get_phys;
+use kernel_rust::ptr;
+
 use crate::ffi::{drm_copy_in, drm_copy_out};
 use crate::structs::{DrmDevice, DrmFile, GemObject, IrqSpinlock};
-
-extern "C" {
-
-    fn irq_spinlock_acquire(lock: *mut IrqSpinlock);
-    fn irq_spinlock_release(lock: *mut IrqSpinlock);
-
-    /* fs/memfd/memfd.h — the shared RAM object every GEM buffer is built on. */
-    fn memfd_create(name: *const u8, name_len: u32, flags: c_int) -> c_int;
-    fn memfd_truncate(handle: c_int, size: u64) -> c_int;
-    fn memfd_close(handle: c_int) -> c_int;
-    fn memfd_ref(handle: c_int) -> c_int;
-    fn memfd_get_page(handle: c_int, idx: u32) -> *mut c_void;
-    fn memfd_size(handle: c_int) -> i64;
-    fn memfd_fd_handle(fd: c_int) -> c_int;
-    fn memfd_vnode_from_handle(handle: c_int, name: *const u8, size: u32) -> *mut c_void;
-
-    /* kernel/core/syscall/helper.h */
-    fn alloc_fd(node: *mut c_void) -> c_int;
-
-    /* kernel/memory/rust_mm — page-table walk.  A null directory selects the
-     * kernel's, which is the one the memfd frames are mapped in. */
-    fn vmm_get_phys(pd: *mut u64, va: u64) -> u64;
-}
 
 /// Address of the device's bookkeeping lock.
 #[inline]
@@ -83,18 +67,18 @@ pub extern "C" fn drm_gem_create(dev: *mut DrmDevice, size: u32) -> *mut GemObje
 
     let rounded = (size + 4095) & !4095u32;
 
-    // SAFETY: `memfd_create` is a kernel C service; the name is a NUL-terminated
-    // literal and the flags are the values the C path used.
-    let h = unsafe { memfd_create(c"drm-gem".as_ptr() as *const u8, 7, 0) };
+    // The name is a NUL-terminated literal and the flags are the values the C
+    // path used.
+    let h = memfd_create(c"drm-gem".as_ptr() as *const u8, 7, 0);
     if h <= 0 {
         // SAFETY: `obj` is the object allocated above and not yet published.
         unsafe { cact_mm::kfree(obj as *mut u8) };
         return core::ptr::null_mut();
     }
-    // SAFETY: `h` is the live memfd just created and `rounded` its requested size.
-    if unsafe { memfd_truncate(h, rounded as u64) } != 0 {
-        // SAFETY: `h` is the live memfd; `obj` is the un-published object.
-        unsafe { memfd_close(h) };
+    // `h` is the live memfd just created and `rounded` its requested size.
+    if memfd_truncate(h, rounded as u64) != 0 {
+        // `h` is the live memfd; `obj` is the un-published object.
+        memfd_close(h);
         // SAFETY: as above.
         unsafe { cact_mm::kfree(obj as *mut u8) };
         return core::ptr::null_mut();
@@ -122,8 +106,8 @@ pub extern "C" fn drm_gem_create(dev: *mut DrmDevice, size: u32) -> *mut GemObje
             // `create` is the plain `extern "C"` driver hook and `dev`/`obj` are
             // the live device and object it expects.
             if create(dev, obj) != 0 {
-                // SAFETY: on refusal the object and its memfd are still ours.
-                unsafe { memfd_close(h) };
+                // On refusal the object and its memfd are still ours.
+                memfd_close(h);
                 // SAFETY: as above.
                 unsafe { cact_mm::kfree(obj as *mut u8) };
                 return core::ptr::null_mut();
@@ -134,10 +118,10 @@ pub extern "C" fn drm_gem_create(dev: *mut DrmDevice, size: u32) -> *mut GemObje
     // SAFETY: `lock_ptr`'s contract: `dev` is the caller's live device.
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock word; the pair brackets the link update.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     drm_gem_link(dev, obj);
     // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
     obj
 }
 
@@ -191,7 +175,7 @@ pub extern "C" fn drm_gem_unref(obj: *mut GemObject) -> c_int {
     // SAFETY: `lock_ptr`'s contract: `dev` is the object's live device.
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock word; the pair brackets the unlink below.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     /* Drop the map offsets first: a client may still have the object mapped, but
      * no new mmap may resolve to it.  Same for its global name. */
     // SAFETY: `dev` is the live device; this drops the object from its map-offset
@@ -202,13 +186,13 @@ pub extern "C" fn drm_gem_unref(obj: *mut GemObject) -> c_int {
     // SAFETY: as above — the object list.
     unsafe { (*dev).gem_list.retain(|&p| p != obj) };
     // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
     // SAFETY: `obj` is the live object; this reads its memfd handle.
     let memfd = unsafe { (*obj).memfd };
     if memfd > 0 {
-        // SAFETY: that memfd was created by `drm_gem_create` and is closed once here.
-        unsafe { memfd_close(memfd) };
+        // That memfd was created by `drm_gem_create` and is closed once here.
+        memfd_close(memfd);
     }
     // SAFETY: the object's last reference was just dropped, so reclaiming its
     // allocation is the matching free.
@@ -253,8 +237,8 @@ pub extern "C" fn drm_gem_vaddr(obj: *mut GemObject, off: u32) -> *mut c_void {
     }
     // SAFETY: `obj` is the live object; this reads its memfd handle.
     let memfd = unsafe { (*obj).memfd };
-    // SAFETY: `memfd` is that object's live memfd and `off / 4096` its page index.
-    let page = unsafe { memfd_get_page(memfd, off / 4096) } as *mut u8;
+    // `memfd` is that object's live memfd and `off / 4096` its page index.
+    let page = memfd_get_page(memfd, off / 4096) as *mut u8;
     if page.is_null() {
         return core::ptr::null_mut();
     }
@@ -290,9 +274,9 @@ pub extern "C" fn drm_gem_page_phys(obj: *mut GemObject, index: u32) -> u64 {
     if page == 0 {
         return 0;
     }
-    // SAFETY: `vmm_get_phys` translates `page` in the kernel page directory
-    // (a null directory selects it); 0 is returned when unmapped.
-    unsafe { vmm_get_phys(core::ptr::null_mut(), page) }
+    // `get_phys` translates `page` in the kernel page directory (a null
+    // directory selects it); 0 is returned when unmapped.
+    get_phys(core::ptr::null_mut(), page)
 }
 
 /* ── mmap offsets ───────────────────────────────────────────────────────── */
@@ -342,11 +326,11 @@ pub extern "C" fn drm_gem_map_offset(
         // SAFETY: `lock_ptr`'s contract: `dev` is the caller's live device.
         let lock = unsafe { lock_ptr(dev) };
         // SAFETY: `lock` is the device's lock word; the pair brackets the allocation.
-        unsafe { irq_spinlock_acquire(lock) };
+        ptr::as_mut(lock).acquire();
         // SAFETY: `drm_gem_alloc_map_offset`'s contract: the device lock is held.
         off = unsafe { drm_gem_alloc_map_offset(dev, obj) };
         // SAFETY: as above — releasing the same lock.
-        unsafe { irq_spinlock_release(lock) };
+        ptr::as_mut(lock).release();
         // SAFETY: `obj` is the live object; caching the freshly-allocated offset.
         unsafe { (*obj).map_offset = off };
     }
@@ -373,7 +357,7 @@ pub extern "C" fn drm_gem_handle_create(
     // SAFETY: `lock_ptr`'s contract: `dev` is the client's live device.
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock word; the pair brackets the handle insert.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     {
         // SAFETY: `file` is the live client; this borrow is consumed by the handle
         // insert below.
@@ -383,7 +367,7 @@ pub extern "C" fn drm_gem_handle_create(
         file.handles.insert(handle, obj);
         drm_gem_ref(obj);
         // SAFETY: as above — releasing the same lock.
-        unsafe { irq_spinlock_release(lock) };
+        ptr::as_mut(lock).release();
         // SAFETY: `handle_out` is the caller's out-parameter for the handle.
         unsafe { *handle_out = handle };
     }
@@ -450,17 +434,14 @@ pub extern "C" fn drm_gem_prime_handle_to_fd(
     // SAFETY: as above — its size.
     let size = unsafe { (*obj).size };
 
-    // SAFETY: `memfd` is that live object's backing memfd and `size` its length.
-    let node = unsafe {
-        memfd_vnode_from_handle(memfd, c"drm-prime".as_ptr() as *const u8, size)
-    };
+    // `memfd` is that live object's backing memfd and `size` its length.
+    let node = memfd_vnode_from_handle(memfd, c"drm-prime".as_ptr() as *const u8, size);
     if node.is_null() {
         return -12;
     }
 
-    // SAFETY: `node` is the live vnode just created; `alloc_fd`'s contract wants a
-    // live node to install as the new fd's file.
-    let fd = unsafe { alloc_fd(node) };
+    // `node` is the live vnode just created; install it as the new fd's file.
+    let fd = alloc_fd(node);
     if fd < 0 {
         return -24; // -EMFILE
     }
@@ -484,8 +465,8 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
     if dev.is_null() || file.is_null() || handle_out.is_null() {
         return -22;
     }
-    // SAFETY: `memfd_fd_handle` is a kernel C service mapping an fd to its memfd.
-    let h = unsafe { memfd_fd_handle(fd) };
+    // `memfd_fd_handle` maps the fd to its memfd handle.
+    let h = memfd_fd_handle(fd);
     if h <= 0 {
         return -22;
     }
@@ -495,7 +476,7 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock word; the pair brackets the object-list
     // walk.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     // SAFETY: `dev` is the live device; this borrow of its object list is consumed
     // by the walk below.
     let gem_list = unsafe { &(*dev).gem_list };
@@ -509,7 +490,7 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
         }
     }
     // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
     if !obj.is_null() {
         let mut handle = 0u32;
@@ -521,8 +502,8 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
         return 0;
     }
 
-    // SAFETY: `memfd_size` is a kernel C service reading the memfd's length.
-    let size = unsafe { memfd_size(h) };
+    // `memfd_size` reads the memfd's length.
+    let size = memfd_size(h);
     if size <= 0 {
         return -22;
     }
@@ -543,9 +524,9 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
         obj_ref.size = size as u32;
         obj_ref.refcount = 1;
     }
-    // SAFETY: `h` is the live memfd being adopted; the object now owns a reference
-    // of its own.
-    unsafe { memfd_ref(h) };
+    // `h` is the live memfd being adopted; the object now owns a reference of its
+    // own.
+    memfd_ref(h);
 
     // SAFETY: `dev` is the live device; this copies its ops pointer.
     let ops = unsafe { (*dev).ops };
@@ -557,8 +538,8 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
             // `create` is the plain `extern "C"` driver hook and `dev`/`obj` are
             // the live device and object it expects.
             if create(dev, obj) != 0 {
-                // SAFETY: on refusal the adopted memfd and the object are still ours.
-                unsafe { memfd_close(h) };
+                // On refusal the adopted memfd and the object are still ours.
+                memfd_close(h);
                 // SAFETY: as above.
                 unsafe { cact_mm::kfree(obj as *mut u8) };
                 return -22;
@@ -567,10 +548,10 @@ pub extern "C" fn drm_gem_prime_fd_to_handle(
     }
 
     // SAFETY: `lock` is the device's lock word; the pair brackets the link update.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     drm_gem_link(dev, obj);
     // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
     let mut handle = 0u32;
     if drm_gem_handle_create(file, obj, &mut handle) != 0 {

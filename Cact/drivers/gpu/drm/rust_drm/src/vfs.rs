@@ -89,11 +89,13 @@ pub struct CactStat {
 
 const _: () = assert!(core::mem::size_of::<CactStat>() == 24);
 
-extern "C" {
-    /// Fill the generic `cact_stat_t` fields from a node (`rust_vfs`).  The
-    /// contract is the same as for `VfsOps::stat`: `node` is the node whose ops
-    /// table carries this hook and `buf` is a writable `cact_stat_t`.
-    pub fn vfs_fill_stat(node: *mut VfsNode, buf: *mut CactStat);
+/* ── vfs_fill_stat (rust_vfs) ───────────────────────────────────────────── */
+
+/// Fill the generic `cact_stat_t` fields from a node (`rust_vfs`).  The contract
+/// is the same as for `VfsOps::stat`: `node` is the node whose ops table carries
+/// this hook and `buf` is a writable `cact_stat_t`.
+pub fn vfs_fill_stat(node: *mut VfsNode, buf: *mut CactStat) {
+    kernel_rust::vfs::fill_stat(node as *mut c_void, buf as *mut c_void);
 }
 
 /* ── vfs_ops_t ──────────────────────────────────────────────────────────── */
@@ -142,14 +144,7 @@ const _: () = assert!(core::mem::size_of::<DevfsDriver>() == 56);
 
 /* ── devfs.h ────────────────────────────────────────────────────────────── */
 
-extern "C" {
-    pub fn register_chrdev(
-        name: *const u8,
-        flags: u32,
-        drv: *mut DevfsDriver,
-        drv_priv: *mut c_void,
-    ) -> *mut c_void;
-}
+pub use kernel_rust::devfs::register_chrdev;
 
 /* ── small C-string helpers (used by the devfs glue) ────────────────────── */
 

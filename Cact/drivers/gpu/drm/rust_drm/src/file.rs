@@ -49,10 +49,9 @@ extern "C" fn drm_node_stat(node: *mut VfsNode, buf: *mut CactStat) -> c_int {
     if node.is_null() || buf.is_null() {
         return 0;
     }
-    // SAFETY: the VFS calls this with the live node whose ops table carries
-    // this hook, and with a writable `cact_stat_t` (the same contract
-    // `vfs_fill_stat` documents).
-    unsafe { vfs_fill_stat(node, buf) };
+    // The VFS calls this with the live node whose ops table carries this hook,
+    // and with a writable `cact_stat_t`.
+    vfs_fill_stat(node, buf);
     // SAFETY: `node` is that live node; this reads its private device pointer.
     let dev = unsafe { (*node).priv_ as *mut DrmDevice };
     if dev.is_null() {

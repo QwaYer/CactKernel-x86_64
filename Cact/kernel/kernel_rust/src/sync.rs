@@ -222,6 +222,14 @@ pub fn current_task() -> *mut c_void {
     unsafe { sys::cact_current_task_get() }
 }
 
+/// Sleep the calling task for `ticks` 100 Hz timer ticks.  Must be called from
+/// task (not interrupt) context, which the DRM blocking paths are.
+pub fn sleep_ticks(ticks: u32) {
+    // SAFETY: `sched_sleep_ticks` is the scheduler's sleep entry point; the
+    // caller guarantees task context.
+    unsafe { sys::sched_sleep_ticks(ticks) };
+}
+
 /// `&'static mut` to the global scheduler IRQ spinlock.
 ///
 /// # Safety

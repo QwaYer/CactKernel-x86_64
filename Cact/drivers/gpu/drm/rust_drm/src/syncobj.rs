@@ -31,9 +31,15 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::eventfd;
+use kernel_rust::fs::alloc_fd;
+use kernel_rust::ptr;
+use kernel_rust::sync::sleep_ticks;
+use kernel_rust::user;
+
 use crate::ffi::drm_copy_in;
 use crate::gem::lock_ptr;
-use crate::structs::{DrmDevice, DrmFile, IrqSpinlock, Syncobj, SyncobjEventfdEntry};
+use crate::structs::{DrmDevice, DrmFile, Syncobj, SyncobjEventfdEntry};
 use crate::syncobj_state::SyncState;
 use crate::vfs::{
     copy_cstr, File, VfsFileOps, VfsNode, VFS_CHARDEVICE, VFS_POLLERR, VFS_POLLIN,
@@ -166,23 +172,6 @@ const DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE: u32 = 1 << 2;
 const SYNC_WAIT_MAX_TICKS: u32 = 30;
 const MAX_SYNCOBJ_HANDLES: usize = 64;
 
-extern "C" {
-
-    fn alloc_fd(node: *mut c_void) -> c_int;
-    fn sched_sleep_ticks(ticks: u32);
-    fn validate_user_ptr(ptr: *const c_void, size: u32) -> c_int;
-    fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-
-    /* fs/eventfd/eventfd.c — the eventfd an EVENTFD registration holds. */
-    fn eventfd_node_get(fd: c_int, out: *mut *mut VfsNode) -> c_int;
-    fn eventfd_node_put(node: *mut VfsNode);
-    fn eventfd_node_signal(node: *mut VfsNode, n: u64) -> c_int;
-
-    /* kernel/sync — the device bookkeeping lock, also used by the GEM paths. */
-    fn irq_spinlock_acquire(lock: *mut IrqSpinlock);
-    fn irq_spinlock_release(lock: *mut IrqSpinlock);
-}
-
 /* ── what an exported fd's node points at ───────────────────────────────── */
 
 #[repr(C)]
@@ -312,14 +301,14 @@ unsafe fn read_u32s(ptr: u64, out: &mut [u32]) -> bool {
         return false;
     }
     let bytes = (out.len() * 4) as u32;
-    // SAFETY: `user` is a non-null userspace pointer and `bytes` is exactly the size
-    // of `out`; this range-checks it.
-    if unsafe { validate_user_ptr(user, bytes) } == 0 {
+    // `user` is a non-null userspace pointer and `bytes` is exactly the size
+    // of `out`; the kernel's range check guards it.
+    if !user::validate_user_ptr(user, bytes) {
         return false;
     }
-    // SAFETY: the range check above passed, so `user` is a readable userspace range
+    // the range check above passed, so `user` is a readable userspace range
     // of `bytes` bytes and `out` is a writable buffer of that size.
-    unsafe { copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes) == 0 }
+    user::copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes)
 }
 
 unsafe fn read_u64s(ptr: u64, out: &mut [u64]) -> bool {
@@ -331,14 +320,14 @@ unsafe fn read_u64s(ptr: u64, out: &mut [u64]) -> bool {
         return false;
     }
     let bytes = (out.len() * 8) as u32;
-    // SAFETY: `user` is a non-null userspace pointer and `bytes` is exactly the size
-    // of `out`; this range-checks it.
-    if unsafe { validate_user_ptr(user, bytes) } == 0 {
+    // `user` is a non-null userspace pointer and `bytes` is exactly the size
+    // of `out`; the kernel's range check guards it.
+    if !user::validate_user_ptr(user, bytes) {
         return false;
     }
-    // SAFETY: the range check above passed, so `user` is a readable userspace range
+    // the range check above passed, so `user` is a readable userspace range
     // of `bytes` bytes and `out` is a writable buffer of that size.
-    unsafe { copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes) == 0 }
+    user::copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes)
 }
 
 unsafe fn write_u64s(ptr: u64, src: &[u64]) -> bool {
@@ -438,8 +427,8 @@ unsafe fn find_state(file: *mut DrmFile, handle: u32, point: u64, flags: u32) ->
             return -62; // -ETIME
         }
         ticks -= 1;
-        // SAFETY: `sched_sleep_ticks` suspends the calling task for one tick.
-        unsafe { sched_sleep_ticks(1) };
+        // `sleep_ticks` suspends the calling task for one tick.
+        sleep_ticks(1);
     }
 }
 
@@ -453,11 +442,11 @@ unsafe fn eventfd_register(dev: *mut DrmDevice, entry: SyncobjEventfdEntry) {
     // SAFETY: `dev` is live; the lock word belongs to it.
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock; nothing is called out to under it.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     // SAFETY: `dev` is live; the registration list is the device's own.
     unsafe { (*dev).syncobj_ev_fds.push(entry) };
     // SAFETY: `lock` is the device's lock, held since the acquire above.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 }
 
 /// Release every pending registration of a device that is being torn down,
@@ -472,16 +461,15 @@ pub(crate) unsafe fn eventfd_drop_all(dev: *mut DrmDevice) {
     let lock = unsafe { lock_ptr(dev) };
     // SAFETY: `lock` is the device's lock and nothing else holds it here; the
     // eventfds are released after the release below.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
     // SAFETY: `dev` is live; taking the list leaves an empty one behind.
     let entries = core::mem::take(unsafe { &mut (*dev).syncobj_ev_fds });
     // SAFETY: `lock` is the device's lock, held since the acquire above.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
     for e in entries {
-        // SAFETY: `e.node` is the reference the registration held, and it is not
-        // used again.
-        unsafe { eventfd_node_put(e.node) };
+        // `e.node` is the reference the registration held, and it is not used again.
+        eventfd::node_put(e.node as *mut c_void);
     }
 }
 
@@ -505,7 +493,7 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
     // SAFETY: `lock` is the device's lock and nothing else holds it here; the
     // mutex that `eventfd_node_signal` takes is only reached after the release
     // below, so no sleep happens under it.
-    unsafe { irq_spinlock_acquire(lock) };
+    ptr::as_mut(lock).acquire();
 
     // The object may be gone: a destroyed object has had its registrations
     // reaped already, but a device teardown can race a signaler, so the lookup
@@ -538,16 +526,16 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
     // registration cannot be lost.
     unsafe { (*dev).syncobj_ev_fds = keep };
     // SAFETY: `lock` is the device's lock, held since the acquire above.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
     for (node, signalled) in done {
         if signalled {
-            // SAFETY: `node` is an eventfd this device holds a reference to.
-            let _ = unsafe { eventfd_node_signal(node, 1) };
+            // `node` is an eventfd this device holds a reference to.
+            let _ = eventfd::node_signal(node as *mut c_void, 1);
         }
-        // SAFETY: `node` is the reference the registration just dropped held, and
-        // it is not used again.
-        unsafe { eventfd_node_put(node) };
+        // `node` is the reference the registration just dropped held, and it is
+        // not used again.
+        eventfd::node_put(node as *mut c_void);
     }
 }
 
@@ -689,9 +677,8 @@ pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_voi
     // SAFETY: `node` is the live node; storing its private export record.
     unsafe { (*node).priv_ = r as *mut c_void };
 
-    // SAFETY: `alloc_fd`'s contract wants a live node to install as the new fd's
-    // file.
-    let fd = unsafe { alloc_fd(node as *mut c_void) };
+    // `node` is the live node to install as the new fd's file.
+    let fd = alloc_fd(node as *mut c_void);
     if fd < 0 {
         // SAFETY: `r` and `node` were allocated above and not published.
         unsafe { cact_mm::kfree(r as *mut u8) };
@@ -936,9 +923,8 @@ pub extern "C" fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_
             return -62; // -ETIME
         }
         ticks -= 1;
-        // SAFETY: `sched_sleep_ticks` is a kernel service that suspends the calling
-        // task for the requested number of ticks.
-        unsafe { sched_sleep_ticks(1) };
+        // `sleep_ticks` suspends the calling task for one tick.
+        sleep_ticks(1);
     }
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 40)
 }
@@ -1124,9 +1110,8 @@ pub extern "C" fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_vo
             return -62; // -ETIME
         }
         ticks -= 1;
-        // SAFETY: `sched_sleep_ticks` is a kernel service that suspends the calling
-        // task for the requested number of ticks.
-        unsafe { sched_sleep_ticks(1) };
+        // `sleep_ticks` suspends the calling task for one tick.
+        sleep_ticks(1);
     }
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 48)
 }
@@ -1179,9 +1164,9 @@ pub extern "C" fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) ->
     let id = unsafe { (*o).id };
 
     let mut node: *mut VfsNode = core::ptr::null_mut();
-    // SAFETY: `eventfd_node_get` looks `req.fd` up in the calling task's table
-    // and, on success, hands back a reference this device now owns.
-    let rc = unsafe { eventfd_node_get(req.fd, &mut node as *mut *mut VfsNode) };
+    // `node_get` looks `req.fd` up in the calling task's table and, on success,
+    // hands back a reference this device now owns.
+    let rc = eventfd::node_get(req.fd, &mut node as *mut *mut VfsNode as *mut *mut c_void);
     if rc != 0 {
         return rc;
     }
@@ -1189,8 +1174,8 @@ pub extern "C" fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) ->
     // SAFETY: `file` is the caller's open client; this reads its device.
     let dev = unsafe { (*file).dev };
     if dev.is_null() {
-        // SAFETY: `node` is the reference just taken and nothing else owns it yet.
-        unsafe { eventfd_node_put(node) };
+        // `node` is the reference just taken and nothing else owns it yet.
+        eventfd::node_put(node as *mut c_void);
         return -22;
     }
     // SAFETY: `dev` is the live device; the registration goes on under the device

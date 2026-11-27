@@ -8,7 +8,7 @@
 //! talking to C lives here, once, and the rest of the graph calls the safe
 //! wrappers.
 
-use core::ffi::{c_char, c_void};
+use core::ffi::{c_char, c_int, c_void};
 
 use crate::cpu::VmxEptMap;
 use crate::sync::irq_spinlock_t;
@@ -78,4 +78,29 @@ extern "C" {
         drv_priv: *mut c_void,
     ) -> *mut c_void;
     pub fn unregister_chrdev(name: *const c_char) -> i32;
+
+    // ---- fs: fd table + shared RAM object (helper.h, memfd.h) -----------
+    pub fn alloc_fd(node: *mut c_void) -> c_int;
+    pub fn memfd_create(name: *const u8, name_len: u32, flags: c_int) -> c_int;
+    pub fn memfd_truncate(handle: c_int, size: u64) -> c_int;
+    pub fn memfd_close(handle: c_int) -> c_int;
+    pub fn memfd_ref(handle: c_int) -> c_int;
+    pub fn memfd_get_page(handle: c_int, idx: u32) -> *mut c_void;
+    pub fn memfd_size(handle: c_int) -> i64;
+    pub fn memfd_fd_handle(fd: c_int) -> c_int;
+    pub fn memfd_vnode_from_handle(handle: c_int, name: *const u8, size: u32) -> *mut c_void;
+
+    // ---- eventfd (fs/eventfd/eventfd.c) ---------------------------------
+    pub fn eventfd_node_get(fd: c_int, out: *mut *mut c_void) -> c_int;
+    pub fn eventfd_node_put(node: *mut c_void);
+    pub fn eventfd_node_signal(node: *mut c_void, n: u64) -> c_int;
+
+    // ---- VFS stat fill (rust_vfs) ---------------------------------------
+    pub fn vfs_fill_stat(node: *mut c_void, buf: *mut c_void);
+
+    // ---- page-table walk (kernel/memory/rust_mm) ------------------------
+    pub fn vmm_get_phys(pd: *mut u64, va: u64) -> u64;
+
+    // ---- scheduler sleep (proc/sched) -----------------------------------
+    pub fn sched_sleep_ticks(ticks: u32);
 }
