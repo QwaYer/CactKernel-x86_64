@@ -44,15 +44,6 @@ struct Aligned4K<T>(T);
 /// A page table: eight-byte entries, as the hardware reads them.
 type Table = [u64; TABLE_ENTRIES];
 
-/// The kernel's own address space — what `CR3` holds while the kernel runs.
-///
-/// The C side knows this symbol as `page_directory` and passes it to `vmm_map`,
-/// `vmm_get_phys` and friends as "the kernel map"; in long mode that map's root
-/// is the PML4, so the name in C predates the extra level but the meaning — the
-/// kernel address space — is the same one.
-#[unsafe(no_mangle)]
-static page_directory: KCell<Aligned4K<Table>> = KCell::new(Aligned4K([0u64; TABLE_ENTRIES]));
-
 /// PML4[0]: the kernel's low half.  With the identity alias gone, exactly one
 /// page is installed here — the AP trampoline (see [`PT_TRAMP`]) in window 0.
 /// The kernel's fixed MMIO windows are added later at `PDPT_LOW[3]` (VAs
@@ -157,12 +148,12 @@ pub extern "C" fn vmm_p2v(phys: u64) -> *mut u8 {
 
 /// The kernel page map — the PML4 the C side knows as `page_directory`.
 pub fn get_kernel_pd() -> *mut u64 {
-    page_directory.as_ptr().cast::<u64>()
+    kernel_rust::mm::page_directory()
 }
 
 /// The kernel page map as the table it really is.
 fn kernel_table() -> *mut u64 {
-    page_directory.as_ptr().cast::<u64>()
+    kernel_rust::mm::page_directory()
 }
 
 fn as_table(pd: *mut u64) -> *mut u64 {
@@ -397,7 +388,7 @@ fn build_kernel_map() {
 
     let pdpt_low = PDPT_LOW.as_ptr().cast::<u64>();
     let pdpt_high = PDPT_HIGH.as_ptr().cast::<u64>();
-    let pml4 = page_directory.as_ptr().cast::<u64>();
+    let pml4 = kernel_rust::mm::page_directory();
 
     // Kernel-image window: physical `[0, reserved_end)` at `KERNEL_VMA`, 2 MiB
     // write-back pages.  This is how the kernel reaches its own code, data and

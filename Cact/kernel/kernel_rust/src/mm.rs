@@ -4,9 +4,12 @@
 //! Kernel services the memory subsystem (`cact_mm`) calls but that do not belong
 //! to a more specific sibling: the zstd glue behind the compressed page pool,
 //! the Multiboot2 command-line lookup zswap's boot hook uses, and the fault
-//! dumper's frame print.
+//! dumper's frame print.  Each wraps a C symbol declared in [`crate::sys`].
 //!
-//! Each wraps a C symbol declared in [`crate::sys`].
+//! It also owns the kernel's page map (PML4) — the `#[no_mangle]` `page_directory`
+//! data symbol the C side and the C-declared `vmm_map`/`vmm_get_phys` see — so
+//! that `cact_mm` carries no `#[no_mangle]` of its own; `cact_mm` reaches it
+//! through [`page_directory`].
 
 use core::ffi::c_void;
 
@@ -54,4 +57,27 @@ pub fn dump_context_frame(regs: *const c_void, fault_addr: u64, signal: u32) {
     // SAFETY: `regs` is the live frame the entry stub built; the dumper only
     // reads it.
     unsafe { sys::dump_context_frame(regs, fault_addr, signal) };
+}
+
+// ---- the kernel page map (PML4) -------------------------------------------
+
+/// The kernel's own address space — what `CR3` holds while the kernel runs.
+#[repr(C, align(4096))]
+struct KernelPageTable([u64; 512]);
+
+/// The kernel's page map, as the `#[no_mangle]` **data** symbol the C side
+/// declares `extern uint64_t page_directory[512]` and passes to `vmm_map`,
+/// `vmm_get_phys` and friends as "the kernel map".  (In long mode that map's
+/// root is the PML4; the C name predates the extra level.)  The storage lives
+/// here so `cact_mm` holds no `#[no_mangle]`; it is reached via [`page_directory`].
+#[unsafe(export_name = "page_directory")]
+static mut PAGE_DIRECTORY: KernelPageTable = KernelPageTable([0u64; 512]);
+
+/// Address of the kernel's PML4 — the `page_directory` symbol the C side knows.
+/// Handed to `cact_mm` as the kernel page map (a kernel VA, exactly as the C
+/// symbol decays to).
+pub fn page_directory() -> *mut u64 {
+    // Only the symbol's address is taken (no reference, and the table is never
+    // read through Rust), so no `unsafe` is needed.
+    core::ptr::addr_of_mut!(PAGE_DIRECTORY) as *mut u64
 }
