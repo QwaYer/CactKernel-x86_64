@@ -62,7 +62,7 @@ static mut DNS_SEMA: Semaphore = Semaphore {
 /// stack lock (or be `stack_init`, before the stack is published), because the
 /// shared DNS socket handle and the `DNS_SEMA` semaphore below are also touched
 /// by `resolve_once`/`remove_socket` under that lock.
-pub unsafe fn init_socket(socks: &mut SocketSet<'static>) {
+pub fn init_socket(socks: &mut SocketSet<'static>) {
     // SAFETY: `DNS_HANDLE` is a `static mut Option<SocketHandle>` read and
     // written only under the stack lock that the caller contract (see # Safety)
     // requires, so this check cannot race `remove_socket`.
@@ -97,7 +97,7 @@ pub unsafe fn init_socket(socks: &mut SocketSet<'static>) {
 /// `socks` must be the same `SocketSet` passed to [`init_socket`], and the
 /// caller must hold the stack lock (or be tearing the stack down), so the shared
 /// DNS handle cannot be in use by a concurrent resolver.
-pub unsafe fn remove_socket(socks: &mut SocketSet<'static>) {
+pub fn remove_socket(socks: &mut SocketSet<'static>) {
     // SAFETY: as in `init_socket`, `DNS_HANDLE` is only mutated under the stack
     // lock held by the caller, and `take` operates on that tear-free `Option`.
     if let Some(h) = unsafe { (*core::ptr::addr_of_mut!(DNS_HANDLE)).take() } {

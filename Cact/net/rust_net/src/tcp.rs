@@ -260,7 +260,7 @@ pub(crate) fn tcp_poll_status(idx: usize) -> Option<(bool, bool, bool)> {
 /// The caller must be tearing the stack down (`stack_teardown`) while holding
 /// `STACK_LOCK`, with `STACK_READY` already cleared, so no other CPU or task can
 /// be touching the TCP slots or their smoltcp sockets.
-pub(crate) unsafe fn reset_tcp_smoltcp_state() {
+pub(crate) fn reset_tcp_smoltcp_state() {
     // SAFETY: the caller contract (see # Safety) excludes every other user of
     // these statics for the duration of the call, so the writes below are the
     // only accesses in flight.

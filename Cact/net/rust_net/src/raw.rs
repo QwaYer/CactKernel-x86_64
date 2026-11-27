@@ -236,7 +236,7 @@ pub fn sync_raw_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
 ///
 /// The caller must be tearing the stack down while holding `STACK_LOCK` with
 /// `STACK_READY` cleared, so no other user of these statics can be running.
-pub(crate) unsafe fn reset_raw_smoltcp_state() {
+pub(crate) fn reset_raw_smoltcp_state() {
     // SAFETY: the caller contract excludes every other user for the duration.
     unsafe { RAW_HANDLE = [None; RAW_SOCK_MAX] };
     // SAFETY: as above.

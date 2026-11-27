@@ -18,6 +18,8 @@
 use core::net::{Ipv4Addr, Ipv6Addr};
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use kernel_rust::ptr;
+
 use smoltcp::iface::{Config, Interface, Route, SocketHandle, SocketSet, SocketStorage};
 use smoltcp::phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken};
 use smoltcp::socket::icmp;
@@ -96,7 +98,7 @@ pub(crate) fn is_loopback_ipv4_host(ip: u32) -> bool {
 /// run `iface.poll()` at the same time: that corrupts smoltcp's rings and, because
 /// each slot's PHY stages received frames in its own ring, one frame is silently
 /// overwritten and lost.
-static mut STACK_LOCK: [u32; 2] = [0; 2]; // kernel irq_spinlock_t: spin + saved flags
+static STACK_LOCK: cact_sync::IrqLock = cact_sync::IrqLock::new();
 
 /// Protects the RX rings (`phy.rx*`) alone.
 ///
@@ -109,19 +111,14 @@ static mut STACK_LOCK: [u32; 2] = [0; 2]; // kernel irq_spinlock_t: spin + saved
 /// Lock order is `STACK_LOCK` -> `RX_LOCK` and never the reverse: `receive()` runs
 /// under `STACK_LOCK` (via `iface.poll`) and takes `RX_LOCK` inside it, while the RX
 /// path takes `RX_LOCK` alone.
-static mut RX_LOCK: [u32; 2] = [0; 2]; // kernel irq_spinlock_t: spin + saved flags
+static RX_LOCK: cact_sync::IrqLock = cact_sync::IrqLock::new();
 
 pub(crate) struct StackGuard;
 
 impl StackGuard {
     #[inline]
     pub(crate) fn new() -> Self {
-        // SAFETY: `STACK_LOCK` is a kernel-lifetime `irq_spinlock_t` static;
-        // `addr_of_mut!` yields its stable, properly aligned address, which is what the
-        // kernel's C acquire/release pair expects.
-        unsafe {
-            ffi_kernel::irq_spinlock_acquire(core::ptr::addr_of_mut!(STACK_LOCK).cast());
-        }
+        STACK_LOCK.lock();
         StackGuard
     }
 }
@@ -129,11 +126,7 @@ impl StackGuard {
 impl Drop for StackGuard {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: as in `StackGuard::new` — `STACK_LOCK` is a live kernel-lifetime
-        // lock, and this is the matching release for the acquire in `StackGuard::new`.
-        unsafe {
-            ffi_kernel::irq_spinlock_release(core::ptr::addr_of_mut!(STACK_LOCK).cast());
-        }
+        STACK_LOCK.unlock();
     }
 }
 
@@ -144,12 +137,7 @@ pub(crate) struct RxGuard;
 impl RxGuard {
     #[inline]
     fn new() -> Self {
-        // SAFETY: `RX_LOCK` is a kernel-lifetime `irq_spinlock_t` static;
-        // `addr_of_mut!` yields its stable, properly aligned address for the kernel's
-        // C acquire/release pair.
-        unsafe {
-            ffi_kernel::irq_spinlock_acquire(core::ptr::addr_of_mut!(RX_LOCK).cast());
-        }
+        RX_LOCK.lock();
         RxGuard
     }
 }
@@ -157,11 +145,7 @@ impl RxGuard {
 impl Drop for RxGuard {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: as in `RxGuard::new` — `RX_LOCK` is a live kernel-lifetime lock, and
-        // this is the matching release for the acquire in `RxGuard::new`.
-        unsafe {
-            ffi_kernel::irq_spinlock_release(core::ptr::addr_of_mut!(RX_LOCK).cast());
-        }
+        RX_LOCK.unlock();
     }
 }
 
@@ -172,9 +156,7 @@ pub static mut STACK_READY: bool = false;
 /// kernel-lifetime `STACK_READY` flag, for crates/modules that must not write
 /// `unsafe`.
 pub fn stack_ready() -> bool {
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool`; a byte load
-    // cannot tear and reads either 0 or 1.
-    unsafe { STACK_READY }
+    ptr::read(core::ptr::addr_of!(STACK_READY))
 }
 
 /// Slot a NIC driver's `poll()` is running for, so `netif_rx` (which lives in the
@@ -297,10 +279,7 @@ fn note_v6_offlink_drop(slot: usize) {
     if slot >= NET_IF_MAX {
         return;
     }
-    // SAFETY: only the TX path (under `STACK_LOCK`, held by `iface.poll`) and
-    // `sync_iface_addrs_from_config` (whose callers hold it) touch this static, so
-    // this borrow is exclusive; `slot` is bounds-checked above.
-    let logged = unsafe { &mut (*core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot] };
+    let logged = &mut ptr::as_mut(core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot];
     if *logged {
         return;
     }
@@ -462,9 +441,7 @@ pub(crate) fn sync_iface_addrs_from_config(iface: &mut Interface, slot: usize, m
 
     // The slot's addressing just changed, so an off-link IPv6 drop it reported
     // before may now be avoidable — let the next one be logged again.
-    // SAFETY: `V6_DROP_LOGGED` is only touched under `STACK_LOCK` (this function's
-    // callers all hold it), like the TX path that reads it.
-    unsafe { (*core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot] = false; }
+    ptr::as_mut(core::ptr::addr_of_mut!(V6_DROP_LOGGED))[slot] = false;
 
     // Join ff02::1 (all-nodes) so Router Advertisements reach the interface and
     // userspace can run SLAAC/DHCPv6.  Joining is idempotent; the solicited-node
@@ -481,9 +458,7 @@ pub(crate) fn resync_slot_addrs(slot: usize) {
         return;
     }
     let _stack_guard = StackGuard::new();
-    // SAFETY: `IFACES` is only used under `STACK_LOCK`, held here; `slot` is
-    // bounds-checked above, so this is an in-bounds, exclusive borrow.
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
     let mac = s.mac;
     if let Some(iface) = s.iface.as_mut() {
         sync_iface_addrs_from_config(iface, slot, mac);
@@ -668,10 +643,7 @@ fn frame_involves_loopback(frame: &[u8], slot: usize) -> bool {
 /// The driver bound to slot `slot`, or null.  Read-only fast path for the TX
 /// token, which runs under `STACK_LOCK` and only needs the pointer.
 fn slot_drv(slot: usize) -> *mut NetDriver {
-    // SAFETY: `IFACES` is a kernel-lifetime static only mutated under `STACK_LOCK`,
-    // which the caller holds; `slot < NET_IF_MAX` is the caller's contract, and an
-    // aligned pointer load cannot tear.
-    unsafe { (*core::ptr::addr_of!(IFACES))[slot].drv }
+    ptr::as_ref(core::ptr::addr_of!(IFACES))[slot].drv
 }
 
 /// The device view handed to `Interface::poll`: it borrows a slot's PHY and carries
@@ -781,14 +753,8 @@ impl TxToken for CactTxToken<'_> {
                 // bounded by `PHY_MTU` (the token's buffer length).
                 let p = skb::skb_put(skb, len as u16);
                 if !p.is_null() {
-                    // SAFETY: `p` points to `len` writable bytes inside `skb`
-                    // and `this.buf` is a local frame buffer, so the two ranges
-                    // cannot overlap.
-                    unsafe { core::ptr::copy_nonoverlapping(this.buf.as_ptr(), p, len) };
-                    // SAFETY: `nic` is the slot's driver pointer (non-null checked
-                    // above) and reading its `send` field only copies the function
-                    // pointer.
-                    let send = unsafe { (*nic).send };
+                    ptr::copy_nonoverlapping(this.buf.as_ptr(), p, len);
+                    let send = ptr::as_ref(nic).send;
                     if let Some(send) = send {
                         // The driver's TX entry point consumes `skb` (or frees
                         // it); it is a plain `extern "C"` pointer, so the call
@@ -904,7 +870,7 @@ impl Device for SlotDev<'_> {
 /// Build the smoltcp interface, socket set and kernel ICMP socket for slot `slot`
 /// with hardware address `mac`.  Idempotent.  Runs under `STACK_LOCK`.
 fn slot_build(slot: usize, mac: [u8; 6]) {
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
     if s.inited {
         return;
     }
@@ -926,25 +892,18 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     };
     let new_iface = Interface::new(cfg, &mut dev, now);
     s.iface = Some(new_iface);
-    // SAFETY: `SOCKET_STORAGE[slot]` is the kernel-lifetime backing array for this
-    // slot's one `SocketSet`; the `'static` borrow it yields cannot alias `IFACES`.
     let storage: &'static mut [SocketStorage<'static>] =
-        unsafe { &mut (&mut (*core::ptr::addr_of_mut!(SOCKET_STORAGE))[slot])[..] };
+        ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(SOCKET_STORAGE))[slot].as_mut_ptr(), SOCKET_SET_SIZE);
     let new_set = SocketSet::new(storage);
     s.socks = Some(new_set);
 
     // Per-slot kernel ICMP socket (used by the `ping` syscall).
     let socks = s.socks.as_mut().unwrap();
-    // SAFETY: `ICMP_RX_META[slot]` is a kernel-lifetime packet-metadata static owned
-    // by this slot, handed to smoltcp only through this one socket, under the lock.
-    let rx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_RX_META))[slot])[..] };
-    // SAFETY: as above, for `ICMP_RX_PAYLOAD`.
-    let rx_payload = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_RX_PAYLOAD))[slot])[..] };
+    let rx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_RX_META))[slot].as_mut_ptr(), 4);
+    let rx_payload = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_RX_PAYLOAD))[slot].as_mut_ptr(), 512);
     let icmp_rx = icmp::PacketBuffer::new(rx_meta, rx_payload);
-    // SAFETY: as above, for `ICMP_TX_META`.
-    let tx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_TX_META))[slot])[..] };
-    // SAFETY: as above, for `ICMP_TX_PAYLOAD`.
-    let tx_payload = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_TX_PAYLOAD))[slot])[..] };
+    let tx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_TX_META))[slot].as_mut_ptr(), 4);
+    let tx_payload = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_TX_PAYLOAD))[slot].as_mut_ptr(), 512);
     let icmp_tx = icmp::PacketBuffer::new(tx_meta, tx_payload);
     let icmp_sock = icmp::Socket::new(icmp_rx, icmp_tx);
     s.icmp_handle = Some(socks.add(icmp_sock));
@@ -956,9 +915,7 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     // The shared DNS resolver socket lives on slot 0 only; other slots carry no
     // resolver (DNS follows the default interface).
     if slot == 0 {
-        // SAFETY: `init_socket`'s contract needs the caller to hold the stack lock
-        // (or be `stack_init`, before the stack is published), which is this call.
-        unsafe { crate::dns_resolve::init_socket(socks) };
+        crate::dns_resolve::init_socket(socks);
     }
 
     s.inited = true;
@@ -966,16 +923,12 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
 
 pub fn stack_init() {
     let _stack_guard = StackGuard::new();
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` read under
-    // `STACK_LOCK`; a byte load reads either 0 or 1.
-    if unsafe { STACK_READY } {
+    if ptr::read(core::ptr::addr_of!(STACK_READY)) {
         return;
     }
     // The boot slot carries a placeholder MAC; a NIC adopts it on registration.
     slot_build(0, DEFAULT_NIC_MAC);
-    // SAFETY: `STACK_READY` is published last, under the stack lock, once slot 0
-    // is fully built.
-    unsafe { STACK_READY = true };
+    ptr::write(core::ptr::addr_of_mut!(STACK_READY), true);
     ffi_kernel::klog_static(
         ffi_kernel::LOG_OK,
         b"net: smoltcp stack ready (per-NIC slots, poll from net_poll_task)\0",
@@ -988,21 +941,17 @@ pub fn stack_init() {
 pub(crate) fn iface_attach(slot: usize, drv: *mut NetDriver, mac: [u8; 6]) {
     let _stack_guard = StackGuard::new();
     slot_build(slot, mac);
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
     s.drv = drv;
     s.mac = mac;
     s.name = [0; 16];
     if !drv.is_null() {
-        // SAFETY: `drv` is a live descriptor (the caller's contract) and every
-        // in-tree driver points `name` at a `'static` NUL-terminated literal.
-        let np = unsafe { (*drv).name };
+        let np = ptr::as_ref(drv).name;
         if !np.is_null() {
             let cap = s.name.len();
             let mut k = 0usize;
             while k + 1 < cap {
-                // SAFETY: `np` is a NUL-terminated literal, so byte `k` is in bounds
-                // until the terminator is reached.
-                let c = unsafe { *np.add(k) } as u8;
+                let c = ptr::read(np.wrapping_add(k).cast::<u8>());
                 if c == 0 {
                     break;
                 }
@@ -1029,7 +978,7 @@ pub(crate) fn iface_attach(slot: usize, drv: *mut NetDriver, mac: [u8; 6]) {
 /// live sockets survive a NIC unload); a higher slot only loses its driver binding.
 pub(crate) fn iface_detach(slot: usize) {
     let _stack_guard = StackGuard::new();
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
     s.drv = core::ptr::null_mut();
     s.name = [0; 16];
     if slot == 0 {
@@ -1061,42 +1010,30 @@ pub fn stack_teardown() {
     // Release the shared DNS socket from slot 0's set before it is dropped.
     // SAFETY: the caller contract (see # Safety) excludes every other user of the
     // stack, and `STACK_LOCK` is held, so slot 0's `SocketSet` may be borrowed here.
-    let socks0 = unsafe { (*core::ptr::addr_of_mut!(IFACES))[0].socks.as_mut() };
+    let socks0 = ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[0].socks.as_mut();
     if let Some(socks) = socks0 {
-        // SAFETY: `socks` is the live slot-0 `SocketSet` and this call holds the
-        // stack lock, which `remove_socket`'s contract requires.
-        unsafe { crate::dns_resolve::remove_socket(socks) };
+        crate::dns_resolve::remove_socket(socks);
     }
     // SAFETY: exclusive access to the stack statics (see # Safety); the RX lock is
     // taken so a frame arriving concurrently is either already queued (and goes
     // away with the reset) or sees the cleared flag and is freed.
     {
         let _rx_guard = RxGuard::new();
-        // SAFETY: exclusive access to `IFACES` (see # Safety) under the RX lock.
-        let slots = unsafe { &mut *core::ptr::addr_of_mut!(IFACES) };
+        let slots = ptr::as_mut(core::ptr::addr_of_mut!(IFACES));
         for s in slots.iter_mut() {
             *s = IfaceSlot::new();
         }
-        // SAFETY: exclusive access to `SOCKET_STORAGE` (see # Safety); every slot set
-        // was just dropped, so its backing storage is reset before a rebuild.
-        let storage = unsafe { &mut *core::ptr::addr_of_mut!(SOCKET_STORAGE) };
+        let storage = ptr::as_mut(core::ptr::addr_of_mut!(SOCKET_STORAGE));
         for arr in storage.iter_mut() {
             for st in arr.iter_mut() {
                 *st = SocketStorage::EMPTY;
             }
         }
-        // SAFETY: `STACK_READY` is cleared under the RX lock so a concurrent frame
-        // either is already queued or is freed.
-        unsafe { STACK_READY = false };
+        ptr::write(core::ptr::addr_of_mut!(STACK_READY), false);
     }
-    // SAFETY: still under `STACK_LOCK` with the stack torn down, so the TCP and
-    // UDP reset helpers have exclusive access to their tables, as their own
-    // contracts require.
-    unsafe { crate::tcp::reset_tcp_smoltcp_state() };
-    // SAFETY: as above, for the UDP tables.
-    unsafe { crate::udp::reset_udp_smoltcp_state() };
-    // SAFETY: as above — stack teardown, `STACK_READY` already cleared.
-    unsafe { crate::raw::reset_raw_smoltcp_state() };
+    crate::tcp::reset_tcp_smoltcp_state();
+    crate::udp::reset_udp_smoltcp_state();
+    crate::raw::reset_raw_smoltcp_state();
 }
 
 /// Poll every slot: first drain each NIC's RX (calling its `poll()` while tagging
@@ -1111,9 +1048,7 @@ pub fn stack_poll() {
         if drv.is_null() {
             continue;
         }
-        // SAFETY: `drv` is a live registered descriptor (non-null checked) and
-        // reading its `poll` field only copies the function pointer.
-        let poll = unsafe { (*drv).poll };
+        let poll = ptr::as_ref(drv).poll;
         if let Some(poll) = poll {
             // `poll` is the driver's RX entry point; it is called here while
             // `STACK_LOCK` is held, as the driver contract requires.
@@ -1122,18 +1057,14 @@ pub fn stack_poll() {
         }
     }
     CURRENT_RX_SLOT.store(0, Ordering::Release);
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool`; a byte load
-    // reads either 0 or 1.
-    if !unsafe { STACK_READY } {
+    if !ptr::read(core::ptr::addr_of!(STACK_READY)) {
         return;
     }
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick counter;
     // it is callable from task context.
     let now = ticks_to_instant(ffi_kernel::timer_ticks_get());
     for slot in 0..NET_IF_MAX {
-        // SAFETY: `IFACES` is only used under `STACK_LOCK`, held here, so these are
-        // disjoint field borrows of one live slot.
-        let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+        let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
         if !s.inited {
             continue;
         }
@@ -1188,16 +1119,11 @@ pub fn stack_enqueue_rx(skb: *mut Skb) {
         let _rx_guard = RxGuard::new();
         // STACK_READY is read under the lock so a frame cannot slip into the ring
         // between `stack_teardown` resetting it and clearing the flag.
-        // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool`; a byte load
-        // reads either 0 or 1 and cannot tear.
-        if !unsafe { STACK_READY } {
+        if !ptr::read(core::ptr::addr_of!(STACK_READY)) {
             skb::kfree_skb(skb);
             return;
         }
-        // SAFETY: `IFACES` is the kernel-lifetime slot table whose ring is protected
-        // by the `RX_LOCK` just taken, so this borrow is exclusive and is dead before
-        // the wake-up below; `slot` is in range.
-        let phy = unsafe { &mut (*core::ptr::addr_of_mut!(IFACES))[slot].phy };
+        let phy = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot].phy;
         let next = (phy.rx_tail + 1) % RX_QUEUE_LEN;
         if next == phy.rx_head {
             // Full: the stack is not draining as fast as the NIC fills it.  Drop the
@@ -1206,10 +1132,7 @@ pub fn stack_enqueue_rx(skb: *mut Skb) {
             phy.rx_dropped = phy.rx_dropped.wrapping_add(1);
             false
         } else {
-            // SAFETY: `src` points to `len` initialised bytes of `skb` and
-            // `phy.rx[phy.rx_tail]` is a `PHY_MTU`-byte slot with `len <= PHY_MTU`; the
-            // two are distinct objects.
-            unsafe { core::ptr::copy_nonoverlapping(src, phy.rx[phy.rx_tail].as_mut_ptr(), len) };
+            ptr::copy_nonoverlapping(src, phy.rx[phy.rx_tail].as_mut_ptr(), len);
             phy.rx_len[phy.rx_tail] = len;
             phy.rx_tail = next;
             true
@@ -1226,9 +1149,7 @@ pub fn stack_enqueue_rx(skb: *mut Skb) {
 /// Frames dropped because slot 0's RX queue was full (diagnostics).
 pub fn stack_rx_dropped() -> u32 {
     let _rx_guard = RxGuard::new();
-    // SAFETY: `IFACES` is a kernel-lifetime static whose `rx_dropped` counter is only
-    // written under `RX_LOCK`, which `_rx_guard` holds here; a `u32` load cannot tear.
-    unsafe { (*core::ptr::addr_of!(IFACES))[0].phy.rx_dropped }
+    ptr::as_ref(core::ptr::addr_of!(IFACES))[0].phy.rx_dropped
 }
 
 /// Run `f` against slot `slot`'s interface and socket set, holding `STACK_LOCK`.
@@ -1241,9 +1162,7 @@ where
         return None;
     }
     let _stack_guard = StackGuard::new();
-    // SAFETY: `IFACES` is only used under `STACK_LOCK`, which this call holds, so the
-    // borrow is exclusive for the closure body; `slot` is bounds-checked above.
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
     let iface = s.iface.as_mut()?;
     let socks = s.socks.as_mut()?;
     Some(f(iface, socks))
@@ -1285,17 +1204,11 @@ fn icmp_echo_request(dst: SockAddr, id: u16, seq: u16) -> bool {
         SockAddr::V6(a) => crate::config::route_slot_v6(a),
     };
     let _stack_guard = StackGuard::new();
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` read under
-    // `STACK_LOCK`; a byte load reads either 0 or 1.
-    if !unsafe { STACK_READY } {
+    if !ptr::read(core::ptr::addr_of!(STACK_READY)) {
         return false;
     }
-    // SAFETY: `IFACES` is only used under `STACK_LOCK`, which this call holds; `slot`
-    // comes from `route_slot` and is in range.
-    let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
-    // SAFETY: `icmp_handle` is only accessed under `STACK_LOCK`; copying the
-    // `Option` cannot tear.
-    let Some(icmp_h) = (unsafe { *core::ptr::addr_of!(s.icmp_handle) }) else {
+    let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
+    let Some(icmp_h) = s.icmp_handle else {
         return false;
     };
     let (Some(_iface), Some(socks)) = (s.iface.as_mut(), s.socks.as_mut()) else {
@@ -1310,16 +1223,11 @@ fn icmp_echo_request(dst: SockAddr, id: u16, seq: u16) -> bool {
     };
     if need_replace {
         let _ = socks.remove(icmp_h);
-        // SAFETY: `ICMP_*[slot]` are kernel-lifetime packet-buffer statics owned by
-        // this slot, handed to smoltcp only through this one socket, under the lock.
-        let rx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_RX_META))[slot])[..] };
-        // SAFETY: as above, for `ICMP_RX_PAYLOAD`.
-        let rx_payload = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_RX_PAYLOAD))[slot])[..] };
+        let rx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_RX_META))[slot].as_mut_ptr(), 4);
+        let rx_payload = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_RX_PAYLOAD))[slot].as_mut_ptr(), 512);
         let icmp_rx = icmp::PacketBuffer::new(rx_meta, rx_payload);
-        // SAFETY: as above, for `ICMP_TX_META`.
-        let tx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_TX_META))[slot])[..] };
-        // SAFETY: as above, for `ICMP_TX_PAYLOAD`.
-        let tx_payload = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(ICMP_TX_PAYLOAD))[slot])[..] };
+        let tx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_TX_META))[slot].as_mut_ptr(), 4);
+        let tx_payload = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(ICMP_TX_PAYLOAD))[slot].as_mut_ptr(), 512);
         let icmp_tx = icmp::PacketBuffer::new(tx_meta, tx_payload);
         let icmp_sock = icmp::Socket::new(icmp_rx, icmp_tx);
         s.icmp_handle = Some(socks.add(icmp_sock));
@@ -1405,14 +1313,11 @@ pub fn icmp_try_recv_reply(id: u16, seq: u16) -> Option<(IpAddress, usize)> {
     // Search every built slot: the reply may arrive on the interface the request
     // was routed to, which the caller does not pass back to us.
     for slot in 0..NET_IF_MAX {
-        // SAFETY: `IFACES` is only used under `STACK_LOCK`, held here.
-        let s = unsafe { &mut *core::ptr::addr_of_mut!(IFACES[slot]) };
+        let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[slot];
         if !s.inited {
             continue;
         }
-        // SAFETY: `icmp_handle` is read under the stack lock; copying the `Option`
-        // cannot tear.
-        let Some(handle) = (unsafe { *core::ptr::addr_of!(s.icmp_handle) }) else {
+        let Some(handle) = s.icmp_handle else {
             continue;
         };
         let Some(socks) = s.socks.as_mut() else {

@@ -89,6 +89,41 @@ impl Default for irq_spinlock_t {
     }
 }
 
+/// A kernel IRQ-saving spinlock usable from a `static`: `lock()`/`unlock()` take
+/// `&self` (interior mutability), so a guard type can hold one without `static
+/// mut`.
+#[repr(C)]
+pub struct IrqLock(core::cell::UnsafeCell<irq_spinlock_t>);
+
+// SAFETY: every access goes through `lock`/`unlock`, which serialize on the inner
+// IRQ-saving spinlock.
+unsafe impl Sync for IrqLock {}
+
+impl IrqLock {
+    pub const fn new() -> Self {
+        IrqLock(core::cell::UnsafeCell::new(irq_spinlock_t::new()))
+    }
+
+    /// Acquire the lock (not recursive); interrupts are disabled until `unlock`.
+    pub fn lock(&self) {
+        // SAFETY: the caller takes the lock; the `&mut` to the inner lock is
+        // consumed by `acquire` and no other thread holds it.
+        unsafe { (*self.0.get()).acquire() }
+    }
+
+    /// Release the lock, restoring interrupts if they were enabled on acquire.
+    pub fn unlock(&self) {
+        // SAFETY: the matching release for `lock`.
+        unsafe { (*self.0.get()).release() }
+    }
+}
+
+impl Default for IrqLock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// # Safety
 ///
 /// `lock` must be non-null and properly aligned, and must point to live storage

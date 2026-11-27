@@ -168,7 +168,7 @@ unsafe fn pick_ephemeral() -> u16 {
 /// The caller must be tearing the stack down (`stack_teardown`) while holding
 /// `STACK_LOCK`, with `STACK_READY` already cleared, so no other CPU or task can
 /// be using the UDP slots or their smoltcp sockets.
-pub(crate) unsafe fn reset_udp_smoltcp_state() {
+pub(crate) fn reset_udp_smoltcp_state() {
     // SAFETY: the caller contract (see # Safety) excludes every other user of
     // these statics for the duration of the call, so the writes below are the
     // only ones in flight.
