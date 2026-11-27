@@ -56,13 +56,13 @@ pub fn ping_wait_host(
         return -1;
     }
     let timeout_us = (timeout_ms as u64).saturating_mul(1000);
-    // SAFETY: `ktime_get_usec` is a kernel C service, safe to call from task
+    // `ktime_get_usec` is a kernel C service, safe to call from task
     // context; it only reads the monotonic clock.
     let t0 = crate::ffi_kernel::ktime_get_usec();
     loop {
         crate::stack::stack_poll();
         if let Some((src_addr, bytes)) = crate::stack::icmp_try_recv_reply(id, seq) {
-            // SAFETY: as for `t0` — the same monotonic-clock read.
+            // as for `t0` — the same monotonic-clock read.
             let rtt = crate::ffi_kernel::ktime_get_usec().saturating_sub(t0);
             // A v4 probe only accepts a v4 responder; a v6 reply with the same
             // id/seq is reported as 0.0.0.0 rather than mistaken for the answer.
@@ -83,7 +83,7 @@ pub fn ping_wait_host(
         if crate::socket::signal_pending() {
             return -4; // EINTR
         }
-        // SAFETY: as for `t0` — the same monotonic-clock read.
+        // as for `t0` — the same monotonic-clock read.
         let elapsed = crate::ffi_kernel::ktime_get_usec().saturating_sub(t0);
         if elapsed >= timeout_us {
             return -1;
@@ -91,7 +91,7 @@ pub fn ping_wait_host(
         if elapsed < 250_000 {
             // Poll every millisecond while the reply is still plausible: a 10 ms
             // tick sleep would inflate every WAN RTT by that much.
-            // SAFETY: `ktime_busy_wait_us` is a kernel C service that spins for
+            // `ktime_busy_wait_us` is a kernel C service that spins for
             // the requested microseconds; it touches no memory of ours.
             crate::ffi_kernel::ktime_busy_wait_us(1000);
         } else {
@@ -129,14 +129,14 @@ pub fn ping_wait6_host(
         return -1;
     }
     let timeout_us = (timeout_ms as u64).saturating_mul(1000);
-    // SAFETY: `ktime_get_usec` is a kernel C service, safe to call from task
+    // `ktime_get_usec` is a kernel C service, safe to call from task
     // context; it only reads the monotonic clock.
     let t0 = crate::ffi_kernel::ktime_get_usec();
     loop {
         crate::stack::stack_poll();
         if let Some((src, bytes)) = crate::stack::icmp_try_recv_reply(id, seq) {
             if let smoltcp::wire::IpAddress::Ipv6(v6) = src {
-                // SAFETY: as for `t0` — the same monotonic-clock read.
+                // as for `t0` — the same monotonic-clock read.
                 let rtt = crate::ffi_kernel::ktime_get_usec().saturating_sub(t0);
                 if !src_addr_out.is_null() {
                     let o = v6.octets();
@@ -154,13 +154,13 @@ pub fn ping_wait6_host(
         if crate::socket::signal_pending() {
             return -4; // EINTR
         }
-        // SAFETY: as for `t0` — the same monotonic-clock read.
+        // as for `t0` — the same monotonic-clock read.
         let elapsed = crate::ffi_kernel::ktime_get_usec().saturating_sub(t0);
         if elapsed >= timeout_us {
             return -1;
         }
         if elapsed < 250_000 {
-            // SAFETY: `ktime_busy_wait_us` is a kernel C service that spins for
+            // `ktime_busy_wait_us` is a kernel C service that spins for
             // the requested microseconds; it touches no memory of ours.
             crate::ffi_kernel::ktime_busy_wait_us(1000);
         } else {

@@ -267,7 +267,7 @@ fn flush_dns_recv(socks: &mut SocketSet<'static>) {
 }
 
 fn pick_ephemeral_port() -> u16 {
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let t = ffi_kernel::timer_ticks_get();
     0xc000u16 | (t as u16 & 0x3fff)
@@ -373,7 +373,7 @@ fn send_query(query: &[u8], server: DnsServer, flush: bool) -> bool {
 }
 
 fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16) -> Option<DnsAnswer> {
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let id = (ffi_kernel::timer_ticks_get() as u16) ^ 0xa5a5;
     let mut w = 0usize;
@@ -404,7 +404,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
         return None;
     }
 
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let start = ffi_kernel::timer_ticks_get();
     let deadline = start.saturating_add(DNS_TIMEOUT_TICKS);
@@ -412,7 +412,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
     // One retransmission: a single lost UDP packet (or a server that dropped
     // the first query) used to fail the whole lookup after a silent 3 s wait.
     let mut next_retry = start.saturating_add(DNS_RETRY_TICKS);
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     while ffi_kernel::timer_ticks_get() < deadline {
         stack::stack_poll();
@@ -422,7 +422,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
         if crate::socket::signal_pending() {
             return None;
         }
-        // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+        // `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
         let now = ffi_kernel::timer_ticks_get();
         if now >= next_wake {
@@ -440,9 +440,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
             next_retry = deadline;
             let _ = send_query(&query_buf[..qlen], server, false);
         }
-        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
-        // count; it takes no pointers and is callable from task context.
-        unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+        sched::timer_wheel::sleep_ticks(1);
     }
     None
 }

@@ -265,7 +265,7 @@ pub fn rust_net_nic_ifname(index: u32, out: *mut u8, cap: u32) -> i32 {
 
 /// Link state for userspace network managers: 1 while a NIC driver is registered.
 pub fn rust_net_link_is_up() -> i32 {
-    // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer; an aligned
+    // `active_nic` is a kernel-lifetime `static mut` pointer; an aligned
     // pointer-sized load cannot tear, and `is_null` only inspects the value.
     if kernel_rust::net::active_nic().is_null() {
         0

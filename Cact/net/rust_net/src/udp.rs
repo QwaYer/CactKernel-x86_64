@@ -105,7 +105,7 @@ fn pick_slot_addr(idx: usize, dst: SockAddr) -> usize {
 /// is placed on `slot`.
 fn ensure_placed(idx: usize, slot: usize) -> bool {
     let r = stack::with_slot_socks(slot, |socks| {
-        // SAFETY: `with_slot_socks` holds `STACK_LOCK`, which guards `UDP_SLOT`/
+        // `with_slot_socks` holds `STACK_LOCK`, which guards `UDP_SLOT`/
         // `UDP_HANDLE`, and `idx` is in range.
         let cur = ptr::as_ref(core::ptr::addr_of!(UDP_SLOT))[idx];
         if cur >= 0 {
@@ -175,7 +175,7 @@ pub(crate) fn reset_udp_smoltcp_state() {
 }
 
 fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
-    // SAFETY: `idx < UDP_SOCK_MAX` is required by every caller (each one
+    // `idx < UDP_SOCK_MAX` is required by every caller (each one
     // bounds-checks its slot index first), so `UDP_HANDLE[idx]` is in bounds; all
     // accesses run under the stack lock, so no other task can be mutating the
     // slot at the same time.
@@ -212,7 +212,7 @@ pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
     // Called from `stack_poll` under `STACK_LOCK`; only the sockets placed on
     // `slot` are synced (the others live in other slots' sets or are unplaced).
     for idx in 0..UDP_SOCK_MAX {
-        // SAFETY: called under `STACK_LOCK`, the same lock every other user of
+        // called under `STACK_LOCK`, the same lock every other user of
         // `udp_socks`/`UDP_SLOT`/`UDP_HANDLE` takes, and `idx` is bounded by
         // `UDP_SOCK_MAX`, so these reads are in bounds and uncontented.
         if ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].used == 0 {
@@ -231,7 +231,7 @@ pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
 }
 
 pub fn udp_sock_alloc() -> i32 {
-    // SAFETY: `STACK_READY` is a `static mut bool` written by `stack_init`/
+    // `STACK_READY` is a `static mut bool` written by `stack_init`/
     // `stack_teardown`; a byte load cannot tear, and reading it as false makes
     // this call fail closed.
     if !stack::stack_ready() {
@@ -268,7 +268,7 @@ pub fn udp_sock_free(idx: i32) {
         return;
     }
     let i = idx as usize;
-    // SAFETY: `i` is bounds-checked above; the reads are guarded by `STACK_LOCK`
+    // `i` is bounds-checked above; the reads are guarded by `STACK_LOCK`
     // (`with_stack_lock`), as every access to these tables is.
     let (slot, handle) = stack::with_stack_lock(|| {
         (
@@ -299,7 +299,7 @@ pub(crate) fn udp_sock_local(idx: i32, family: u16) -> (SockAddr, u16) {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX {
         return (SockAddr::any(family), 0);
     }
-    // SAFETY: `idx` is bounds-checked above; the reads are guarded by
+    // `idx` is bounds-checked above; the reads are guarded by
     // `STACK_LOCK`, as every access to these tables is.
     let (port, l4, l6) = stack::with_stack_lock(|| {
         (
@@ -353,7 +353,7 @@ pub fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 {
         return -1;
     }
     let i = idx as usize;
-    // SAFETY: `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
+    // `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
     if stack::with_stack_lock(|| ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].used) == 0 {
         return -1;
     }
@@ -394,7 +394,7 @@ pub(crate) fn udp_sock_peer(idx: i32) -> (u32, u16) {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX {
         return (0, 0);
     }
-    // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER` read is in
+    // `idx` is bounds-checked above, so the `UDP_PEER` read is in
     // bounds; the element is a plain `(u32, u16)` so the read cannot tear.
     ptr::as_ref(core::ptr::addr_of!(UDP_PEER))[idx as usize]
 }
@@ -404,7 +404,7 @@ pub(crate) fn udp_sock_peer6(idx: i32) -> Option<([u8; 16], u16)> {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX {
         return None;
     }
-    // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER6` read is in
+    // `idx` is bounds-checked above, so the `UDP_PEER6` read is in
     // bounds; the element is a plain `([u8;16], u16)` so the read cannot tear.
     let (a, p) = ptr::as_ref(core::ptr::addr_of!(UDP_PEER6))[idx as usize];
     if a == [0u8; 16] || p == 0 {
@@ -426,7 +426,7 @@ pub(crate) fn udp_can_send(idx: usize) -> bool {
         return false;
     }
     let r = stack::with_slot_socks(slot as usize, |socks| {
-        // SAFETY: `idx < UDP_SOCK_MAX` is checked above, so `UDP_HANDLE[idx]` is
+        // `idx < UDP_SOCK_MAX` is checked above, so `UDP_HANDLE[idx]` is
         // in bounds; the handle is an `Option<SocketHandle>` (Copy), so the read
         // cannot tear, and the socket is resolved through this closure's own
         // `SocketSet` under the stack lock.
@@ -439,7 +439,7 @@ pub(crate) fn udp_can_send(idx: usize) -> bool {
 }
 
 pub fn udp_sock_find_by_port(port: u16) -> *mut UdpSock {
-    // SAFETY: the scan walks only the fixed-length inline array `udp_socks`, so
+    // the scan walks only the fixed-length inline array `udp_socks`, so
     // it stays in bounds; the returned pointer refers to a kernel-lifetime
     // static that the caller only uses until the slot is freed.
     for s in ptr::as_mut(core::ptr::addr_of_mut!(udp_socks)).iter_mut() {
@@ -740,7 +740,7 @@ pub(crate) fn udp_poll_status(idx: usize) -> (bool, bool) {
         return (false, false);
     }
     let r = stack::with_slot_socks(slot as usize, |socks| {
-        // SAFETY: `idx < UDP_SOCK_MAX` is checked above, so this slot read is in
+        // `idx < UDP_SOCK_MAX` is checked above, so this slot read is in
         // bounds; it is plain Copy data whose read cannot tear, and the socket is
         // reached through this closure's own `SocketSet` under `STACK_LOCK`.
         if ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].used == 0 {

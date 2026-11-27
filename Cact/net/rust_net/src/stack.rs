@@ -876,10 +876,10 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     }
     let eth = EthernetAddress::from_bytes(&mac);
     let mut cfg = Config::new(HardwareAddress::Ethernet(eth));
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick counter;
+    // `timer_ticks_get` is a kernel C service that reads the tick counter;
     // it takes no pointers and is callable from this path.
     cfg.random_seed = u64::from(ffi_kernel::timer_ticks_get());
-    // SAFETY: as above — the same monotonic tick read.
+    // as above — the same monotonic tick read.
     let now = ticks_to_instant(ffi_kernel::timer_ticks_get());
     // The device is a view over this slot's PHY; `Interface::new` does not retain
     // it, so the borrow ends before `s.iface` is stored below.
@@ -967,7 +967,7 @@ pub(crate) fn iface_attach(slot: usize, drv: *mut NetDriver, mac: [u8; 6]) {
     // Drop any frames staged by the placeholder before the NIC was attached.
     {
         let _rx_guard = RxGuard::new();
-        // SAFETY: the RX lock and the stack lock are held and no other stack user
+        // the RX lock and the stack lock are held and no other stack user
         // exists on this single-threaded driver path, so this reset cannot race the
         // RX producer.
         s.phy = CactPhy::new();
@@ -992,7 +992,7 @@ pub(crate) fn iface_detach(slot: usize) {
     }
     {
         let _rx_guard = RxGuard::new();
-        // SAFETY: the RX lock and the stack lock are held and no other stack user
+        // the RX lock and the stack lock are held and no other stack user
         // exists on this single-threaded teardown path, so this reset cannot race
         // the RX producer.
         s.phy = CactPhy::new();
@@ -1008,13 +1008,13 @@ pub(crate) fn iface_detach(slot: usize) {
 pub fn stack_teardown() {
     let _stack_guard = StackGuard::new();
     // Release the shared DNS socket from slot 0's set before it is dropped.
-    // SAFETY: the caller contract (see # Safety) excludes every other user of the
+    // the caller contract (see # Safety) excludes every other user of the
     // stack, and `STACK_LOCK` is held, so slot 0's `SocketSet` may be borrowed here.
     let socks0 = ptr::as_mut(core::ptr::addr_of_mut!(IFACES))[0].socks.as_mut();
     if let Some(socks) = socks0 {
         crate::dns_resolve::remove_socket(socks);
     }
-    // SAFETY: exclusive access to the stack statics (see # Safety); the RX lock is
+    // exclusive access to the stack statics (see # Safety); the RX lock is
     // taken so a frame arriving concurrently is either already queued (and goes
     // away with the reset) or sees the cleared flag and is freed.
     {
@@ -1060,7 +1060,7 @@ pub fn stack_poll() {
     if !ptr::read(core::ptr::addr_of!(STACK_READY)) {
         return;
     }
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick counter;
+    // `timer_ticks_get` is a kernel C service that reads the tick counter;
     // it is callable from task context.
     let now = ticks_to_instant(ffi_kernel::timer_ticks_get());
     for slot in 0..NET_IF_MAX {
@@ -1214,7 +1214,7 @@ fn icmp_echo_request(dst: SockAddr, id: u16, seq: u16) -> bool {
     let (Some(_iface), Some(socks)) = (s.iface.as_mut(), s.socks.as_mut()) else {
         return false;
     };
-    // SAFETY: `icmp_ident_bound` is a kernel-lifetime slot field read under the stack
+    // `icmp_ident_bound` is a kernel-lifetime slot field read under the stack
     // lock.
     let ident_bound = s.icmp_ident_bound;
     let need_replace = {

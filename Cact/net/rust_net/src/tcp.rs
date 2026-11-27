@@ -149,7 +149,7 @@ pub(crate) fn with_tcp_socket<R>(idx: i32, f: impl FnOnce(&mut smoltcp::socket::
     }
     crate::stack::with_slot_socks(slot as usize, |socks| {
         tcp_lock();
-        // SAFETY: the index is bounds-checked above (`idx < TCP_MAX_SOCKETS`), so
+        // the index is bounds-checked above (`idx < TCP_MAX_SOCKETS`), so
         // indexing the copied `TCP_HANDLE` array is in bounds; every read/write
         // of `TCP_HANDLE` and of the smoltcp `SocketSet` socket happens between
         // `tcp_lock`/`tcp_unlock` (interrupts off), which the poll thread also
@@ -368,7 +368,7 @@ pub(crate) fn tcp_free_slot(i: usize) {
     if i >= TCP_MAX_SOCKETS {
         return;
     }
-    // SAFETY: `i < TCP_MAX_SOCKETS` is checked above, and this take happens under
+    // `i < TCP_MAX_SOCKETS` is checked above, and this take happens under
     // `tcp_lock`, the same lock every other reader/writer of `TCP_HANDLE` takes.
     let h = {
         tcp_lock();
@@ -485,7 +485,7 @@ const EINTR: i32 = 4;
 /// answer.  Block until that happens — otherwise the caller's very next
 /// `write()` lands on a socket that cannot send yet and fails with a bare -1.
 fn wait_connected(sock: i32) -> i32 {
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let deadline = ffi_kernel::timer_ticks_get().saturating_add(CONNECT_TIMEOUT_TICKS);
     loop {
@@ -509,13 +509,11 @@ fn wait_connected(sock: i32) -> i32 {
         if crate::socket::signal_pending() {
             return -EINTR;
         }
-        // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+        // `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
         if ffi_kernel::timer_ticks_get() >= deadline {
             return -ETIMEDOUT;
         }
-        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
-        // count; it takes no pointers and is callable from task context.
         sched::timer_wheel::sleep_ticks(1);
     }
 }
@@ -531,7 +529,7 @@ pub fn tcp_connect6(sock: i32, addr: *const u8, dst_port: u16) -> i32 {
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
+    // the caller contract (see # Safety) makes `addr` a live 16-byte
     // readable buffer and `a6` is a distinct local array.
     ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
     tcp_connect_addr(sock, SockAddr::V6(a6), dst_port)
@@ -551,7 +549,7 @@ fn tcp_connect_addr(sock: i32, dst: SockAddr, dst_port: u16) -> i32 {
         return -1;
     }
     let r = stack::with_slot(slot, |iface, socks| {
-        // SAFETY: the handle is read under `tcp_lock`, as every access is; `i` was
+        // the handle is read under `tcp_lock`, as every access is; `i` was
         // bounds-checked above.
         let h = {
             tcp_lock();
@@ -574,7 +572,7 @@ fn tcp_connect_addr(sock: i32, dst: SockAddr, dst_port: u16) -> i32 {
         // `connect`), and `sock` was bounds-checked above.
         let local_port = {
             tcp_lock();
-            // SAFETY: `i` is bounds-checked above and `tcp_lock` is held, so
+            // `i` is bounds-checked above and `tcp_lock` is held, so
             // this slot read cannot race another `connect`.
             let bound = ptr::as_ref(core::ptr::addr_of!(tcp_sockets))[i].local_port;
             let p = if bound != 0 {
@@ -587,14 +585,14 @@ fn tcp_connect_addr(sock: i32, dst: SockAddr, dst_port: u16) -> i32 {
                 // using.
                 let mut chosen = 0u16;
                 for _ in 0..(65535 - 49152 + 1) {
-                    // SAFETY: `NEXT_EPHEMERAL` is read/written under `tcp_lock`,
+                    // `NEXT_EPHEMERAL` is read/written under `tcp_lock`,
                     // so the counter cannot race another `connect`.
                     let cand = ptr::read(core::ptr::addr_of!(NEXT_EPHEMERAL));
                     let next = if cand == u16::MAX { 49152 } else { cand + 1 };
                     ptr::write(core::ptr::addr_of_mut!(NEXT_EPHEMERAL), next);
                     let mut taken = false;
                     for k in 0..TCP_MAX_SOCKETS {
-                        // SAFETY: `k` is in range and `tcp_lock` is held, so the
+                        // `k` is in range and `tcp_lock` is held, so the
                         // slot read cannot race the poll thread.
                         let tk = ptr::as_ref(core::ptr::addr_of!(tcp_sockets))[k];
                         if tk.used != 0 && tk.local_port == cand {
@@ -668,7 +666,7 @@ pub fn tcp_listen(sock: i32, local_port: u16) -> i32 {
         return -1;
     }
     let r = stack::with_slot_socks(slot, |socks| {
-        // SAFETY: the handle is read under `tcp_lock`, as every access is; `i` was
+        // the handle is read under `tcp_lock`, as every access is; `i` was
         // bounds-checked above.
         let h = {
             tcp_lock();
@@ -742,7 +740,7 @@ fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
     {
         return false;
     }
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     let deadline = ffi_kernel::timer_ticks_get().saturating_add(CLOSE_TIMEOUT_TICKS);
     loop {
@@ -755,13 +753,11 @@ fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
             Some(_) => {}
             None => return false,
         }
-        // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+        // `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
         if ffi_kernel::timer_ticks_get() >= deadline {
             return false;
         }
-        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
-        // count; it takes no pointers and is callable from task context.
         sched::timer_wheel::sleep_ticks(1);
     }
 }
@@ -772,7 +768,7 @@ pub fn tcp_close(sock: i32) -> i32 {
     }
     let i = sock as usize;
     let slot = tcp_slot_of(i);
-    // SAFETY: `TCP_HANDLE[i]` is read under `tcp_lock`, and `i` derives from the
+    // `TCP_HANDLE[i]` is read under `tcp_lock`, and `i` derives from the
     // bounds check at the top of the function, so the read is in bounds and cannot
     // race the poll thread.
     let handle = {
@@ -886,7 +882,7 @@ pub fn tcp_accept_transfer(listen_idx: i32, child_idx: i32) -> i32 {
     }
     let slot = slot as usize;
     let (lh, lp) = {
-        // SAFETY: `with_slot_socks` holds the slot's `STACK_LOCK` for the closure and
+        // `with_slot_socks` holds the slot's `STACK_LOCK` for the closure and
         // `tcp_lock` serializes `TCP_HANDLE` against the poll thread; both indices were
         // bounds-checked by the caller, so the handle read is in bounds.
         let r = stack::with_slot_socks(slot, |socks| {

@@ -81,7 +81,7 @@ pub struct HttpResp {
 
 /// Current kernel tick counter (safe wrapper).
 fn now_ticks() -> u32 {
-    // SAFETY: ffi_kernel re-exports the C timer.
+    // ffi_kernel re-exports the C timer.
     ffi_kernel::timer_ticks_get()
 }
 

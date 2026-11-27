@@ -2,27 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-// Safety baseline: unsafe ops inside `unsafe fn` bodies must be explicit, and every
-// `unsafe` block needs a SAFETY comment (the latter enforced under clippy).
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(unused_unsafe)]
-#![deny(static_mut_refs)]
-#![deny(clippy::undocumented_unsafe_blocks)]
-#![deny(clippy::missing_safety_doc)]
+// This crate talks to the C kernel only through `kernel_rust`, the graph's one
+// `unsafe` crate: the `extern "C"` surface and the raw-pointer/`static mut`
+// plumbing both live there, so this crate holds no `unsafe` of its own and
+// forbids it outright.
+#![forbid(unsafe_code)]
+// The C-ABI hooks this crate defines (`extern "C" fn` VFS operations) still have
+// to be FFI-safe, so that check stays in addition to the `unsafe_code` ban.
 #![deny(improper_ctypes, improper_ctypes_definitions)]
-// Additional safety lints (all verified zero-hit when enabled, 2026-09-26):
-// transmute misuse, byte-vs-element count confusion and assumptions that
-// uninitialised memory is valid become hard errors instead of silent warnings.
-#![deny(clippy::transmute_ptr_to_ref)]
-#![deny(clippy::transmute_ptr_to_ptr)]
-#![deny(clippy::useless_transmute)]
-#![deny(clippy::size_of_in_element_count)]
-#![deny(clippy::uninit_assumed_init)]
-#![deny(invalid_reference_casting)]
-// Finally, at most one unsafe operation per `unsafe` block, so every block is
-// small enough to audit on its own (the same maximal tightening applied to the
-// scheduler).
-#![deny(clippy::multiple_unsafe_ops_per_block)]
 
 //! In-kernel TCP/IP stack (smoltcp): Ethernet shim, sockets, DNS helpers, and
 //! integration hooks for the C networking layer.
