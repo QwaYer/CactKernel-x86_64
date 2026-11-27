@@ -359,8 +359,7 @@ pub(crate) fn age() {
 }
 
 /// Number of live flows.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_conn_count() -> i32 {
+pub fn rust_net_fw_conn_count() -> i32 {
     let _guard = StackGuard::new();
     // SAFETY: `CONNS` is only touched under the stack lock, which `_guard`
     // holds; the borrow is shared and dead before the guard drops.
@@ -375,8 +374,7 @@ pub extern "C" fn rust_net_fw_conn_count() -> i32 {
 ///
 /// `out` may be null (the call then returns -1); if non-null it must point to a
 /// writable, properly aligned [`CactFwConn`] that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) -> i32 {
+pub unsafe fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) -> i32 {
     if out.is_null() {
         return -1;
     }
@@ -431,8 +429,7 @@ pub unsafe extern "C" fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) ->
 }
 
 /// Forget every tracked flow.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_conn_flush() -> i32 {
+pub fn rust_net_fw_conn_flush() -> i32 {
     let _guard = StackGuard::new();
     // SAFETY: `CONNS` is only touched under the stack lock, which `_guard`
     // holds; the borrow is exclusive for the call and dead before the guard

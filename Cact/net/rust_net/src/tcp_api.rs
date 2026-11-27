@@ -44,8 +44,7 @@ fn place_tcp(idx: usize, slot: usize) -> i32 {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn tcp_socket() -> i32 {
+pub fn tcp_socket() -> i32 {
     // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and
     // cleared by `stack_teardown`; a byte load cannot tear, and reading it as
     // false fails the call closed.
@@ -136,8 +135,7 @@ fn wait_connected(sock: i32) -> i32 {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
+pub fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
     tcp_connect_addr(sock, SockAddr::V4(dst_ip), dst_port)
 }
 
@@ -146,8 +144,7 @@ pub extern "C" fn tcp_connect(sock: i32, dst_ip: u32, dst_port: u16) -> i32 {
 /// # Safety
 ///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn tcp_connect6(sock: i32, addr: *const u8, dst_port: u16) -> i32 {
+pub unsafe fn tcp_connect6(sock: i32, addr: *const u8, dst_port: u16) -> i32 {
     if addr.is_null() {
         return -1;
     }
@@ -277,8 +274,7 @@ fn tcp_connect_addr(sock: i32, dst: SockAddr, dst_port: u16) -> i32 {
     wait_connected(sock)
 }
 
-#[no_mangle]
-pub extern "C" fn tcp_listen(sock: i32, local_port: u16) -> i32 {
+pub fn tcp_listen(sock: i32, local_port: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
@@ -318,8 +314,7 @@ pub extern "C" fn tcp_listen(sock: i32, local_port: u16) -> i32 {
 ///
 /// `data` must point to `len` readable bytes that stay live for the duration of
 /// the call (it may be null, in which case the call returns -1).
-#[no_mangle]
-pub unsafe extern "C" fn tcp_send(sock: i32, data: *mut u8, len: u16) -> i32 {
+pub unsafe fn tcp_send(sock: i32, data: *mut u8, len: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS || data.is_null() {
         return -1;
     }
@@ -398,8 +393,7 @@ fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn tcp_close(sock: i32) -> i32 {
+pub fn tcp_close(sock: i32) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
@@ -473,8 +467,7 @@ pub extern "C" fn tcp_close(sock: i32) -> i32 {
     0
 }
 
-#[no_mangle]
-pub extern "C" fn tcp_shutdown_wr(sock: i32) -> i32 {
+pub fn tcp_shutdown_wr(sock: i32) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS {
         return -1;
     }
@@ -492,8 +485,7 @@ pub extern "C" fn tcp_shutdown_wr(sock: i32) -> i32 {
 ///
 /// `buf` must point to `max_len` writable bytes that stay live for the duration
 /// of the call (it may be null, in which case the call returns -1).
-#[no_mangle]
-pub unsafe extern "C" fn tcp_recv(sock: i32, buf: *mut u8, max_len: u16) -> i32 {
+pub unsafe fn tcp_recv(sock: i32, buf: *mut u8, max_len: u16) -> i32 {
     if sock < 0 || sock as usize >= TCP_MAX_SOCKETS || buf.is_null() {
         return -1;
     }

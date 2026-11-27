@@ -75,11 +75,12 @@ fn nic_slot_for_index(index: u32) -> Option<usize> {
     None
 }
 
-#[no_mangle]
-pub static mut active_nic: *mut NetDriver = core::ptr::null_mut();
-#[no_mangle]
+/// `active_nic` used to be a `#[no_mangle]` static here; it is a C-visible
+/// symbol (driver modules read it through ksym), so its storage now lives in
+/// `kernel_abi` and this crate reads/writes it via `kernel_rust::net`.
+#[allow(non_upper_case_globals)]
 pub static mut my_mac: MacAddr = MacAddr { b: [0; 6] };
-#[no_mangle]
+#[allow(non_upper_case_globals)]
 pub static mut net_sema: Semaphore = Semaphore {
     guard: cact_sync::spinlock_t::new(),
     count: core::sync::atomic::AtomicI32::new(0),
@@ -124,8 +125,7 @@ const NET_POLL_PERIOD_TICKS: u32 = 10;
 /// be initialised (function pointers either valid or NULL), because this
 /// function reads them and stores `drv` in the crate-wide `active_nic`, which
 /// every later TX/RX path dereferences.
-#[no_mangle]
-pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
+pub unsafe fn register_netdev(drv: *mut NetDriver) {
     if drv.is_null() {
         return;
     }
@@ -175,7 +175,7 @@ pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
     let (pdrv, pmac) = primary_of(table);
     // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer written
     // only here and in `unregister_netdev`, on this same single-threaded path.
-    unsafe { active_nic = pdrv };
+    kernel_rust::net::set_active_nic(pdrv.cast());
     // SAFETY: as above, for the kernel-lifetime `my_mac` static.
     unsafe { my_mac = pmac };
     ffi_kernel::klog_static(ffi_kernel::LOG_OK, b"net: NIC driver registered\0");
@@ -184,14 +184,13 @@ pub unsafe extern "C" fn register_netdev(drv: *mut NetDriver) {
 /// Remove a NIC from the registry (symmetric to registration).  Unloading a
 /// secondary NIC leaves the active datapath untouched; unloading the primary
 /// promotes the next live NIC, or drops the stack back to loopback-only.
-#[no_mangle]
-pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
+pub fn unregister_netdev(drv: *mut NetDriver) {
     if drv.is_null() {
         return;
     }
     // SAFETY: `active_nic` is read on the single-threaded teardown path; an
     // aligned pointer load cannot tear.
-    let was_primary = unsafe { active_nic == drv };
+    let was_primary = kernel_rust::net::active_nic() == drv.cast();
     let mut removed_slot: Option<usize> = None;
     // SAFETY: `NIC_TABLE` is mutated only here and in `register_netdev`, on the
     // single-threaded teardown path; the exclusive borrow ends below.
@@ -215,7 +214,7 @@ pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
     let (pdrv, pmac) = primary_of(table);
     // SAFETY: `active_nic`/`my_mac` are kernel-lifetime statics written only on
     // this path and in `register_netdev`.
-    unsafe { active_nic = pdrv };
+    kernel_rust::net::set_active_nic(pdrv.cast());
     if !was_primary {
         return;
     }
@@ -232,8 +231,7 @@ pub extern "C" fn unregister_netdev(drv: *mut NetDriver) {
 }
 
 /// Number of registered NICs (live entries in the registry).
-#[no_mangle]
-pub extern "C" fn rust_net_nic_count() -> i32 {
+pub fn rust_net_nic_count() -> i32 {
     // SAFETY: `NIC_TABLE` is a kernel-lifetime static read from a syscall path;
     // every field is a scalar, so the shared borrow cannot tear.
     let table = unsafe { &*core::ptr::addr_of!(NIC_TABLE) };
@@ -243,8 +241,7 @@ pub extern "C" fn rust_net_nic_count() -> i32 {
 /// Interface slot the `index`-th live NIC is bound to (0-based registry slot), or
 /// -1 when out of range.  This is the slot its L3 state (address, sockets) lives
 /// under in `stack`.
-#[no_mangle]
-pub extern "C" fn rust_net_nic_slot(index: u32) -> i32 {
+pub fn rust_net_nic_slot(index: u32) -> i32 {
     match nic_slot_for_index(index) {
         Some(s) => s as i32,
         None => -1,
@@ -258,8 +255,7 @@ pub extern "C" fn rust_net_nic_slot(index: u32) -> i32 {
 ///
 /// `out` may be null (the call then returns -1), but if non-null it must point
 /// to at least 6 writable bytes that stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_nic_mac(index: u32, out: *mut u8) -> i32 {
+pub unsafe fn rust_net_nic_mac(index: u32, out: *mut u8) -> i32 {
     if out.is_null() {
         return -1;
     }
@@ -284,8 +280,7 @@ pub unsafe extern "C" fn rust_net_nic_mac(index: u32, out: *mut u8) -> i32 {
 ///
 /// `out` may be null (the call then returns -1); if non-null it must point to
 /// at least `cap` writable bytes that stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_nic_ifname(index: u32, out: *mut u8, cap: u32) -> i32 {
+pub unsafe fn rust_net_nic_ifname(index: u32, out: *mut u8, cap: u32) -> i32 {
     if out.is_null() || cap == 0 {
         return -1;
     }
@@ -320,11 +315,10 @@ pub unsafe extern "C" fn rust_net_nic_ifname(index: u32, out: *mut u8, cap: u32)
 }
 
 /// Link state for userspace network managers: 1 while a NIC driver is registered.
-#[no_mangle]
-pub extern "C" fn rust_net_link_is_up() -> i32 {
+pub fn rust_net_link_is_up() -> i32 {
     // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer; an aligned
     // pointer-sized load cannot tear, and `is_null` only inspects the value.
-    if unsafe { active_nic.is_null() } {
+    if kernel_rust::net::active_nic().is_null() {
         0
     } else {
         1
@@ -338,14 +332,13 @@ pub extern "C" fn rust_net_link_is_up() -> i32 {
 ///
 /// `out` may be null (the call then returns -1), but if non-null it must point
 /// to at least 6 writable bytes that stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_get_mac(out: *mut u8) -> i32 {
+pub unsafe fn rust_net_get_mac(out: *mut u8) -> i32 {
     if out.is_null() {
         return -1;
     }
     // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer read from a
     // syscall path; an aligned pointer load cannot tear.
-    if unsafe { active_nic.is_null() } {
+    if kernel_rust::net::active_nic().is_null() {
         return -1;
     }
     // SAFETY: `addr_of!` forms a pointer to the live `my_mac.b` static field
@@ -367,20 +360,19 @@ pub unsafe extern "C" fn rust_net_get_mac(out: *mut u8) -> i32 {
 ///
 /// `out` may be null (the call then returns -1); if non-null it must point to
 /// at least `cap` writable bytes that stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_get_ifname(out: *mut u8, cap: u32) -> i32 {
+pub unsafe fn rust_net_get_ifname(out: *mut u8, cap: u32) -> i32 {
     if out.is_null() || cap == 0 {
         return -1;
     }
     // SAFETY: `active_nic` is a kernel-lifetime `static mut` pointer read from a
     // syscall path; an aligned pointer load cannot tear.
-    if unsafe { active_nic.is_null() } {
+    if kernel_rust::net::active_nic().is_null() {
         return -1;
     }
     // SAFETY: the null test above proved `active_nic` points at a live
     // `NetDriver` (it is only cleared by `unregister_netdev`, on the
     // single-threaded teardown path), so reading its `name` field is valid.
-    let name = unsafe { (*active_nic).name };
+    let name = unsafe { (*kernel_rust::net::active_nic().cast::<NetDriver>()).name };
     if name.is_null() {
         return -1;
     }
@@ -405,8 +397,7 @@ pub unsafe extern "C" fn rust_net_get_ifname(out: *mut u8, cap: u32) -> i32 {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn net_init() {
+pub fn net_init() {
     // SAFETY: `net_sema` is a kernel-lifetime semaphore static; `sema_init`
     // initialises it once, before any task can wait on it (this runs once from
     // the single-threaded boot path, after the scheduler exists).
@@ -436,8 +427,7 @@ pub extern "C" fn net_init() {
 /// `skb` must be null or a live, initialised [`Skb`] the caller hands over: the
 /// stack either queues or frees it exactly once, so the caller must not touch it
 /// afterwards.
-#[no_mangle]
-pub unsafe extern "C" fn netif_rx(skb: *mut Skb) {
+pub unsafe fn netif_rx(skb: *mut Skb) {
     // SAFETY: this only forwards `skb`; the caller contract above is what makes
     // `stack_enqueue_rx`'s own `# Safety` requirement hold.
     unsafe {
@@ -451,8 +441,7 @@ pub unsafe extern "C" fn netif_rx(skb: *mut Skb) {
 ///
 /// As [`netif_rx`]: `skb` must be null or a live, initialised [`Skb`] that this
 /// call takes ownership of.
-#[no_mangle]
-pub unsafe extern "C" fn net_receive_packet(skb: *mut Skb) {
+pub unsafe fn net_receive_packet(skb: *mut Skb) {
     // SAFETY: this only forwards `skb`; the caller contract above is what makes
     // `netif_rx`'s own `# Safety` requirement hold.
     unsafe {
@@ -461,15 +450,13 @@ pub unsafe extern "C" fn net_receive_packet(skb: *mut Skb) {
 }
 
 /// Wake `net_poll_task` after a NIC RX IRQ (stable alias for driver modules).
-#[no_mangle]
-pub extern "C" fn net_driver_irq_wake() {
+pub fn net_driver_irq_wake() {
     // SAFETY: net_sema is a kernel-lifetime static.
     unsafe {
         ffi_kernel::up(core::ptr::addr_of_mut!(net_sema));
     }
 }
 
-#[no_mangle]
-pub extern "C" fn net_poll() {
+pub fn net_poll() {
     stack::stack_poll();
 }

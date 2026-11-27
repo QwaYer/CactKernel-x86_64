@@ -89,8 +89,7 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
 
     case CACT_SOCKCTL_LISTEN: {
         if (ks->kind != KS_TCP) return -1;
-        extern tcp_socket_t tcp_sockets[];
-        tcp_socket_t *s = &tcp_sockets[ks->proto_idx];
+        tcp_socket_t *s = rust_net_tcp_socket((unsigned int)ks->proto_idx);
         return tcp_listen(ks->proto_idx, s->local_port);
     }
 
@@ -170,7 +169,7 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
                 ks->so_keepalive = (uint8_t)!!a.val;
                 if (ks->kind == KS_TCP && ks->proto_idx >= 0 &&
                     ks->proto_idx < TCP_MAX_SOCKETS)
-                    tcp_sockets[ks->proto_idx].keepalive = ks->so_keepalive;
+                    rust_net_tcp_socket((unsigned int)ks->proto_idx)->keepalive = ks->so_keepalive;
                 return 0;
             case SO_ERROR:
                 return -1;
@@ -181,7 +180,7 @@ int sock_ioctl_dispatch(vfs_node_t *node, uint32_t cmd, void *arg) {
                 ks->tcp_nodelay = (uint8_t)!!a.val;
                 if (ks->kind == KS_TCP && ks->proto_idx >= 0 &&
                     ks->proto_idx < TCP_MAX_SOCKETS)
-                    tcp_sockets[ks->proto_idx].nodelay = ks->tcp_nodelay;
+                    rust_net_tcp_socket((unsigned int)ks->proto_idx)->nodelay = ks->tcp_nodelay;
                 return 0;
             }
         }

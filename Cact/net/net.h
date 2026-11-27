@@ -25,7 +25,7 @@ typedef struct {
     uint8_t b[6];
 } __attribute__((packed)) mac_addr_t;
 
-extern mac_addr_t my_mac;
+/* `my_mac` lives in Rust (cact_net); C no longer reads the symbol directly. */
 
 /* Broadcast MAC */
 #define MAC_BROADCAST ((mac_addr_t){{0xFF,0xFF,0xFF,0xFF,0xFF,0xFF}})
@@ -83,7 +83,7 @@ void register_netdev(net_driver_t* drv);
 void unregister_netdev(net_driver_t* drv);
 void net_init(void);                  /* called from kernel_setup_hardware() */
 void net_poll(void);                  /* call periodically from scheduler    */
-extern semaphore_t net_sema;
+/* `net_sema` lives in Rust (cact_net); C no longer reads the symbol directly. */
 void netif_rx(skb_t* skb);        /* drivers call this on RX             */
 
 /* Stable alias for loadable modules / external driver sources */

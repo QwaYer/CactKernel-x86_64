@@ -95,7 +95,18 @@ pub(crate) fn tcp_unlock() {
 
 static TCP_SAVED_FLAGS: AtomicU32 = AtomicU32::new(0);
 
-#[no_mangle]
+/// Pointer to TCP slot `idx`'s C-mirror row, for the C-side accessor
+/// (`kernel_abi::rust_net_tcp_socket`).  Null when `idx` is out of range.
+pub fn tcp_socket_ptr(idx: u32) -> *mut core::ffi::c_void {
+    if idx as usize >= TCP_MAX_SOCKETS {
+        return core::ptr::null_mut();
+    }
+    // SAFETY: `idx` is bounds-checked above; this takes the address of a row of
+    // the kernel-lifetime table without forming a reference.
+    unsafe { core::ptr::addr_of_mut!(tcp_sockets[idx as usize]) as *mut core::ffi::c_void }
+}
+
+#[allow(non_upper_case_globals)]
 pub static mut tcp_sockets: [TcpSocket; TCP_MAX_SOCKETS] = [TcpSocket {
     used: 0,
     state: TCP_CLOSED,

@@ -49,8 +49,7 @@ const _: () = assert!(core::mem::size_of::<CactIfaceInfo>() == 116);
 /// or 0 when the stack is not up.  With no NIC the list is loopback-only, so `lo`
 /// is index 0 and is alone; each NIC takes a leading index and `lo` stays last
 /// (so a single NIC keeps the `[nic, lo]` view userspace already knows).
-#[no_mangle]
-pub extern "C" fn rust_net_iface_count() -> i32 {
+pub fn rust_net_iface_count() -> i32 {
     // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` set by
     // `stack_init` and cleared by `stack_teardown`; a byte load cannot tear and
     // reading it as false simply reports "no interfaces".
@@ -70,8 +69,7 @@ pub extern "C" fn rust_net_iface_count() -> i32 {
 ///
 /// `out` may be null (the call then returns -1), but if non-null it must point to
 /// a writable, properly aligned [`CactIfaceInfo`] that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -> i32 {
+pub unsafe fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -> i32 {
     if out.is_null() {
         return -1;
     }
@@ -104,8 +102,7 @@ pub unsafe extern "C" fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -
 /// Configure interface `index`'s IPv4 (`CACT_NETCTL_IFACE_SETCFG`, root only).
 /// Returns 0 on success, or -1 (`ENODEV`) when `index` is beyond the last NIC —
 /// which also covers `lo`, the final index, since it owns no address of its own.
-#[no_mangle]
-pub extern "C" fn rust_net_iface_set_cfg(
+pub fn rust_net_iface_set_cfg(
     index: u32,
     ip_h: u32,
     mask_h: u32,
@@ -171,8 +168,7 @@ fn fill_loopback(info: &mut CactIfaceInfo) {
 ///
 /// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
 /// the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_iface_set_cfg6(
+pub unsafe fn rust_net_iface_set_cfg6(
     index: u32,
     addr: *const u8,
     prefix: u32,
@@ -207,8 +203,7 @@ pub unsafe extern "C" fn rust_net_iface_set_cfg6(
 ///
 /// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
 /// the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_set_ipv6_config(
+pub unsafe fn rust_net_set_ipv6_config(
     addr: *const u8,
     prefix: u32,
     gw: *const u8,

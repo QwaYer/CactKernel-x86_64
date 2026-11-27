@@ -8,7 +8,7 @@
 //! talking to C lives here, once, and the rest of the graph calls the safe
 //! wrappers.
 
-use core::ffi::c_char;
+use core::ffi::{c_char, c_void};
 
 use crate::cpu::VmxEptMap;
 
@@ -47,4 +47,7 @@ extern "C" {
     pub fn ktime_get_usec() -> u64;
     pub fn ktime_busy_wait_us(us: u64);
     pub fn tcp_recv(sock: i32, buf: *mut u8, max_len: u16) -> i32;
+
+    // ---- C-visible state whose storage lives in `kernel_abi` ------------
+    pub static mut active_nic: *mut c_void;
 }

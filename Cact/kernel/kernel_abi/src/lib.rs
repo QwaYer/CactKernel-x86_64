@@ -19,6 +19,8 @@
 // single call into a safe function.
 #![allow(unsafe_code)]
 
+mod net;
+
 use cact_hv::{ChvMem, ChvMsrs, ChvRegs, ChvSregs};
 
 #[no_mangle]

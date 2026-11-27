@@ -92,7 +92,9 @@ typedef struct tcp_socket {
    Public API — TCP/UDP via smoltcp; C structs mirror PCB state for syscalls/VFS
    ─────────────────────────────────────────────── */
 
-extern tcp_socket_t tcp_sockets[TCP_MAX_SOCKETS];
+/* The TCP slot table lives in cact_net (Rust); read a slot through this
+ * accessor (it replaced the exported `tcp_sockets` array symbol). */
+tcp_socket_t *rust_net_tcp_socket(unsigned int idx);
 
 /* Create a socket, returns socket id or -1 */
 int  tcp_socket(void);

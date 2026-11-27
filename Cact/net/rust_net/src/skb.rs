@@ -7,8 +7,7 @@
 use crate::ffi_kernel;
 use crate::types::{Skb, SKB_MAX_SIZE};
 
-#[no_mangle]
-pub extern "C" fn skb_alloc() -> *mut Skb {
+pub fn skb_alloc() -> *mut Skb {
     let ptr = ffi_kernel::kmalloc(core::mem::size_of::<Skb>()) as *mut Skb;
     if ptr.is_null() {
         return core::ptr::null_mut();
@@ -24,8 +23,7 @@ pub extern "C" fn skb_alloc() -> *mut Skb {
     ptr
 }
 
-#[no_mangle]
-pub extern "C" fn kfree_skb(skb: *mut Skb) {
+pub fn kfree_skb(skb: *mut Skb) {
     if skb.is_null() {
         return;
     }
@@ -40,8 +38,7 @@ pub extern "C" fn kfree_skb(skb: *mut Skb) {
 /// `skb` must be non-null and point to a live [`Skb`] allocated by [`skb_alloc`]
 /// (or an equivalent kernel allocation cleared the same way) that the caller may
 /// access for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn skb_push(skb: *mut Skb, len: u16) -> *mut u8 {
+pub unsafe fn skb_push(skb: *mut Skb, len: u16) -> *mut u8 {
     if skb.is_null() {
         return core::ptr::null_mut();
     }
@@ -66,8 +63,7 @@ pub unsafe extern "C" fn skb_push(skb: *mut Skb, len: u16) -> *mut u8 {
 ///
 /// `skb` must be non-null and point to a live [`Skb`] allocated by [`skb_alloc`]
 /// that the caller may access for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn skb_put(skb: *mut Skb, len: u16) -> *mut u8 {
+pub unsafe fn skb_put(skb: *mut Skb, len: u16) -> *mut u8 {
     if skb.is_null() {
         return core::ptr::null_mut();
     }
@@ -98,8 +94,7 @@ pub unsafe extern "C" fn skb_put(skb: *mut Skb, len: u16) -> *mut u8 {
 /// `skb` must be non-null and point to a live, initialised [`Skb`] that the
 /// caller may access for the duration of the call, with `data_offset` kept
 /// within `SKB_MAX_SIZE`.
-#[no_mangle]
-pub unsafe extern "C" fn skb_data(skb: *mut Skb) -> *mut u8 {
+pub unsafe fn skb_data(skb: *mut Skb) -> *mut u8 {
     if skb.is_null() {
         return core::ptr::null_mut();
     }
@@ -117,8 +112,7 @@ pub unsafe extern "C" fn skb_data(skb: *mut Skb) -> *mut u8 {
 ///
 /// `skb` must be non-null and point to a live, initialised [`Skb`] that the
 /// caller may access for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn skb_len(skb: *mut Skb) -> u16 {
+pub unsafe fn skb_len(skb: *mut Skb) -> u16 {
     if skb.is_null() {
         return 0;
     }

@@ -31,3 +31,18 @@ pub fn tcp_recv(sock: i32, buf: &mut [u8]) -> i32 {
     // a socket index the caller owns.
     unsafe { sys::tcp_recv(sock, buf.as_mut_ptr(), max) }
 }
+
+/// The active NIC driver pointer (`*mut net_driver_t`).  Its storage is the
+/// `#[no_mangle]` symbol C and driver modules read via ksym; it is defined in
+/// `kernel_abi`, and touched here only on the single-threaded driver path.
+pub fn active_nic() -> *mut core::ffi::c_void {
+    // SAFETY: single-threaded driver registration/teardown; an aligned
+    // pointer-sized load cannot tear.
+    unsafe { sys::active_nic }
+}
+
+/// Set [`active_nic`] (same single-threaded driver path).
+pub fn set_active_nic(ptr: *mut core::ffi::c_void) {
+    // SAFETY: as above.
+    unsafe { sys::active_nic = ptr };
+}

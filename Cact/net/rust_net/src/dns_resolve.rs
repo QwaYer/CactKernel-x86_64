@@ -532,8 +532,7 @@ unsafe fn dns_unlock() {
     unsafe { ffi_kernel::up(core::ptr::addr_of_mut!(DNS_SEMA)) };
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32) -> c_int {
+pub unsafe fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32) -> c_int {
     if name.is_null() || out_ip_host.is_null() {
         return -1;
     }
@@ -577,8 +576,7 @@ pub unsafe extern "C" fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host
 /// `name` must be a NUL-terminated C string readable up to and including its
 /// terminator, and `out_addr` must point to 16 writable bytes.  Either may be
 /// null, in which case the call returns -1 without touching memory.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_dns_resolve_aaaa(
+pub unsafe fn rust_net_dns_resolve_aaaa(
     name: *const c_char,
     out_addr: *mut u8,
 ) -> c_int {

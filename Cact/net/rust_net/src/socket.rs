@@ -68,7 +68,7 @@ pub(crate) fn signal_pending() -> bool {
     unsafe { sched::task::task_signal_pending_current() != 0 }
 }
 
-#[no_mangle]
+#[allow(non_upper_case_globals)]
 pub static mut ksock_table: [Ksock; KSOCK_MAX] = [Ksock {
     used: 0,
     kind: KS_NONE,
@@ -522,8 +522,7 @@ static mut SOCKET_OPS: VfsOps = VfsOps {
     lseek: core::ptr::null_mut(),
 };
 
-#[no_mangle]
-pub extern "C" fn ksock_init() {
+pub fn ksock_init() {
     // SAFETY: `ksock_table` is a kernel-lifetime static array; this runs at boot
     // before any socket exists, and the loop stays inside the array.
     unsafe {
@@ -538,8 +537,7 @@ pub extern "C" fn ksock_init() {
 /// `node` must be null or point to a live `VfsNode` (the C `vfs_node_t`) that
 /// stays live for the call; when non-null its `type_` and `priv_` fields must be
 /// readable, since `type_` decides whether `priv_` really is a `Ksock` pointer.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
+pub unsafe fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
     if node.is_null() {
         return core::ptr::null_mut();
     }
@@ -565,8 +563,7 @@ pub unsafe extern "C" fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
 /// `node` must be null or a live VFS node that stays valid for the call (the VFS
 /// layer holds an open fd's node); when non-null its `type_`/`priv_` fields must
 /// be readable, since they decide whether it is a socket node.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_int {
+pub unsafe fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_int {
     if node.is_null() {
         return -1;
     }
@@ -593,8 +590,7 @@ pub unsafe extern "C" fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_
 /// reading them under those locks (a data race).
 ///
 /// Returns 0, `-EADDRINUSE`, or -1 on a non-socket / invalid slot.
-#[no_mangle]
-pub extern "C" fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int) -> c_int {
+pub fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int) -> c_int {
     const EADDRINUSE: c_int = 98;
     // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
     // a live `Ksock`.
@@ -681,8 +677,7 @@ pub extern "C" fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reusea
 /// # Safety
 ///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_bind6(
+pub unsafe fn ksock_bind6(
     node: *mut VfsNode,
     port: u16,
     addr: *const u8,
@@ -759,15 +754,13 @@ pub unsafe extern "C" fn ksock_bind6(
 
 /// Local address of a socket (`getsockname`).  Returns 0, or -1 when it has
 /// none yet.
-#[no_mangle]
-pub extern "C" fn ksock_getsockname(node: *mut VfsNode, out: *mut SockAddrIn) -> c_int {
+pub fn ksock_getsockname(node: *mut VfsNode, out: *mut SockAddrIn) -> c_int {
     sock_name(node, out, false)
 }
 
 /// Peer address of a socket (`getpeername`).  Returns 0, or -1 when the socket
 /// is not connected.
-#[no_mangle]
-pub extern "C" fn ksock_getpeername(node: *mut VfsNode, out: *mut SockAddrIn) -> c_int {
+pub fn ksock_getpeername(node: *mut VfsNode, out: *mut SockAddrIn) -> c_int {
     sock_name(node, out, true)
 }
 
@@ -878,8 +871,7 @@ fn sock_name(node: *mut VfsNode, out: *mut SockAddrIn, peer: bool) -> c_int {
 ///
 /// `out_addr` must point to 16 writable bytes and `out_port` to a writable,
 /// aligned `u16`; both stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_sockname6(
+pub unsafe fn ksock_sockname6(
     node: *mut VfsNode,
     peer: c_int,
     out_addr: *mut u8,
@@ -984,8 +976,7 @@ unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
     node
 }
 
-#[no_mangle]
-pub extern "C" fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNode {
+pub fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNode {
     let fam = domain as u16;
     // AF_UNIX is served by the kernel-C unix_sock module before this is reached;
     // AF_INET and AF_INET6 both land here as IP sockets.
@@ -1137,8 +1128,7 @@ unsafe fn tcp_accept_inner(listen_node: *mut VfsNode) -> (*mut VfsNode, SockAddr
 ///
 /// `listen_node` must be null or a live VFS socket node; `peer_out` must be
 /// null or point to a writable `SockAddrIn` that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_tcp_accept(
+pub unsafe fn ksock_tcp_accept(
     listen_node: *mut VfsNode,
     peer_out: *mut SockAddrIn,
 ) -> *mut VfsNode {
@@ -1173,8 +1163,7 @@ pub unsafe extern "C" fn ksock_tcp_accept(
 /// `listen_node` must be null or a live VFS socket node; `out_addr` (when
 /// non-null) must point to 16 writable bytes and `out_port` to a writable,
 /// aligned `u16`, both live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_tcp_accept6(
+pub unsafe fn ksock_tcp_accept6(
     listen_node: *mut VfsNode,
     out_addr: *mut u8,
     out_port: *mut u16,
@@ -1206,8 +1195,7 @@ pub unsafe extern "C" fn ksock_tcp_accept6(
 /// `node` must be null or a live VFS node that stays valid for the call; when
 /// non-null its `type_`/`priv_` fields must be readable, since they decide
 /// whether it is a socket node.
-#[no_mangle]
-pub unsafe extern "C" fn ksock_shutdown(node: *mut VfsNode, how: c_int) -> c_int {
+pub unsafe fn ksock_shutdown(node: *mut VfsNode, how: c_int) -> c_int {
     // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
     // a live `Ksock`.
     let ks = unsafe { ksock_from_node(node) };

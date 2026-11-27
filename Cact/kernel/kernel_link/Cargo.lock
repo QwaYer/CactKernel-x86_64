@@ -485,6 +485,7 @@ name = "kernel_abi"
 version = "0.1.0"
 dependencies = [
  "cact_hv",
+ "cact_net",
 ]
 
 [[package]]

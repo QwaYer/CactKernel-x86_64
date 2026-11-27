@@ -53,8 +53,7 @@ static mut RAW_TX_META: [[raw::PacketMetadata; 4]; RAW_SOCK_MAX] =
 static mut RAW_TX_PAY: [[u8; RAW_TX_BUF]; RAW_SOCK_MAX] = [[0; RAW_TX_BUF]; RAW_SOCK_MAX];
 
 /// Reserve a raw socket slot.  Returns its index, or -1 (stack down / no room).
-#[no_mangle]
-pub extern "C" fn raw_sock_alloc() -> i32 {
+pub fn raw_sock_alloc() -> i32 {
     // SAFETY: `STACK_READY` is a `static mut bool` written by `stack_init`/
     // `stack_teardown`; a byte load cannot tear, and reading it as false fails
     // the call closed.
@@ -296,8 +295,7 @@ fn icmpv6_checksum(src: [u8; 16], dst: [u8; 16], msg: &[u8]) -> u16 {
 ///
 /// `buf` may be null (then -1), else `max_len` writable bytes; `src_addr_out`
 /// may be null, else 16 writable bytes.
-#[no_mangle]
-pub unsafe extern "C" fn raw_sock_recv6(
+pub unsafe fn raw_sock_recv6(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
@@ -352,8 +350,7 @@ pub unsafe extern "C" fn raw_sock_recv6(
 ///
 /// `dst` must point to 16 readable bytes; `data` must point to `len` readable
 /// bytes.
-#[no_mangle]
-pub unsafe extern "C" fn raw_sock_send6(
+pub unsafe fn raw_sock_send6(
     idx: i32,
     dst: *const u8,
     data: *const u8,

@@ -17,7 +17,7 @@ use smoltcp::wire::{IpAddress, IpListenEndpoint};
 use crate::stack::{self};
 use crate::types::{SockAddr, UdpSock, UDP_SOCK_MAX};
 
-#[no_mangle]
+#[allow(non_upper_case_globals)]
 pub static mut udp_socks: [UdpSock; UDP_SOCK_MAX] = [UdpSock {
     used: 0,
     local_port: 0,
@@ -260,8 +260,7 @@ pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
     }
 }
 
-#[no_mangle]
-pub extern "C" fn udp_sock_alloc() -> i32 {
+pub fn udp_sock_alloc() -> i32 {
     // SAFETY: `STACK_READY` is a `static mut bool` written by `stack_init`/
     // `stack_teardown`; a byte load cannot tear, and reading it as false makes
     // this call fail closed.
@@ -302,8 +301,7 @@ pub extern "C" fn udp_sock_alloc() -> i32 {
     })
 }
 
-#[no_mangle]
-pub extern "C" fn udp_sock_free(idx: i32) {
+pub fn udp_sock_free(idx: i32) {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX {
         return;
     }
@@ -394,8 +392,7 @@ pub(crate) fn udp_sock_bind6(idx: usize, port: u16, addr: [u8; 16], reuse: bool)
 /// the peer (validated here) and pins the socket to the interface that will carry
 /// it; `write()` afterwards sends one datagram to the peer, and reads are still
 /// accepted from anyone.
-#[no_mangle]
-pub extern "C" fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 {
+pub fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX || dst_ip == 0 || dst_port == 0 {
         return -1;
     }
@@ -419,8 +416,7 @@ pub extern "C" fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 
 /// # Safety
 ///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_connect6(idx: i32, addr: *const u8, dst_port: u16) -> i32 {
+pub unsafe fn udp_sock_connect6(idx: i32, addr: *const u8, dst_port: u16) -> i32 {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX || addr.is_null() || dst_port == 0 {
         return -1;
     }
@@ -496,8 +492,7 @@ pub(crate) fn udp_can_send(idx: usize) -> bool {
     r.unwrap_or(false)
 }
 
-#[no_mangle]
-pub extern "C" fn udp_sock_find_by_port(port: u16) -> *mut UdpSock {
+pub fn udp_sock_find_by_port(port: u16) -> *mut UdpSock {
     // SAFETY: the scan walks only the fixed-length inline array `udp_socks`, so
     // it stays in bounds; the returned pointer refers to a kernel-lifetime
     // static that the caller only uses until the slot is freed.
@@ -603,8 +598,7 @@ pub(crate) unsafe fn udp_recv_buf(
 /// # Safety
 ///
 /// As [`udp_recv_buf`].
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_recv(
+pub unsafe fn udp_sock_recv(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
@@ -732,8 +726,7 @@ fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, l
 /// # Safety
 ///
 /// As `udp_sock_send_addr`: `data` must point to `len` readable bytes, or be null.
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_send(
+pub unsafe fn udp_sock_send(
     idx: i32,
     dst_ip: u32,
     dst_port: u16,
@@ -751,8 +744,7 @@ pub unsafe extern "C" fn udp_sock_send(
 ///
 /// `addr` must point to 16 readable bytes; `data` must point to `len` readable
 /// bytes, or be null.
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_send6(
+pub unsafe fn udp_sock_send6(
     idx: i32,
     addr: *const u8,
     dst_port: u16,
@@ -779,8 +771,7 @@ pub unsafe extern "C" fn udp_sock_send6(
 /// `buf` may be null (then -1), otherwise it must point to `max_len` writable
 /// bytes.  `src_addr_out` may be null, otherwise it must point to 16 writable
 /// bytes.  `src_port_out` may be null, otherwise a writable, aligned `u16`.
-#[no_mangle]
-pub unsafe extern "C" fn udp_sock_recv6(
+pub unsafe fn udp_sock_recv6(
     idx: i32,
     buf: *mut u8,
     max_len: u16,

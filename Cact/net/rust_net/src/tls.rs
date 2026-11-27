@@ -538,8 +538,7 @@ unsafe fn cstr(ptr: *const c_void) -> Option<alloc::string::String> {
     core::str::from_utf8(slice).ok().map(String::from)
 }
 
-#[no_mangle]
-pub extern "C" fn cact_tls_init() {}
+pub fn cact_tls_init() {}
 
 /// Connect TLS over an open connected TCP socket. Legacy entry: uses the
 /// verified (root store) path.
@@ -548,8 +547,7 @@ pub extern "C" fn cact_tls_init() {}
 ///
 /// `server_name` must be a NUL-terminated C string that stays readable for the
 /// call (the name is copied out before use).
-#[no_mangle]
-pub unsafe extern "C" fn cact_tls_connect(sock: c_int, server_name: *const c_void) -> c_int {
+pub unsafe fn cact_tls_connect(sock: c_int, server_name: *const c_void) -> c_int {
     // SAFETY: this only forwards its arguments; the caller contract above
     // (identical to `cact_tls_connect_ex`'s) is what makes the call sound.
     unsafe { cact_tls_connect_ex(sock, server_name, 0) }
@@ -563,8 +561,7 @@ pub unsafe extern "C" fn cact_tls_connect(sock: c_int, server_name: *const c_voi
 ///
 /// `server_name` must be a NUL-terminated C string that stays readable for the
 /// duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact_tls_connect_ex(
+pub unsafe fn cact_tls_connect_ex(
     sock: c_int,
     server_name: *const c_void,
     skip_verify: c_int,
@@ -599,8 +596,7 @@ pub unsafe extern "C" fn cact_tls_connect_ex(
 ///
 /// `data` must point to `len` readable bytes that stay live for the duration of
 /// the call (it may be null, in which case the call returns -1).
-#[no_mangle]
-pub unsafe extern "C" fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int {
+pub unsafe fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int {
     if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || data.is_null() {
         return -1;
     }
@@ -627,8 +623,7 @@ pub unsafe extern "C" fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u1
 ///
 /// `buf` must point to `max_len` writable bytes that stay live for the duration
 /// of the call (it may be null, in which case the call returns -1).
-#[no_mangle]
-pub unsafe extern "C" fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u16) -> c_int {
+pub unsafe fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u16) -> c_int {
     if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || buf.is_null() {
         return -1;
     }
@@ -659,8 +654,7 @@ pub unsafe extern "C" fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u
 }
 
 /// Close and free a TLS connection (does not close the underlying TCP socket).
-#[no_mangle]
-pub extern "C" fn cact_tls_close(conn: c_int) {
+pub fn cact_tls_close(conn: c_int) {
     if conn < 0 || conn as usize >= TLS_MAX_CONNECTIONS {
         return;
     }

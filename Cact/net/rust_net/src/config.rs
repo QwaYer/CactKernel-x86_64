@@ -156,8 +156,7 @@ pub fn set_ipv4_config_slot(slot: usize, ip_h: u32, mask_h: u32, gw_h: u32, dns_
     0
 }
 
-#[no_mangle]
-pub extern "C" fn rust_net_set_ipv4_config(ip_h: u32, mask_h: u32, gw_h: u32, dns_h: u32) -> i32 {
+pub fn rust_net_set_ipv4_config(ip_h: u32, mask_h: u32, gw_h: u32, dns_h: u32) -> i32 {
     set_ipv4_config_slot(0, ip_h, mask_h, gw_h, dns_h)
 }
 
@@ -169,8 +168,7 @@ pub extern "C" fn rust_net_set_ipv4_config(ip_h: u32, mask_h: u32, gw_h: u32, dn
 /// Each of `ip_h`, `mask_h`, `gw_h` and `dns_h` may be null (it is then skipped),
 /// but every non-null one must point to a writable, properly aligned `u32` that
 /// stays live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_get_ipv4_config(
+pub unsafe fn rust_net_get_ipv4_config(
     ip_h: *mut u32,
     mask_h: *mut u32,
     gw_h: *mut u32,
@@ -206,13 +204,11 @@ pub unsafe extern "C" fn rust_net_get_ipv4_config(
     0
 }
 
-#[no_mangle]
-pub extern "C" fn rust_net_get_dns_host() -> u32 {
+pub fn rust_net_get_dns_host() -> u32 {
     dns_host()
 }
 
-#[no_mangle]
-pub extern "C" fn rust_net_get_ip_host() -> u32 {
+pub fn rust_net_get_ip_host() -> u32 {
     ip_host()
 }
 

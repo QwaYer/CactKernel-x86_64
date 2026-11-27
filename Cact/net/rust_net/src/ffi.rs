@@ -46,8 +46,7 @@ fn cstr_len(ptr: *const c_char) -> usize {
 /// `input` must be a NUL-terminated string readable for its whole length, and
 /// `out_host_ip` must point to a writable, properly aligned `u32`.  Both may be
 /// null, in which case the call returns -1 without touching memory.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_parse_ipv4(input: *const c_char, out_host_ip: *mut u32) -> c_int {
+pub unsafe fn rust_net_parse_ipv4(input: *const c_char, out_host_ip: *mut u32) -> c_int {
     if input.is_null() || out_host_ip.is_null() {
         return -1;
     }
@@ -69,8 +68,7 @@ pub unsafe extern "C" fn rust_net_parse_ipv4(input: *const c_char, out_host_ip: 
     }
 }
 
-#[no_mangle]
-pub extern "C" fn rust_net_ping_echo_host(dst_ip_host: u32, id: u16, seq: u16) -> c_int {
+pub fn rust_net_ping_echo_host(dst_ip_host: u32, id: u16, seq: u16) -> c_int {
     ping::send_echo_request_host(dst_ip_host, id, seq)
 }
 
@@ -82,8 +80,7 @@ pub extern "C" fn rust_net_ping_echo_host(dst_ip_host: u32, id: u16, seq: u16) -
 /// `src_ip_out` and `bytes_out` may be null (that result is then dropped), but
 /// each non-null one must point to a writable, properly aligned `u32` that
 /// stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_ping_wait(
+pub unsafe fn rust_net_ping_wait(
     dst_ip_host: u32,
     id: u16,
     seq: u16,
@@ -103,8 +100,7 @@ pub unsafe extern "C" fn rust_net_ping_wait(
 /// # Safety
 ///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16) -> c_int {
+pub unsafe fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16) -> c_int {
     if addr.is_null() {
         return -1;
     }
@@ -123,8 +119,7 @@ pub unsafe extern "C" fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16)
 /// `addr` must point to 16 readable bytes.  `src_addr_out` (16 bytes) and
 /// `bytes_out` may be null (that result is then dropped) but, if non-null, must
 /// be writable and stay live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_ping_wait6(
+pub unsafe fn rust_net_ping_wait6(
     addr: *const u8,
     id: u16,
     seq: u16,

@@ -13,7 +13,8 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-cact_hv = { path = "../hypervisor/rust_hv" }
+cact_hv  = { path = "../hypervisor/rust_hv" }
+cact_net = { path = "../../net/rust_net" }
 
 [profile.release]
 panic = "abort"

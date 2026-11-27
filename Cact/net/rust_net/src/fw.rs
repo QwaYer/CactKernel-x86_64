@@ -825,8 +825,7 @@ fn chain_accepts_action(chain: u32, action: u32) -> bool {
 ///
 /// `rule` must be null or point to a live, properly aligned [`FwRule`] that
 /// stays readable for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
+pub unsafe fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
     if rule.is_null() {
         return -1;
     }
@@ -861,8 +860,7 @@ pub unsafe extern "C" fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
 
 /// Delete rule `index` from chain `chain`, shifting later rules down.  Returns 0
 /// on success, -1 on a bad chain or an out-of-range index.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_rule_del(chain: u32, index: u32) -> i32 {
+pub fn rust_net_fw_rule_del(chain: u32, index: u32) -> i32 {
     if chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -888,8 +886,7 @@ pub extern "C" fn rust_net_fw_rule_del(chain: u32, index: u32) -> i32 {
 }
 
 /// Number of rules in `chain`, or -1 for an unknown chain.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_rule_count(chain: u32) -> i32 {
+pub fn rust_net_fw_rule_count(chain: u32) -> i32 {
     if chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -906,8 +903,7 @@ pub extern "C" fn rust_net_fw_rule_count(chain: u32) -> i32 {
 ///
 /// `out` may be null (the call then returns -1), but if non-null it must point
 /// to a writable, properly aligned [`FwRule`] that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut FwRule) -> i32 {
+pub unsafe fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut FwRule) -> i32 {
     if out.is_null() || chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -930,8 +926,7 @@ pub unsafe extern "C" fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut 
 
 /// Remove every rule from `chain`.  Returns 0 on success, -1 for an unknown
 /// chain.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_flush(chain: u32) -> i32 {
+pub fn rust_net_fw_flush(chain: u32) -> i32 {
     if chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -949,8 +944,7 @@ pub extern "C" fn rust_net_fw_flush(chain: u32) -> i32 {
 
 /// Set `chain`'s default policy to `policy` (`FW_ACTION_ACCEPT` / `_DROP`).
 /// Returns 0 on success, -1 on an unknown chain or policy.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_policy_set(chain: u32, policy: u32) -> i32 {
+pub fn rust_net_fw_policy_set(chain: u32, policy: u32) -> i32 {
     if chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -965,8 +959,7 @@ pub extern "C" fn rust_net_fw_policy_set(chain: u32, policy: u32) -> i32 {
 }
 
 /// Read `chain`'s default policy, or -1 for an unknown chain.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_policy_get(chain: u32) -> i32 {
+pub fn rust_net_fw_policy_get(chain: u32) -> i32 {
     if chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
@@ -977,8 +970,7 @@ pub extern "C" fn rust_net_fw_policy_get(chain: u32) -> i32 {
 }
 
 /// Flush every chain and reset every policy to `ACCEPT`.
-#[no_mangle]
-pub extern "C" fn rust_net_fw_reset() -> i32 {
+pub fn rust_net_fw_reset() -> i32 {
     let _guard = StackGuard::new();
     // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here.
     let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };

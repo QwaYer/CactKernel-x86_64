@@ -928,8 +928,7 @@ fn do_fetch(
 /// (`out_len != 0`).  `headers`, when non-null, must also be a NUL-terminated C
 /// string, and `body`/`body_len`, when used, must describe `body_len` readable
 /// bytes.  All of these must stay live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact_http_request(
+pub unsafe fn cact_http_request(
     out: *mut HttpResp,
     url: *const c_char,
     method: c_int,
@@ -989,8 +988,7 @@ pub unsafe extern "C" fn cact_http_request(
 /// Identical to [`cact_http_request`]: `out` must be writable, `url` and
 /// `headers` must be NUL-terminated C strings, and `out_buf` must point to
 /// `out_len` writable bytes — all live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact_http_get(
+pub unsafe fn cact_http_get(
     out: *mut HttpResp,
     url: *const c_char,
     headers: *const c_char,
@@ -1023,8 +1021,7 @@ pub unsafe extern "C" fn cact_http_get(
 /// `headers` must be NUL-terminated C strings, `body` must point to `body_len`
 /// readable bytes when non-null, and `out_buf` must point to `out_len` writable
 /// bytes — all live for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact_http_post(
+pub unsafe fn cact_http_post(
     out: *mut HttpResp,
     url: *const c_char,
     headers: *const c_char,

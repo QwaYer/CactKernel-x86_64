@@ -33,7 +33,7 @@ typedef struct udp_sock {
     uint16_t last_src_port;
 } udp_sock_t;
 
-extern udp_sock_t udp_socks[UDP_SOCK_MAX];
+/* `udp_socks` lives in cact_net (Rust); C does not read the table directly. */
 
 /* Allocate / free a UDP socket slot */
 int         udp_sock_alloc(void);

@@ -159,8 +159,7 @@ fn record(table: &mut [ArpEntry; ARP_TABLE_MAX], now: u32, ip_host: u32, mac: [u
 }
 
 /// Number of live (not aged-out) neighbors.
-#[no_mangle]
-pub extern "C" fn rust_net_arp_count() -> i32 {
+pub fn rust_net_arp_count() -> i32 {
     let _guard = StackGuard::new();
     // SAFETY: `ARP_TABLE` is only touched under the stack lock, which `_guard`
     // holds; the borrow is shared and dead before the guard drops.
@@ -184,8 +183,7 @@ pub extern "C" fn rust_net_arp_count() -> i32 {
 ///
 /// `out` may be null (the call then returns -1); if non-null it must point to a
 /// writable, properly aligned [`CactArpEntry`] that stays live for the call.
-#[no_mangle]
-pub unsafe extern "C" fn rust_net_arp_get(idx: u32, out: *mut CactArpEntry) -> i32 {
+pub unsafe fn rust_net_arp_get(idx: u32, out: *mut CactArpEntry) -> i32 {
     if out.is_null() {
         return -1;
     }
