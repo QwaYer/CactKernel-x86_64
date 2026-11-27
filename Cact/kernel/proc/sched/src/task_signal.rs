@@ -77,6 +77,13 @@ pub unsafe extern "C" fn task_signal_value(pid: u32, signal: u32, value: u32) {
 /// the scheduler, so without this a task stuck in a blocking `read()` could not
 /// be killed with Ctrl+C at all.
 ///
+/// Safe wrapper over [`task_signal_pending_current`]: the current task's pending
+/// signal word (`0` when no task is running).  Callable from the syscall path.
+pub fn signal_pending_current() -> u32 {
+    // SAFETY: the caller is in task context with `SCHEDULER_LOCK` free.
+    unsafe { task_signal_pending_current() }
+}
+
 /// # Safety
 ///
 /// Must be called from a task context with `SCHEDULER_LOCK` free (it only reads).

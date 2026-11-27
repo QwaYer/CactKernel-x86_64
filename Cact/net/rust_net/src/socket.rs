@@ -13,6 +13,8 @@
 use core::ffi::{c_char, c_int, c_void};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use kernel_rust::ptr;
+
 use crate::ffi_kernel;
 use crate::tcp;
 use crate::raw;
@@ -47,7 +49,7 @@ const UDP_READ_WAIT_TICKS: u32 = 20; // 200 ms
 const UDP_WRITE_STALL_TICKS: u32 = 300;
 
 fn now_ticks() -> u32 {
-    // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
+    // `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
     ffi_kernel::timer_ticks_get()
 }
@@ -62,10 +64,7 @@ fn now_ticks() -> u32 {
 /// The raw pending word is tested (job-control notifications included), the
 /// same way the tty read path does it.
 pub(crate) fn signal_pending() -> bool {
-    // SAFETY: `task_signal_pending_current` is a kernel C service that reads the
-    // current task's pending-signal word; it takes no pointers and is callable
-    // from the syscall path that calls this helper.
-    unsafe { sched::task::task_signal_pending_current() != 0 }
+    sched::task::signal_pending_current() != 0
 }
 
 #[allow(non_upper_case_globals)]
@@ -91,19 +90,19 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
         return 0;
     }
     {
-        // SAFETY: the VFS layer guarantees `node` is a live `vfs_node_t` for
+        // the VFS layer guarantees `node` is a live `vfs_node_t` for
         // the duration of the operation, and `ksock_from_node` re-checks `type_`
         // before returning `priv_`, so `ks` is either null (checked below) or the
         // `Ksock` this node owns.
-        let ks = unsafe { ksock_from_node(node) };
+        let ks = ksock_from_node(node);
         if ks.is_null() {
             return -1;
         }
         let (shutdown_rd, idx, nonblock, kind) = {
-            // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is
+            // `ks` is this node's live `Ksock`; the shared borrow is
             // consumed by the field copies below and is dead before the first
             // call that could recycle or mutate the row, so it cannot alias.
-            let k = unsafe { &*ks };
+            let k = ptr::as_ref(ks);
             (k.shutdown_rd, k.proto_idx, k.nonblock != 0, k.kind)
         };
         if shutdown_rd != 0 {
@@ -117,7 +116,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
             // the peer has closed its half.
             let deadline = now_ticks().saturating_add(TCP_READ_STALL_TICKS);
             loop {
-                // SAFETY: `idx` came from this node's `Ksock` and is a valid
+                // `idx` came from this node's `Ksock` and is a valid
                 // smoltcp TCP slot index for the duration of the operation, and
                 // `data` points to at least `size` writable bytes.
                 let n = tcp::tcp_recv(idx, data, size as u16);
@@ -140,24 +139,22 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 if signal_pending() {
                     return -EINTR;
                 }
-                // SAFETY: `ks` is still this node's live `Ksock` (the VFS holds
+                // `ks` is still this node's live `Ksock` (the VFS holds
                 // the fd open for the whole operation); re-read the flag after
                 // the blocking wait.
-                if unsafe { (*ks).shutdown_rd } != 0 {
+                if ptr::as_ref(ks).shutdown_rd != 0 {
                     return -1;
                 }
                 if now_ticks() >= deadline {
                     return -ETIMEDOUT;
                 }
-                // SAFETY: `sched_sleep_ticks` is a kernel service that suspends
-                // the calling task for the requested number of ticks.
-                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                sched::timer_wheel::sleep_ticks(1);
             }
         }
         if kind == KS_UDP {
             let deadline = now_ticks().saturating_add(UDP_READ_WAIT_TICKS);
             loop {
-                // SAFETY: `idx` is a valid smoltcp UDP slot index for the
+                // `idx` is a valid smoltcp UDP slot index for the
                 // operation and `data` points to at least `size` writable bytes;
                 // the two null pointers select the "no peer/address output"
                 // overload.  `udp_recv_buf` reports "nothing queued" as a
@@ -178,10 +175,10 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 if signal_pending() {
                     return -EINTR;
                 }
-                // SAFETY: `ks` is still this node's live `Ksock` (the VFS holds
+                // `ks` is still this node's live `Ksock` (the VFS holds
                 // the fd open for the whole operation); re-read the flag after
                 // the blocking wait, like the TCP branch does.
-                if unsafe { (*ks).shutdown_rd } != 0 {
+                if ptr::as_ref(ks).shutdown_rd != 0 {
                     return -1;
                 }
                 if now_ticks() >= deadline {
@@ -189,9 +186,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                     // callers that never set O_NONBLOCK (dhcpd).
                     return 0;
                 }
-                // SAFETY: `sched_sleep_ticks` is a kernel service that suspends
-                // the calling task for the requested number of ticks.
-                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                sched::timer_wheel::sleep_ticks(1);
             }
         }
         if kind == KS_RAW {
@@ -213,16 +208,16 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 if signal_pending() {
                     return -EINTR;
                 }
-                // SAFETY: `ks` is still this node's live `Ksock`.
-                if unsafe { (*ks).shutdown_rd } != 0 {
+                // `ks` is still this node's live `Ksock`.
+                if ptr::as_ref(ks).shutdown_rd != 0 {
                     return -1;
                 }
                 if now_ticks() >= deadline {
                     return 0;
                 }
-                // SAFETY: `sched_sleep_ticks` suspends the calling task for the
+                // `sched_sleep_ticks` suspends the calling task for the
                 // requested number of ticks.
-                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                sched::timer_wheel::sleep_ticks(1);
             }
         }
     }
@@ -237,19 +232,19 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
         return 0;
     }
     {
-        // SAFETY: the VFS layer guarantees `node` is a live `vfs_node_t` for
+        // the VFS layer guarantees `node` is a live `vfs_node_t` for
         // the duration of the operation, and `ksock_from_node` re-checks `type_`
         // before returning `priv_`, so `ks` is null (checked below) or this
         // node's own `Ksock`.
-        let ks = unsafe { ksock_from_node(node) };
+        let ks = ksock_from_node(node);
         if ks.is_null() {
             return -1;
         }
         let (shutdown_wr, idx, nonblock, kind, family) = {
-            // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is
+            // `ks` is this node's live `Ksock`; the shared borrow is
             // consumed by the field copies below and is dead before the first
             // call that could recycle or mutate the row, so it cannot alias.
-            let k = unsafe { &*ks };
+            let k = ptr::as_ref(ks);
             (k.shutdown_wr, k.proto_idx, k.nonblock != 0, k.kind, k.family)
         };
         if shutdown_wr != 0 {
@@ -267,7 +262,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
             // non-blocking one reports -EAGAIN.  Short counts pass through.
             let deadline = now_ticks().saturating_add(TCP_WRITE_STALL_TICKS);
             loop {
-                // SAFETY: `idx` came from this node's `Ksock` and is a valid
+                // `idx` came from this node's `Ksock` and is a valid
                 // smoltcp TCP slot index for the operation, and `buf` points to
                 // at least `size` readable bytes.
                 let n = tcp::tcp_send(idx, buf.cast::<u8>(), size as u16);
@@ -280,18 +275,16 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                 if signal_pending() {
                     return -EINTR;
                 }
-                // SAFETY: `ks` is still this node's live `Ksock` (the VFS holds
+                // `ks` is still this node's live `Ksock` (the VFS holds
                 // the fd open for the whole operation); re-read the flag after
                 // the blocking wait.
-                if unsafe { (*ks).shutdown_wr } != 0 {
+                if ptr::as_ref(ks).shutdown_wr != 0 {
                     return -1;
                 }
                 if now_ticks() >= deadline {
                     return -ETIMEDOUT;
                 }
-                // SAFETY: `sched_sleep_ticks` is a kernel service that suspends
-                // the calling task for the requested number of ticks.
-                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                sched::timer_wheel::sleep_ticks(1);
             }
         }
         if kind == KS_UDP {
@@ -307,7 +300,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                     return -1;
                 };
                 loop {
-                    // SAFETY: `idx` is a valid smoltcp UDP slot and `buf` points
+                    // `idx` is a valid smoltcp UDP slot and `buf` points
                     // to at least `size` readable bytes; `a6`/`port` are the peer
                     // returned by `udp_sock_peer6`.
                     let n = udp::udp_sock_send6(idx, a6.as_ptr(), port, buf.cast::<u8>(), size as u16);
@@ -323,9 +316,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                     if now_ticks() >= deadline {
                         return -ETIMEDOUT;
                     }
-                    // SAFETY: `sched_sleep_ticks` is a kernel service that
-                    // suspends the calling task for the requested number of ticks.
-                    unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                    sched::timer_wheel::sleep_ticks(1);
                 }
             }
             let (ip, port) = udp::udp_sock_peer(idx);
@@ -333,7 +324,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                 return -1;
             }
             loop {
-                // SAFETY: `idx` is a valid smoltcp UDP slot index for the
+                // `idx` is a valid smoltcp UDP slot index for the
                 // operation and `buf` points to at least `size` readable bytes;
                 // `ip`/`port` are the peer returned by `udp_sock_peer`.
                 let n = udp::udp_sock_send(idx, ip, port, buf.cast::<u8>(), size as u16);
@@ -349,9 +340,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                 if now_ticks() >= deadline {
                     return -ETIMEDOUT;
                 }
-                // SAFETY: `sched_sleep_ticks` is a kernel service that suspends
-                // the calling task for the requested number of ticks.
-                unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+                sched::timer_wheel::sleep_ticks(1);
             }
         }
     }
@@ -362,33 +351,28 @@ extern "C" fn socket_open_op(node: *mut VfsNode) {
     if node.is_null() {
         return;
     }
-    // SAFETY: the VFS layer guarantees `node` is a live node while `open` is
-    // running, which is all `node_refcount` needs to return a reference to the
-    // node's own `refcount` field; the increment is an atomic RMW.
-    unsafe {
-        node_refcount(node).fetch_add(1, Ordering::Relaxed);
-    }
+    node_refcount(node).fetch_add(1, Ordering::Relaxed);
 }
 
 extern "C" fn socket_close_op(node: *mut VfsNode) {
     if node.is_null() {
         return;
     }
-    // SAFETY: as in `socket_open_op`, `node` is a live node (the VFS layer holds
+    // as in `socket_open_op`, `node` is a live node (the VFS layer holds
     // it for the duration of `close`), so `node_refcount` is sound and the
     // decrement is atomic.
-    if unsafe { node_refcount(node).fetch_sub(1, Ordering::AcqRel) } > 1 {
+    if node_refcount(node).fetch_sub(1, Ordering::AcqRel) > 1 {
         return;
     }
-    // SAFETY: the count just reached zero, so this is the last reference to the
+    // the count just reached zero, so this is the last reference to the
     // node: `ksock_from_node` therefore type-checks and returns null or the
     // exclusively-owned `Ksock` row this call is entitled to free; it re-checks
     // `type_` before `priv_` is treated as a `Ksock*`.
-    let ks = unsafe { ksock_from_node(node) };
+    let ks = ksock_from_node(node);
     if !ks.is_null() {
-        // SAFETY: no other reference to the node or its `Ksock` row exists any
+        // no other reference to the node or its `Ksock` row exists any
         // more, so the row may be borrowed exclusively for the rest of the call.
-        let k = unsafe { &mut *ks };
+        let k = ptr::as_mut(ks);
         if k.kind == KS_TCP {
             let _ = tcp::tcp_close(k.proto_idx);
         } else if k.kind == KS_UDP {
@@ -396,9 +380,7 @@ extern "C" fn socket_close_op(node: *mut VfsNode) {
         }
         k.used = 0;
     }
-    // SAFETY: the node's last reference was just released, so this call owns it
-    // and may free the block `kmalloc` handed out in `make_socket_node`.
-    unsafe { ffi_kernel::kfree(node.cast::<u8>()) };
+    kernel_rust::mem::kfree(node.cast::<u8>());
 }
 
 extern "C" fn socket_poll_op(node: *mut VfsNode, events: u32) -> c_int {
@@ -406,18 +388,18 @@ extern "C" fn socket_poll_op(node: *mut VfsNode, events: u32) -> c_int {
         return VFS_POLLNVAL as c_int;
     }
     {
-        // SAFETY: the VFS layer guarantees `node` is a live node during `poll`,
+        // the VFS layer guarantees `node` is a live node during `poll`,
         // and `ksock_from_node` re-checks `type_` before handing back `priv_`,
         // so `ks` is null (checked below) or this node's own `Ksock`.
-        let ks = unsafe { ksock_from_node(node) };
+        let ks = ksock_from_node(node);
         if ks.is_null() {
             return VFS_POLLERR as c_int;
         }
         let (idx, kind) = {
-            // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is
+            // `ks` is this node's live `Ksock`; the shared borrow is
             // consumed by the field copies below and is dead before the smoltcp
             // readiness queries, which cannot touch the row.
-            let k = unsafe { &*ks };
+            let k = ptr::as_ref(ks);
             (k.proto_idx, k.kind)
         };
         let mut revents: u32 = 0;
@@ -514,28 +496,19 @@ static mut SOCKET_OPS: VfsOps = VfsOps {
 };
 
 pub fn ksock_init() {
-    // SAFETY: `ksock_table` is a kernel-lifetime static array; this runs at boot
-    // before any socket exists, and the loop stays inside the array.
-    unsafe {
-        for s in (*core::ptr::addr_of_mut!(ksock_table)).iter_mut() {
-            s.used = 0;
-        }
+    for s in ptr::as_mut(core::ptr::addr_of_mut!(ksock_table)).iter_mut() {
+        s.used = 0;
     }
 }
 
-/// # Safety
-///
 /// `node` must be null or point to a live `VfsNode` (the C `vfs_node_t`) that
 /// stays live for the call; when non-null its `type_` and `priv_` fields must be
 /// readable, since `type_` decides whether `priv_` really is a `Ksock` pointer.
-pub unsafe fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
+pub fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
     if node.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: the caller contract (see # Safety) makes `node` a live node; the
-    // shared borrow is consumed by the field reads below, which are all this
-    // function does, so no aliasing can occur.
-    let n = unsafe { &*node };
+    let n = ptr::as_ref(node);
     if n.type_ != VFS_SOCKET {
         return core::ptr::null_mut();
     }
@@ -549,25 +522,23 @@ pub unsafe fn ksock_from_node(node: *mut VfsNode) -> *mut Ksock {
 /// The flag lives on the socket, not on the file: a dup'd fd shares the same
 /// open file description, so it shares the mode, which matches POSIX.
 ///
-/// # Safety
-///
 /// `node` must be null or a live VFS node that stays valid for the call (the VFS
 /// layer holds an open fd's node); when non-null its `type_`/`priv_` fields must
 /// be readable, since they decide whether it is a socket node.
-pub unsafe fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_int {
+pub fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_int {
     if node.is_null() {
         return -1;
     }
-    // SAFETY: `node` is non-null here and is a live VFS node, as the VFS layer
+    // `node` is non-null here and is a live VFS node, as the VFS layer
     // guarantees for a fcntl on an open fd; `ksock_from_node` re-checks the node
     // type, so `ks` is null (checked) or this node's own `Ksock`.
-    let ks = unsafe { ksock_from_node(node) };
+    let ks = ksock_from_node(node);
     if ks.is_null() {
         return -1;
     }
-    // SAFETY: `ks` is this node's live `Ksock`, which this call owns exclusively
+    // `ks` is this node's live `Ksock`, which this call owns exclusively
     // for the duration of the store.
-    unsafe { (*ks).nonblock = if on != 0 { 1 } else { 0 } };
+    ptr::as_mut(ks).nonblock = if on != 0 { 1 } else { 0 };
     0
 }
 
@@ -583,16 +554,16 @@ pub unsafe fn ksock_set_nonblock(node: *mut VfsNode, on: c_int) -> c_int {
 /// Returns 0, `-EADDRINUSE`, or -1 on a non-socket / invalid slot.
 pub fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int) -> c_int {
     const EADDRINUSE: c_int = 98;
-    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
+    // `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
     // a live `Ksock`.
-    let ks = unsafe { ksock_from_node(node) };
+    let ks = ksock_from_node(node);
     if ks.is_null() {
         return -1;
     }
-    // SAFETY: `ks` is this node's live `Ksock`; the field copies consume the
+    // `ks` is this node's live `Ksock`; the field copies consume the
     // shared borrow and end it before any table access below.
-    let (kind, idx, reuse) = unsafe {
-        let k = &*ks;
+    let (kind, idx, reuse) = {
+        let k = ptr::as_ref(ks);
         (k.kind, k.proto_idx, k.so_reuseaddr != 0 || reuseaddr != 0)
     };
     if kind == KS_TCP {
@@ -600,31 +571,27 @@ pub fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int)
             return -1;
         }
         let i = idx as usize;
-        // SAFETY: `tcp_lock` serializes the TCP slot table against the poll
-        // thread's `sync_tcp_pcbs_from_smoltcp`, and `i` is bounds-checked above.
-        unsafe {
-            tcp::tcp_lock();
-            if port != 0 && !reuse {
-                let mut taken = false;
-                for j in 0..TCP_MAX_SOCKETS {
-                    if j != i
-                        && tcp::tcp_sockets[j].used != 0
-                        && tcp::tcp_sockets[j].local_port == port
-                    {
-                        taken = true;
-                        break;
-                    }
-                }
-                if taken {
-                    tcp::tcp_unlock();
-                    return -EADDRINUSE;
+        tcp::tcp_lock();
+        if port != 0 && !reuse {
+            let mut taken = false;
+            for j in 0..TCP_MAX_SOCKETS {
+                let tj = ptr::as_ref(core::ptr::addr_of!(tcp::tcp_sockets))[j];
+                if j != i && tj.used != 0 && tj.local_port == port {
+                    taken = true;
+                    break;
                 }
             }
-            let s = &mut tcp::tcp_sockets[i];
+            if taken {
+                tcp::tcp_unlock();
+                return -EADDRINUSE;
+            }
+        }
+        {
+            let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(tcp::tcp_sockets))[i];
             s.local_port = port;
             s.local_ip = ip_host;
-            tcp::tcp_unlock();
         }
+        tcp::tcp_unlock();
         return 0;
     }
     if kind == KS_UDP {
@@ -636,24 +603,17 @@ pub fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int)
         // `sync_udp_pcbs_from_smoltcp` runs under it), so the scan and the store
         // go through `with_iface_sockets` instead of touching the table directly.
         let r = crate::stack::with_iface_sockets(|_iface, _socks| {
-            // SAFETY: `i` is bounds-checked above and `with_iface_sockets` holds
-            // `STACK_LOCK` for the whole closure, so the scan and the store are
-            // serialized against every other UDP path.
-            unsafe {
-                if port != 0 && !reuse {
-                    for j in 0..UDP_SOCK_MAX {
-                        if j != i
-                            && udp::udp_socks[j].used != 0
-                            && udp::udp_socks[j].local_port == port
-                        {
-                            return EADDRINUSE as i32;
-                        }
+            if port != 0 && !reuse {
+                for j in 0..UDP_SOCK_MAX {
+                    let uj = ptr::as_ref(core::ptr::addr_of!(udp::udp_socks))[j];
+                    if j != i && uj.used != 0 && uj.local_port == port {
+                        return EADDRINUSE as i32;
                     }
                 }
-                udp::udp_socks[i].local_port = port;
-                udp::udp_socks[i].local_ip = ip_host;
-                0i32
             }
+            ptr::as_mut(core::ptr::addr_of_mut!(udp::udp_socks))[i].local_port = port;
+            ptr::as_mut(core::ptr::addr_of_mut!(udp::udp_socks))[i].local_ip = ip_host;
+            0i32
         });
         return r.unwrap_or(-1);
     }
@@ -665,10 +625,8 @@ pub fn ksock_bind(node: *mut VfsNode, port: u16, ip_host: u32, reuseaddr: c_int)
 ///
 /// Returns 0, `-EADDRINUSE`, or -1 on a non-socket / invalid slot / null addr.
 ///
-/// # Safety
-///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-pub unsafe fn ksock_bind6(
+pub fn ksock_bind6(
     node: *mut VfsNode,
     port: u16,
     addr: *const u8,
@@ -679,19 +637,17 @@ pub unsafe fn ksock_bind6(
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
-    // readable buffer and `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
-    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
+    ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
+    // `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
     // a live `Ksock`.
-    let ks = unsafe { ksock_from_node(node) };
+    let ks = ksock_from_node(node);
     if ks.is_null() {
         return -1;
     }
-    // SAFETY: `ks` is this node's live `Ksock`; the field copies consume the
+    // `ks` is this node's live `Ksock`; the field copies consume the
     // shared borrow and end it before any table access below.
-    let (kind, idx, reuse) = unsafe {
-        let k = &*ks;
+    let (kind, idx, reuse) = {
+        let k = ptr::as_ref(ks);
         (k.kind, k.proto_idx, k.so_reuseaddr != 0 || reuseaddr != 0)
     };
     if kind == KS_TCP {
@@ -699,31 +655,28 @@ pub unsafe fn ksock_bind6(
             return -1;
         }
         let i = idx as usize;
-        // SAFETY: `tcp_lock` serializes the TCP slot table against the poll
-        // thread's `sync_tcp_pcbs_from_smoltcp`, and `i` is bounds-checked above.
-        unsafe {
-            tcp::tcp_lock();
-            if port != 0 && !reuse {
-                let mut taken = false;
-                for j in 0..TCP_MAX_SOCKETS {
-                    if j != i
-                        && tcp::tcp_sockets[j].used != 0
-                        && tcp::tcp_sockets[j].local_port == port
-                    {
-                        taken = true;
-                        break;
-                    }
-                }
-                if taken {
-                    tcp::tcp_unlock();
-                    return -EADDRINUSE;
+        tcp::tcp_lock();
+        if port != 0 && !reuse {
+            let mut taken = false;
+            for j in 0..TCP_MAX_SOCKETS {
+                let tj = ptr::as_ref(core::ptr::addr_of!(tcp::tcp_sockets))[j];
+                if j != i && tj.used != 0 && tj.local_port == port {
+                    taken = true;
+                    break;
                 }
             }
-            tcp::tcp_sockets[i].local_port = port;
-            // A v6 socket carries no v4 bind address.
-            tcp::tcp_sockets[i].local_ip = 0;
-            tcp::tcp_unlock();
+            if taken {
+                tcp::tcp_unlock();
+                return -EADDRINUSE;
+            }
         }
+        {
+            let s = &mut ptr::as_mut(core::ptr::addr_of_mut!(tcp::tcp_sockets))[i];
+            s.local_port = port;
+            // A v6 socket carries no v4 bind address.
+            s.local_ip = 0;
+        }
+        tcp::tcp_unlock();
         tcp::tcp_set_local6(i, a6);
         return 0;
     }
@@ -759,16 +712,14 @@ pub fn ksock_getpeername(node: *mut VfsNode, out: *mut SockAddrIn) -> c_int {
 /// the socket has none yet (unconnected peer, unplaced slot).  The family is
 /// taken from the socket, so an unknown address becomes that family's wildcard.
 fn sock_endpoint(node: *mut VfsNode, peer: bool) -> Option<(SockAddr, u16)> {
-    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
+    // `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
     // a live `Ksock`.
-    let ks = unsafe { ksock_from_node(node) };
+    let ks = ksock_from_node(node);
     if ks.is_null() {
         return None;
     }
     let (idx, kind, family) = {
-        // SAFETY: `ks` is this node's live `Ksock`; the shared borrow is consumed
-        // by the field copies and is dead before the endpoint queries below.
-        let k = unsafe { &*ks };
+        let k = ptr::as_ref(ks);
         (k.proto_idx, k.kind, k.family as u16)
     };
     if kind == KS_TCP {
@@ -841,10 +792,7 @@ fn sock_name(node: *mut VfsNode, out: *mut SockAddrIn, peer: bool) -> c_int {
         }
         SockAddr::V6(_) => 0,
     };
-    // SAFETY: the caller contract of `ksock_getsockname`/`ksock_getpeername`
-    // makes `out` (checked non-null above) a writable `SockAddrIn` that stays
-    // live for the call, so the borrow is valid and exclusive.
-    let out = unsafe { &mut *out };
+    let out = ptr::as_mut(out);
     out.sin_family = AF_INET;
     out.sin_port = port.to_be();
     // The endpoint helpers hand back host-order numbers; a sockaddr_in wants
@@ -858,11 +806,9 @@ fn sock_name(node: *mut VfsNode, out: *mut SockAddrIn, peer: bool) -> c_int {
 /// (or peer) address as sixteen big-endian octets and the port in network order.
 /// Returns 0, or -1 when the socket has no such address yet.
 ///
-/// # Safety
-///
 /// `out_addr` must point to 16 writable bytes and `out_port` to a writable,
 /// aligned `u16`; both stay live for the duration of the call.
-pub unsafe fn ksock_sockname6(
+pub fn ksock_sockname6(
     node: *mut VfsNode,
     peer: c_int,
     out_addr: *mut u8,
@@ -878,21 +824,14 @@ pub unsafe fn ksock_sockname6(
         SockAddr::V6(a) => a,
         SockAddr::V4(_) => [0u8; 16],
     };
-    // SAFETY: the caller contract makes `out_addr` a 16-byte writable buffer and
-    // `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16) };
-    // SAFETY: the caller contract makes `out_port` a writable, aligned `u16`.
-    unsafe { *out_port = port.to_be() };
+    ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16);
+    ptr::write(out_port, port.to_be());
     0
 }
 
 fn ksock_alloc() -> *mut Ksock {
-    // SAFETY: `ksock_table` is a kernel-lifetime static array; the scan stays
-    // inside it and returns a pointer to one of its rows, which the caller then
-    // owns exclusively (the row is marked `used` before it is returned).
-    unsafe {
-        for s in (*core::ptr::addr_of_mut!(ksock_table)).iter_mut() {
-            if s.used == 0 {
+    for s in ptr::as_mut(core::ptr::addr_of_mut!(ksock_table)).iter_mut() {
+        if s.used == 0 {
                 // Clear the whole row: a recycled slot used to keep the
                 // previous socket's shutdown flags and options (a closed
                 // socket that had shutdown_wr set made the next write() on
@@ -913,45 +852,27 @@ fn ksock_alloc() -> *mut Ksock {
                 return s as *mut Ksock;
             }
         }
-    }
     core::ptr::null_mut()
 }
 
-/// # Safety
-///
 /// `node` must be non-null and point to a live `VfsNode` whose `refcount` field
-/// is a valid, properly aligned `AtomicU32` (every node in this crate is created
-/// that way) and which stays live at least as long as the returned reference is
-/// used.
-unsafe fn node_refcount(node: *mut VfsNode) -> &'static AtomicU32 {
-    // SAFETY: the caller contract (see # Safety) makes `node` a valid pointer
-    // whose `refcount` field is a live, aligned 32-bit word; `addr_of!` forms
-    // that field pointer without creating an intermediate reference to `node`.
-    let p = unsafe { core::ptr::addr_of!((*node).refcount) };
-    // SAFETY: `AtomicU32` has the same size and alignment as the `u32` field, so
-    // the reinterpreted pointer is valid for the atomic accesses callers make,
-    // and the node outlives the returned reference.
-    unsafe { &*(p as *const AtomicU32) }
+/// is a valid, properly aligned `AtomicU32` and which stays live at least as long
+/// as the returned reference is used.
+fn node_refcount(node: *mut VfsNode) -> &'static AtomicU32 {
+    let p = core::ptr::addr_of!(ptr::as_ref(node).refcount);
+    ptr::as_ref(p.cast::<AtomicU32>())
 }
 
-/// # Safety
-///
 /// `ks` must be a `Ksock` row returned by `ksock_alloc` that the caller owns
 /// exclusively for the duration of the call, or null (a node with a null `priv_`
 /// is then created).
-unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
+fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
     let node = ffi_kernel::kmalloc(core::mem::size_of::<VfsNode>()).cast::<VfsNode>();
     if node.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: `kmalloc` returned `size_of::<VfsNode>()` writable bytes and the
-    // null check above guarantees `node` is valid, so this zeroes exactly the
-    // freshly-allocated node.
-    unsafe { core::ptr::write_bytes(node.cast::<u8>(), 0, core::mem::size_of::<VfsNode>()) };
-    // SAFETY: `node` is the fresh, zeroed block above and is not published yet,
-    // so this borrow is exclusive and nothing else can reach it; it ends before
-    // `node_refcount` re-borrows a field of the same node.
-    let n = unsafe { &mut *node };
+    ptr::write_bytes(node.cast::<u8>(), 0, core::mem::size_of::<VfsNode>());
+    let n = ptr::as_mut(node);
     n.type_ = VFS_SOCKET;
     n.ops = core::ptr::addr_of_mut!(SOCKET_OPS);
     n.priv_ = ks.cast::<c_void>();
@@ -961,9 +882,7 @@ unsafe fn make_socket_node(ks: *mut Ksock) -> *mut VfsNode {
     // decrement in socket_close_op at 1, so close() never released the node,
     // its Ksock slot or its TCP/UDP slot — socket() failed after KSOCK_MAX
     // closes.  memfd/pipe start their nodes at 0 for the same reason.
-    // SAFETY: `node` is still the live, exclusively-owned block and its
-    // `refcount` field is a valid `AtomicU32`, which `node_refcount` requires.
-    unsafe { node_refcount(node).store(0, Ordering::Relaxed) };
+    node_refcount(node).store(0, Ordering::Relaxed);
     node
 }
 
@@ -974,17 +893,14 @@ pub fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNod
     if fam != AF_INET && fam != AF_INET6 {
         return core::ptr::null_mut();
     }
-    // SAFETY: `ksock_alloc` returns null (checked below) or an exclusively owned
+    // `ksock_alloc` returns null (checked below) or an exclusively owned
     // free row of the kernel-lifetime `ksock_table`, which this call owns until
     // it hands the pointer to `make_socket_node`.
     let ks = ksock_alloc();
     if ks.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: `ks` is this call's exclusively-owned fresh row; the borrow ends
-    // before `make_socket_node` takes ownership of the pointer, and the calls in
-    // between (`tcp_socket`/`udp_sock_alloc`) cannot reach the row.
-    let k = unsafe { &mut *ks };
+    let k = ptr::as_mut(ks);
     k.family = fam as u8;
     if type_ == 1 {
         let idx = tcp::tcp_socket();
@@ -1020,13 +936,11 @@ pub fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNod
         k.used = 0;
         return core::ptr::null_mut();
     }
-    // SAFETY: `ks` is a live, exclusively-owned `Ksock` row, which is the
-    // contract `make_socket_node` requires.
-    let node = unsafe { make_socket_node(ks) };
+    let node = make_socket_node(ks);
     if node.is_null() {
-        // SAFETY: `make_socket_node` failed without taking ownership, so the row
+        // `make_socket_node` failed without taking ownership, so the row
         // is still this call's; the borrow is re-established for the cleanup.
-        let k = unsafe { &mut *ks };
+        let k = ptr::as_mut(ks);
         if k.kind == KS_TCP {
             let _ = tcp::tcp_close(k.proto_idx);
         } else if k.kind == KS_RAW {
@@ -1043,39 +957,34 @@ pub fn ksock_create(domain: c_int, type_: c_int, protocol: c_int) -> *mut VfsNod
 /// (whose ownership the caller takes) together with the peer's endpoint and
 /// port; `(null, _, _)` when there is nothing to accept.
 ///
-/// # Safety
-///
 /// `listen_node` must be null or a live VFS socket node.
-unsafe fn tcp_accept_inner(listen_node: *mut VfsNode) -> (*mut VfsNode, SockAddr, u16) {
+fn tcp_accept_inner(listen_node: *mut VfsNode) -> (*mut VfsNode, SockAddr, u16) {
     const FAIL: (*mut VfsNode, SockAddr, u16) = (core::ptr::null_mut(), SockAddr::V4(0), 0);
-    // SAFETY: `ksock_from_node` type-checks `listen_node`, so `lks` is null
+    // `ksock_from_node` type-checks `listen_node`, so `lks` is null
     // (checked) or a live `Ksock`.
-    let lks = unsafe { ksock_from_node(listen_node) };
+    let lks = ksock_from_node(listen_node);
     if lks.is_null() {
         return FAIL;
     }
     let (lks_kind, listen_idx) = {
-        // SAFETY: `lks` is this node's live `Ksock`; the shared borrow is
+        // `lks` is this node's live `Ksock`; the shared borrow is
         // consumed by the field copies on the next line and is dead before any
         // other call.
-        let l = unsafe { &*lks };
+        let l = ptr::as_ref(lks);
         (l.kind, l.proto_idx as usize)
     };
     if lks_kind != KS_TCP || listen_idx >= TCP_MAX_SOCKETS {
         return FAIL;
     }
     let ready = {
-        // SAFETY: `listen_idx` is bounds-checked above; the borrow is consumed
-        // by the readiness test and is dead before the accept transfer below.
-        let ls = unsafe { &mut tcp::tcp_sockets[listen_idx] };
+        let ls = &mut ptr::as_mut(core::ptr::addr_of_mut!(tcp::tcp_sockets))[listen_idx];
         ls.used != 0 && ls.accept_ready != 0
     };
     if !ready {
         return FAIL;
     }
-    // SAFETY: `tcp_sockets` is a kernel-lifetime static array and `i` comes from
-    // a range bounded by `TCP_MAX_SOCKETS`, so the scan stays inside it.
-    let child_idx = (0..TCP_MAX_SOCKETS).find(|i| unsafe { tcp::tcp_sockets[*i].used == 0 });
+    let child_idx =
+        (0..TCP_MAX_SOCKETS).find(|i| ptr::as_ref(core::ptr::addr_of!(tcp::tcp_sockets))[*i].used == 0);
     let Some(ci) = child_idx else {
         return FAIL;
     };
@@ -1096,36 +1005,26 @@ unsafe fn tcp_accept_inner(listen_node: *mut VfsNode) -> (*mut VfsNode, SockAddr
         tcp::tcp_free_slot(ci);
         return (core::ptr::null_mut(), peer_addr, rport);
     }
-    // SAFETY: `ks` is this call's exclusively-owned fresh row, handed to
-    // `make_socket_node` below; the borrow ends before that call.
-    let k = unsafe { &mut *ks };
+    let k = ptr::as_mut(ks);
     k.kind = KS_TCP;
     k.proto_idx = ci as i32;
     // The accepted child inherits the listener's address family.
-    // SAFETY: `lks` is the live listener row; the read is a plain `u8`.
-    k.family = unsafe { (*lks).family };
-    // SAFETY: the row is live and exclusively owned by this call, which is the
-    // contract `make_socket_node` requires.
-    let node = unsafe { make_socket_node(ks) };
+    k.family = ptr::as_ref(lks).family;
+    let node = make_socket_node(ks);
     if node.is_null() {
-        // SAFETY: `make_socket_node` failed without taking ownership of the row.
-        unsafe { (*ks).used = 0 };
+        (*ptr::as_mut(ks)).used = 0;
         tcp::tcp_free_slot(ci);
     }
     (node, peer_addr, rport)
 }
 
-/// # Safety
-///
 /// `listen_node` must be null or a live VFS socket node; `peer_out` must be
 /// null or point to a writable `SockAddrIn` that stays live for the call.
-pub unsafe fn ksock_tcp_accept(
+pub fn ksock_tcp_accept(
     listen_node: *mut VfsNode,
     peer_out: *mut SockAddrIn,
 ) -> *mut VfsNode {
-    // SAFETY: `listen_node`'s contract (see # Safety) is forwarded to the inner
-    // routine.
-    let (node, addr, rport) = unsafe { tcp_accept_inner(listen_node) };
+    let (node, addr, rport) = tcp_accept_inner(listen_node);
     if !peer_out.is_null() {
         let v4 = match addr {
             SockAddr::V4(v) => v,
@@ -1133,9 +1032,7 @@ pub unsafe fn ksock_tcp_accept(
             // view is `ksock_tcp_accept6`).
             SockAddr::V6(_) => 0,
         };
-        // SAFETY: the caller contract (see # Safety) makes `peer_out` a writable
-        // `SockAddrIn`; the null check above excluded null.
-        let out = unsafe { &mut *peer_out };
+        let out = ptr::as_mut(peer_out);
         out.sin_family = AF_INET;
         out.sin_port = rport.to_be();
         // Host-order number from smoltcp -> network order for the sockaddr.
@@ -1149,31 +1046,24 @@ pub unsafe fn ksock_tcp_accept(
 /// big-endian octets and the port in network order.  Returns the new node (or
 /// null), exactly as `ksock_tcp_accept`.
 ///
-/// # Safety
-///
 /// `listen_node` must be null or a live VFS socket node; `out_addr` (when
 /// non-null) must point to 16 writable bytes and `out_port` to a writable,
 /// aligned `u16`, both live for the call.
-pub unsafe fn ksock_tcp_accept6(
+pub fn ksock_tcp_accept6(
     listen_node: *mut VfsNode,
     out_addr: *mut u8,
     out_port: *mut u16,
 ) -> *mut VfsNode {
-    // SAFETY: `listen_node`'s contract (see # Safety) is forwarded to the inner
-    // routine.
-    let (node, addr, rport) = unsafe { tcp_accept_inner(listen_node) };
+    let (node, addr, rport) = tcp_accept_inner(listen_node);
     if !out_addr.is_null() {
         let a6 = match addr {
             SockAddr::V6(a) => a,
             SockAddr::V4(_) => [0u8; 16],
         };
-        // SAFETY: the caller contract makes `out_addr` a 16-byte writable buffer
-        // and `a6` is a distinct local array.
-        unsafe { core::ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16) };
+        ptr::copy_nonoverlapping(a6.as_ptr(), out_addr, 16);
     }
     if !out_port.is_null() {
-        // SAFETY: the caller contract makes `out_port` a writable, aligned `u16`.
-        unsafe { *out_port = rport.to_be() };
+        ptr::write(out_port, rport.to_be());
     }
     node
 }
@@ -1181,25 +1071,18 @@ pub unsafe fn ksock_tcp_accept6(
 /// `shutdown()` on a socket fd.  Sets the C-visible shutdown flags on the
 /// `Ksock` row and, for TCP, asks the stack to send our FIN.
 ///
-/// # Safety
-///
 /// `node` must be null or a live VFS node that stays valid for the call; when
 /// non-null its `type_`/`priv_` fields must be readable, since they decide
 /// whether it is a socket node.
-pub unsafe fn ksock_shutdown(node: *mut VfsNode, how: c_int) -> c_int {
-    // SAFETY: `ksock_from_node` type-checks `node`, so `ks` is null (checked) or
-    // a live `Ksock`.
-    let ks = unsafe { ksock_from_node(node) };
+pub fn ksock_shutdown(node: *mut VfsNode, how: c_int) -> c_int {
+    let ks = ksock_from_node(node);
     if ks.is_null() {
         return -1;
     }
     if how != SHUT_RD && how != SHUT_WR && how != SHUT_RDWR {
         return -1;
     }
-    // SAFETY: `ks` is this node's live `Ksock`; the borrow is consumed by the
-    // flag updates below, and `tcp_shutdown_wr` takes only the slot index, so it
-    // cannot touch the row while the borrow is live.
-    let k = unsafe { &mut *ks };
+    let k = ptr::as_mut(ks);
     if how == SHUT_RD || how == SHUT_RDWR {
         k.shutdown_rd = 1;
     }
