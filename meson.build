@@ -305,7 +305,6 @@ subdir('Cact/fs/rust_vfs')
 subdir('Cact/kernel/kernel_rust')
 subdir('Cact/kernel/kernel_abi')
 subdir('Cact/kernel/kernel_link')
-subdir('Cact/crypto/hmac_ffi')
 
 # ------------------------------------------------------------------------------
 # Final link
@@ -424,7 +423,7 @@ rust_crate_dirs = [
   src_root / 'Cact/kernel/proc/sched',
   src_root / 'Cact/kernel/memory/rust_mm',
   src_root / 'Cact/net/rust_net',
-  src_root / 'Cact/crypto/hmac_ffi',
+  src_root / 'Cact/crypto',
 ]
 
 run_target('rust-clean',

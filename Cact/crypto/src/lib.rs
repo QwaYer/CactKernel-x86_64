@@ -37,3 +37,5 @@ pub mod sig;
 pub mod x509;
 pub mod provider;
 pub mod signer;
+// `/dev/crypto` entry points (formerly the standalone `cact_hmac_ffi` crate).
+pub mod crypt;

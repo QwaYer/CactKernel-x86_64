@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-// crypt.rs — /dev/crypto userspace FFI (linked into the kernel via the
-// cact_hmac_ffi staticlib).
+// crypt.rs — /dev/crypto userspace FFI.
 //
-// One-shot, allocation-free primitives mirroring the algorithms the rustls
-// cact_crypto provider ships (SHA-256/384, HMAC, HKDF, AES-GCM, X25519,
-// P-256, RDRAND).  They operate on kernel-owned buffers that the devfs
-// driver has already copied from / to user space.
+// One-shot, allocation-free primitives mirroring the algorithms this crate's
+// rustls provider (hash/hkdf/aead/kx) ships (SHA-256/384, HMAC, HKDF, AES-GCM,
+// X25519, P-256).  They operate on kernel-owned buffers that the devfs driver
+// (`devfs_crypto.c`) has already copied from / to user space.
 //
 // Return values: 0 = success, negative = -errno style error (-1 generic
 // failure / tag mismatch, -22 invalid argument).
@@ -539,4 +538,27 @@ pub extern "C" fn cact_crypt_p256_derive(
         core::ptr::copy_nonoverlapping(shared.raw_secret_bytes().as_slice().as_ptr(), shared_out, 32);
     }
     0
+}
+
+/// XOR-fold `data_len` bytes at `data` into a `u32` (a debug aid; returns
+/// `0xFFFFFFFF` for a null pointer).  Moved here with the rest of the
+/// `cact_hmac_ffi` entry points so the crate could be folded into `cact_crypto`.
+///
+/// # Safety
+///
+/// `data` must be null or point to at least `data_len` readable bytes that stay
+/// valid for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn cact_debug_xor(data: *const u8, data_len: u32) -> u32 {
+    if data.is_null() {
+        return 0xFFFFFFFF;
+    }
+    // SAFETY: `data` is non-null (checked above) and the caller guarantees
+    // `data_len` readable bytes at it, valid for the duration of the call.
+    let slice = unsafe { core::slice::from_raw_parts(data, data_len as usize) };
+    let mut x: u32 = 0;
+    for &b in slice {
+        x ^= b as u32;
+    }
+    x
 }

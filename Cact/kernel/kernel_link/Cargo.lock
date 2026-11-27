@@ -117,18 +117,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cact_hmac_ffi"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "hkdf",
- "hmac",
- "p256",
- "sha2",
- "x25519-dalek",
-]
-
-[[package]]
 name = "cact_hv"
 version = "0.1.0"
 dependencies = [
@@ -141,7 +129,6 @@ version = "0.1.0"
 dependencies = [
  "cact80211",
  "cact_drm",
- "cact_hmac_ffi",
  "cact_hv",
  "cact_mm",
  "cact_net",

@@ -21,7 +21,7 @@ webpki = { path = "vendor/rustls-webpki", package = "rustls-webpki", default-fea
 # pure-Rust no_std crypto.  sha2 is built force-soft on purpose: the
 # cpufeatures-dispatched SIMD backends are unusable in kernel mode (the C build
 # flags say -mno-sse, and fpu_hd.c enables only CR4.OSFXSR — never OSXSAVE, so
-# an AVX2 backend would take #UD).  hmac_ffi builds sha2 the same way.
+# an AVX2 backend would take #UD).
 sha2 = { version = "0.10", default-features = false, features = ["oid", "force-soft"] }
 hmac = { version = "0.12", default-features = false }
 hkdf = { version = "0.12", default-features = false }
@@ -29,7 +29,7 @@ chacha20 = { version = "0.9", default-features = false }
 poly1305 = { version = "0.8", default-features = false }
 aead = { version = "0.5", default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
-x25519-dalek = { version = "2", default-features = false, features = ["alloc", "precomputed-tables"] }
+x25519-dalek = { version = "2", default-features = false, features = ["alloc", "precomputed-tables", "static_secrets"] }
 p256 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdh", "ecdsa", "pkcs8"] }
 p384 = { version = "0.13", default-features = false, features = ["arithmetic", "ecdsa", "pkcs8"] }
 rsa = { version = "0.9", default-features = false, features = ["u64_digit"] }

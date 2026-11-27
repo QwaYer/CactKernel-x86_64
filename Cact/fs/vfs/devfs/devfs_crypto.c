@@ -13,7 +13,7 @@
 // devfs_crypto.c — /dev/crypto, a kernel-service device exposing the
 // in-kernel crypto primitives (the same algorithms the rustls cact_crypto
 // provider ships: SHA-256/384, HMAC, HKDF, AES-GCM, X25519, P-256, RDRAND)
-// to userspace.  All algorithms run in the Rust cact_hmac_ffi crate; this
+// to userspace.  All algorithms run in the Rust cact_crypto crate; this
 // file only copies ioctl buffers across the user/kernel boundary.
 //
 //   /dev/crypto  ioctl  -> random/hash/hmac/hkdf/aead/key-exchange
@@ -28,7 +28,7 @@
 #define ENOMEM 12
 #endif
 
-// cact_crypto userspace FFI (Rust, cact_hmac_ffi).  Return 0 on success,
+// cact_crypto userspace FFI (Rust).  Return 0 on success,
 // negative otherwise.
 extern int cact_crypt_hash(uint32_t alg, const uint8_t *data, uint32_t data_len,
                            uint8_t *digest);

@@ -21,7 +21,6 @@
 #![forbid(unsafe_code)]
 
 pub use cact_drm as drm;
-pub use cact_hmac_ffi as hmac;
 pub use cact_hv as hv;
 pub use cact_mm as mm;
 pub use cact_net as net;

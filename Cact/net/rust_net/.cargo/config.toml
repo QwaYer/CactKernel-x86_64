@@ -10,8 +10,7 @@ target = "x86_64-cact.json"
 # and would pick AVX2 on a modern CPU, which the kernel cannot run: it enables
 # CR4.OSFXSR/OSXMMEXCPT (so SSE2 is fine and the target spec allows it) but
 # never CR4.OSXSAVE, so no YMM state is saved and XSAVE-based code faults.
-# sha2 is pinned through its `force-soft` feature in Cact/crypto/Cargo.toml,
-# the way hmac_ffi already does it.
+# sha2 is pinned through its `force-soft` feature in Cact/crypto/Cargo.toml.
 rustflags = [
   "-C", "target-cpu=x86-64",
   "--cfg", "chacha20_force_soft",
