@@ -16,6 +16,9 @@
 //! and [`known`] take no lock of their own; only the enumeration entry points
 //! below, reached from a syscall, take a [`StackGuard`].
 
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
+
 use crate::ffi_kernel;
 use crate::stack::StackGuard;
 
@@ -149,7 +152,7 @@ pub struct CactFwConn {
 
 const _: () = assert!(core::mem::size_of::<CactFwConn>() == 92);
 
-static mut CONNS: [Conn; CONN_MAX] = [Conn::empty(); CONN_MAX];
+static CONNS: KCell<[Conn; CONN_MAX]> = KCell::new([Conn::empty(); CONN_MAX]);
 
 /// Seconds a flow of `proto`/`state` may stay idle before it is aged out.
 fn timeout_secs(proto: u8, state: u8) -> u32 {
@@ -209,10 +212,7 @@ fn free_slot(table: &[Conn; CONN_MAX], now: u32) -> usize {
 ///
 /// The caller must hold the stack lock.
 pub(crate) fn known(key: &Key) -> bool {
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow is shared and dead before returning.
-    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
-    find(table, key).is_some()
+    CONNS.with(|table| find(table, key).is_some())
 }
 
 /// The outcome of classifying one packet with [`track`].
@@ -247,68 +247,64 @@ pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -
             };
         }
     }
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow ends before the function returns.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from task/interrupt context.
+    // `timer_ticks_get` is a kernel service that reads the tick counter.
     let now = ffi_kernel::timer_ticks_get();
-
-    if let Some((i, rev)) = find(table, key) {
-        let c = &mut table[i];
-        c.last_tick = now;
-        c.packets = c.packets.wrapping_add(1);
-        c.bytes = c.bytes.wrapping_add(len);
-        if c.key.proto == 6 && tcp_flags & TCP_RST != 0 {
-            // A reset tears the flow down; report the closing packet and forget it.
-            c.used = false;
+    CONNS.with(|table| {
+        if let Some((i, rev)) = find(table, key) {
+            let c = &mut table[i];
+            c.last_tick = now;
+            c.packets = c.packets.wrapping_add(1);
+            c.bytes = c.bytes.wrapping_add(len);
+            if c.key.proto == 6 && tcp_flags & TCP_RST != 0 {
+                // A reset tears the flow down; report the closing packet and forget it.
+                c.used = false;
+                return Tracked {
+                    state: STATE_ESTABLISHED,
+                    rev,
+                    idx: i as u32,
+                };
+            }
+            if c.state == STATE_NEW && (rev || (c.key.proto == 6 && tcp_flags & TCP_ACK != 0)) {
+                c.state = STATE_ESTABLISHED;
+            }
+            let state = c.state;
             return Tracked {
-                state: STATE_ESTABLISHED,
+                state,
                 rev,
                 idx: i as u32,
             };
         }
-        if c.state == STATE_NEW && (rev || (c.key.proto == 6 && tcp_flags & TCP_ACK != 0)) {
-            c.state = STATE_ESTABLISHED;
-        }
-        let state = c.state;
-        return Tracked {
-            state,
-            rev,
-            idx: i as u32,
-        };
-    }
 
-    let slot = free_slot(table, now);
-    let c = &mut table[slot];
-    *c = Conn {
-        used: true,
-        key: *key,
-        xlate: *key,
-        state: STATE_NEW,
-        last_tick: now,
-        packets: 1,
-        bytes: len,
-    };
-    Tracked {
-        state: STATE_NEW,
-        rev: false,
-        idx: slot as u32,
-    }
+        let slot = free_slot(table, now);
+        let c = &mut table[slot];
+        *c = Conn {
+            used: true,
+            key: *key,
+            xlate: *key,
+            state: STATE_NEW,
+            last_tick: now,
+            packets: 1,
+            bytes: len,
+        };
+        Tracked {
+            state: STATE_NEW,
+            rev: false,
+            idx: slot as u32,
+        }
+    })
 }
 
 /// The original tuple of flow `idx`.
 ///
 /// The caller must hold the stack lock.
 pub(crate) fn key_of(idx: u32) -> Key {
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow is shared and dead before returning.
-    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
-    if (idx as usize) < CONN_MAX && table[idx as usize].used {
-        table[idx as usize].key
-    } else {
-        Key::zero()
-    }
+    CONNS.with(|table| {
+        if (idx as usize) < CONN_MAX && table[idx as usize].used {
+            table[idx as usize].key
+        } else {
+            Key::zero()
+        }
+    })
 }
 
 /// The wire (translated) tuple of flow `idx`; equals the original key when the
@@ -316,127 +312,108 @@ pub(crate) fn key_of(idx: u32) -> Key {
 ///
 /// The caller must hold the stack lock.
 pub(crate) fn xlate_of(idx: u32) -> Key {
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow is shared and dead before returning.
-    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
-    if (idx as usize) < CONN_MAX && table[idx as usize].used {
-        table[idx as usize].xlate
-    } else {
-        Key::zero()
-    }
+    CONNS.with(|table| {
+        if (idx as usize) < CONN_MAX && table[idx as usize].used {
+            table[idx as usize].xlate
+        } else {
+            Key::zero()
+        }
+    })
 }
 
 /// Record that flow `idx` is translated to `xlate` in the forward direction.
 ///
 /// The caller must hold the stack lock.
 pub(crate) fn set_xlate(idx: u32, xlate: Key) {
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow ends before returning.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
-    if (idx as usize) < CONN_MAX && table[idx as usize].used {
-        table[idx as usize].xlate = xlate;
-    }
+    CONNS.with(|table| {
+        if (idx as usize) < CONN_MAX && table[idx as usize].used {
+            table[idx as usize].xlate = xlate;
+        }
+    });
 }
 
 /// Drop every flow idle for longer than its protocol/state timeout.  Called once
 /// per poll from `stack_poll`, which holds the stack lock.
 pub(crate) fn age() {
-    // SAFETY: `CONNS` is only touched under the stack lock, which the caller
-    // holds; the borrow ends before the function returns.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from this context.
     let now = ffi_kernel::timer_ticks_get();
-    for c in table.iter_mut() {
-        if !c.used {
-            continue;
+    CONNS.with(|table| {
+        for c in table.iter_mut() {
+            if !c.used {
+                continue;
+            }
+            let ttl = timeout_secs(c.key.proto, c.state) * TICKS_PER_SEC;
+            if now.wrapping_sub(c.last_tick) >= ttl {
+                c.used = false;
+            }
         }
-        let ttl = timeout_secs(c.key.proto, c.state) * TICKS_PER_SEC;
-        if now.wrapping_sub(c.last_tick) >= ttl {
-            c.used = false;
-        }
-    }
+    });
 }
 
 /// Number of live flows.
 pub fn rust_net_fw_conn_count() -> i32 {
     let _guard = StackGuard::new();
-    // SAFETY: `CONNS` is only touched under the stack lock, which `_guard`
-    // holds; the borrow is shared and dead before the guard drops.
-    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
-    table.iter().filter(|c| c.used).count() as i32
+    CONNS.with(|table| table.iter().filter(|c| c.used).count() as i32)
 }
 
 /// Fill `*out` with the `idx`-th live flow.  Returns 0 on success, -1 when `out`
-/// is NULL or `idx` is out of range (the range is `0 .. count`).
-///
-/// # Safety
-///
-/// `out` may be null (the call then returns -1); if non-null it must point to a
-/// writable, properly aligned [`CactFwConn`] that stays live for the call.
-pub unsafe fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) -> i32 {
+/// is NULL or `idx` is out of range (the range is `0 .. count`).  `out`, when
+/// non-null, must point to a writable, properly aligned [`CactFwConn`] that stays
+/// live for the call.
+pub fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) -> i32 {
     if out.is_null() {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: `CONNS` is only touched under the stack lock, which `_guard`
-    // holds; the borrow is shared and dead before the guard drops.
-    let table = unsafe { &*core::ptr::addr_of!(CONNS) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from this context.
     let now = ffi_kernel::timer_ticks_get();
-    let mut seen = 0u32;
-    for c in table.iter() {
-        if !c.used {
-            continue;
-        }
-        if seen == idx {
-            let age_ticks = now.wrapping_sub(c.last_tick);
-            let ttl = timeout_secs(c.key.proto, c.state) * TICKS_PER_SEC;
-            // SAFETY: the caller contract (see # Safety) makes `out` writable,
-            // aligned and live, and the null check above excluded null; the
-            // borrow is dead before returning.
-            let dst = unsafe { &mut *out };
-            dst.family = c.key.family;
-            dst.proto = c.key.proto;
-            dst.state = c.state;
-            dst.flags = 0;
-            dst.src = c.key.src;
-            dst.dst = c.key.dst;
-            dst.sport = c.key.sport;
-            dst.dport = c.key.dport;
-            // Report the translation only when the flow actually is translated.
-            if c.xlate != c.key {
-                dst.xsrc = c.xlate.src;
-                dst.xdst = c.xlate.dst;
-                dst.xsport = c.xlate.sport;
-                dst.xdport = c.xlate.dport;
-            } else {
-                dst.xsrc = [0; 16];
-                dst.xdst = [0; 16];
-                dst.xsport = 0;
-                dst.xdport = 0;
+    CONNS.with(|table| {
+        let mut seen = 0u32;
+        for c in table.iter() {
+            if !c.used {
+                continue;
             }
-            dst.age_ms = age_ticks * 10;
-            dst.ttl_ms = ttl.saturating_sub(age_ticks) * 10;
-            dst.packets = c.packets;
-            dst.bytes = c.bytes;
-            return 0;
+            if seen == idx {
+                let age_ticks = now.wrapping_sub(c.last_tick);
+                let ttl = timeout_secs(c.key.proto, c.state) * TICKS_PER_SEC;
+                let dst = ptr::as_mut(out);
+                dst.family = c.key.family;
+                dst.proto = c.key.proto;
+                dst.state = c.state;
+                dst.flags = 0;
+                dst.src = c.key.src;
+                dst.dst = c.key.dst;
+                dst.sport = c.key.sport;
+                dst.dport = c.key.dport;
+                // Report the translation only when the flow actually is translated.
+                if c.xlate != c.key {
+                    dst.xsrc = c.xlate.src;
+                    dst.xdst = c.xlate.dst;
+                    dst.xsport = c.xlate.sport;
+                    dst.xdport = c.xlate.dport;
+                } else {
+                    dst.xsrc = [0; 16];
+                    dst.xdst = [0; 16];
+                    dst.xsport = 0;
+                    dst.xdport = 0;
+                }
+                dst.age_ms = age_ticks * 10;
+                dst.ttl_ms = ttl.saturating_sub(age_ticks) * 10;
+                dst.packets = c.packets;
+                dst.bytes = c.bytes;
+                return 0;
+            }
+            seen += 1;
         }
-        seen += 1;
-    }
-    -1
+        -1
+    })
 }
 
 /// Forget every tracked flow.
 pub fn rust_net_fw_conn_flush() -> i32 {
     let _guard = StackGuard::new();
-    // SAFETY: `CONNS` is only touched under the stack lock, which `_guard`
-    // holds; the borrow is exclusive for the call and dead before the guard
-    // drops.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
-    for c in table.iter_mut() {
-        *c = Conn::empty();
-    }
+    CONNS.with(|table| {
+        for c in table.iter_mut() {
+            *c = Conn::empty();
+        }
+    });
     0
 }

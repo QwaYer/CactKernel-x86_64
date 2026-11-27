@@ -53,18 +53,12 @@ pub fn mac_equal(a: &MacAddr, b: &MacAddr) -> bool {
     a.b == b.b
 }
 
-/// # Safety
-///
-/// `skb` must be non-null and point to a live, initialised [`Skb`] — one
-/// returned by `skb_alloc` or received by a NIC driver — that the caller may
-/// access for the duration of the call, with `data_offset` maintained within
-/// `SKB_MAX_SIZE` (which every producer in this crate guarantees).
-pub unsafe fn skb_data_ptr(skb: *mut Skb) -> *mut u8 {
-    // SAFETY: the caller contract (see # Safety) makes `skb` a valid pointer to
-    // a live `Skb` that this call borrows and does not let escape.
-    let s = unsafe { &mut *skb };
-    let offset = s.data_offset;
-    // SAFETY: `offset` is the validated `data_offset`, which producers keep
-    // below `SKB_MAX_SIZE`, so the resulting pointer stays inside `s.data`.
-    unsafe { s.data.as_mut_ptr().add(offset as usize) }
+/// Pointer to `skb`'s payload, at its current `data_offset`.  `skb` must be
+/// non-null and point to a live, initialised [`Skb`] — one returned by
+/// `skb_alloc` or received by a NIC driver — with `data_offset` maintained
+/// within `SKB_MAX_SIZE` (which every producer in this crate guarantees).
+pub fn skb_data_ptr(skb: *mut Skb) -> *mut u8 {
+    let s = kernel_rust::ptr::as_mut(skb);
+    let offset = s.data_offset as usize;
+    s.data[offset..].as_mut_ptr()
 }

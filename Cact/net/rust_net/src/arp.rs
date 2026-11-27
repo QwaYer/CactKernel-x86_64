@@ -16,6 +16,9 @@
 //! lockless under the caller's hold and the readers must not be reached from the
 //! RX path.
 
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
+
 use crate::config;
 use crate::ffi_kernel;
 use crate::stack::StackGuard;
@@ -59,7 +62,7 @@ pub struct CactArpEntry {
     pub flags: u32,
 }
 
-static mut ARP_TABLE: [ArpEntry; ARP_TABLE_MAX] = [ArpEntry::empty(); ARP_TABLE_MAX];
+static ARP_TABLE: KCell<[ArpEntry; ARP_TABLE_MAX]> = KCell::new([ArpEntry::empty(); ARP_TABLE_MAX]);
 
 /// Record the sender of `frame` as a neighbor if it is an Ethernet/IPv4 ARP
 /// request or reply.  `slot` is the interface the frame arrived on, so the
@@ -75,15 +78,11 @@ pub(crate) fn note_frame(frame: &[u8], slot: usize) {
     if ip_host == config::ip_host_of(slot) {
         return;
     }
-    // SAFETY: only the RX path and this module's readers touch `ARP_TABLE`, and
-    // every one of them runs under `STACK_LOCK` (the RX path because the caller
-    // holds it, the readers because they take a `StackGuard`); the borrow is
-    // consumed before returning.
-    let table = unsafe { &mut *core::ptr::addr_of_mut!(ARP_TABLE) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from this context.
+    // Only the RX path and this module's readers touch `ARP_TABLE`, and every one
+    // of them runs under `STACK_LOCK` (the RX path because the caller holds it,
+    // the readers because they take a `StackGuard`).
     let now = ffi_kernel::timer_ticks_get();
-    record(table, now, ip_host, mac);
+    ARP_TABLE.with(|table| record(table, now, ip_host, mac));
 }
 
 /// Pull the sender protocol/hardware address out of an Ethernet/IPv4 ARP frame,
@@ -161,58 +160,52 @@ fn record(table: &mut [ArpEntry; ARP_TABLE_MAX], now: u32, ip_host: u32, mac: [u
 /// Number of live (not aged-out) neighbors.
 pub fn rust_net_arp_count() -> i32 {
     let _guard = StackGuard::new();
-    // SAFETY: `ARP_TABLE` is only touched under the stack lock, which `_guard`
-    // holds; the borrow is shared and dead before the guard drops.
-    let table = unsafe { &*core::ptr::addr_of!(ARP_TABLE) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from this context.
     let now = ffi_kernel::timer_ticks_get();
-    let mut n = 0i32;
-    for e in table.iter() {
-        if e.used && now.wrapping_sub(e.last_tick) < ENTRY_LIFETIME_TICKS {
-            n += 1;
+    ARP_TABLE.with(|table| {
+        let mut n = 0i32;
+        for e in table.iter() {
+            if e.used && now.wrapping_sub(e.last_tick) < ENTRY_LIFETIME_TICKS {
+                n += 1;
+            }
         }
-    }
-    n
+        n
+    })
 }
 
 /// Fill `*out` with the `idx`-th live neighbor.  Returns 0 on success, -1 when
-/// `out` is NULL or `idx` is out of range (the range is `0 .. count`).
-///
-/// # Safety
-///
-/// `out` may be null (the call then returns -1); if non-null it must point to a
-/// writable, properly aligned [`CactArpEntry`] that stays live for the call.
-pub unsafe fn rust_net_arp_get(idx: u32, out: *mut CactArpEntry) -> i32 {
+/// `out` is NULL or `idx` is out of range (the range is `0 .. count`).  `out`,
+/// when non-null, must point to a writable, properly aligned [`CactArpEntry`]
+/// that stays live for the call.
+pub fn rust_net_arp_get(idx: u32, out: *mut CactArpEntry) -> i32 {
     if out.is_null() {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: `ARP_TABLE` is only touched under the stack lock, which `_guard`
-    // holds; the borrow is shared and dead before the guard drops.
-    let table = unsafe { &*core::ptr::addr_of!(ARP_TABLE) };
-    // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
-    // it takes no arguments and is callable from this context.
     let now = ffi_kernel::timer_ticks_get();
-    let mut seen = 0u32;
-    for e in table.iter() {
-        let age_ticks = now.wrapping_sub(e.last_tick);
-        if !e.used || age_ticks >= ENTRY_LIFETIME_TICKS {
-            continue;
+    let found = ARP_TABLE.with(|table| {
+        let mut seen = 0u32;
+        for e in table.iter() {
+            let age_ticks = now.wrapping_sub(e.last_tick);
+            if !e.used || age_ticks >= ENTRY_LIFETIME_TICKS {
+                continue;
+            }
+            if seen == idx {
+                return Some((*e, age_ticks));
+            }
+            seen += 1;
         }
-        if seen == idx {
-            // SAFETY: the caller contract (see # Safety) makes `out` writable,
-            // aligned and live, and the null check above excluded null; the
-            // borrow is dead before returning.
-            let dst = unsafe { &mut *out };
+        None
+    });
+    match found {
+        Some((e, age_ticks)) => {
+            let dst = ptr::as_mut(out);
             dst.ip_host = e.ip_host;
             dst.mac = e.mac;
             dst.pad = 0;
             dst.age_ms = age_ticks * 10;
             dst.flags = 0;
-            return 0;
+            0
         }
-        seen += 1;
+        None => -1,
     }
-    -1
 }

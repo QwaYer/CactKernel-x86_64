@@ -49,4 +49,10 @@ impl<T> KCell<T> {
         // SAFETY: as in `with`; the old value is dropped in place.
         unsafe { *self.0.get() = value };
     }
+
+    /// Pointer to the inner value, for handing to the C side (which takes a
+    /// pointer to kernel-lifetime state, e.g. a semaphore).
+    pub fn as_ptr(&self) -> *mut T {
+        self.0.get()
+    }
 }
