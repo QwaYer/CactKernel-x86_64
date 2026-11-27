@@ -31,10 +31,10 @@ extern crate alloc;
 
 
 // This crate's `Vec`/`BTreeMap` storage comes from the kernel heap, whose
-// single `#[global_allocator]` now lives in the link crate `cact_kernel`.
+// single `#[global_allocator]` lives in `cact_mm`, next to that heap.
 
-// The kernel Rust graph's single `#[global_allocator]` lives in the link
-// crate (`cact_kernel`); a crate graph may define exactly one.
+// The kernel Rust graph's single `#[global_allocator]` lives in `cact_mm`;
+// a crate graph may define exactly one.
 
 pub mod arp;
 pub mod config;
