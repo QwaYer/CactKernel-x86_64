@@ -57,12 +57,12 @@ extern crate alloc;
 // The kernel Rust graph's single `#[global_allocator]` lives in `cact_mm`;
 // a crate graph may define exactly one.
 
-mod device;
+pub mod device;
 mod devfs;
 pub mod event;
 mod ffi;
 mod file;
-mod gem;
+pub mod gem;
 mod ioctl;
 pub mod mode;
 pub mod structs;

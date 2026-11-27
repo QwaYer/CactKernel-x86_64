@@ -104,6 +104,14 @@ pub fn kfree(ptr: *mut u8) {
     unsafe { sys::kfree(ptr) };
 }
 
+/// Reclaim a `Box<T>` from a raw pointer produced by `Box::into_raw` (the
+/// type-erased ownership handoff the DRM pools use).
+pub fn box_free<T>(ptr: *mut T) {
+    // SAFETY: the caller passes a pointer from `Box::into_raw` that has not been
+    // freed; this reconstitutes and drops the box exactly once.
+    unsafe { drop(alloc::boxed::Box::from_raw(ptr)) };
+}
+
 /// Unpin frames previously pinned by [`pin_range`].
 pub fn unpin_frames(frames: &[u64]) {
     // SAFETY: `frames` holds `phys` values from a prior `vmm_pin_range`.

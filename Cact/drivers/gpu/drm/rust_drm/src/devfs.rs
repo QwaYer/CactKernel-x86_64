@@ -28,9 +28,9 @@ extern "C" fn drm_dri_walk(_priv: *mut c_void, name: *const u8) -> *mut VfsNode 
     if name.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: `device_table()` returns this driver's devfs device table, and the
-    // devfs walker runs under the devfs lock, so it is safe to read it here.
-    let t = unsafe { device_table() };
+    // `device_table()` returns this driver's devfs device table, and the devfs
+    // walker runs under the devfs lock, so it is safe to read it here.
+    let t = device_table();
     let mut card = [0u8; 16];
     let mut render = [0u8; 16];
     for slot in t.iter() {
@@ -63,9 +63,9 @@ extern "C" fn drm_dri_walk(_priv: *mut c_void, name: *const u8) -> *mut VfsNode 
 }
 
 extern "C" fn drm_dri_readdir(_priv: *mut c_void, index: u32) -> *mut VfsDirent {
-    // SAFETY: `device_table()` returns this driver's devfs device table, read under
-    // the devfs lock.
-    let t = unsafe { device_table() };
+    // `device_table()` returns this driver's devfs device table, read under the
+    // devfs lock.
+    let t = device_table();
     // `addr_of_mut!` forms a pointer to the private `DE` scratch entry without
     // creating a reference, which needs no `unsafe` on its own.
     let de_ptr = core::ptr::addr_of_mut!(DE);

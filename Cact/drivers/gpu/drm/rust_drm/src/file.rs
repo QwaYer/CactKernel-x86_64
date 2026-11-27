@@ -133,7 +133,9 @@ unsafe fn drm_client_create(dev: *mut DrmDevice, is_render: i32) -> *mut DrmFile
 
 /// Release a client: the driver's `close` first, then everything the client
 /// holds, then the client itself.
-pub(crate) unsafe fn drm_client_destroy(f: *mut DrmFile) {
+///
+/// `f` is a live client this crate allocated; it is not used again after this call.
+pub(crate) fn drm_client_destroy(f: *mut DrmFile) {
     if f.is_null() {
         return;
     }
@@ -218,9 +220,9 @@ extern "C" fn drm_node_release(node: *mut VfsNode, file: *mut File) {
     // SAFETY: `file` is the kernel's file and its private data is the client created
     // by `drm_node_open_file`.
     let client = unsafe { (*file).priv_ as *mut DrmFile };
-    // SAFETY: `drm_client_destroy`'s contract: `client` is that client, which is not
+    // `drm_client_destroy`'s contract: `client` is that client, which is not
     // used again after this call.
-    unsafe { drm_client_destroy(client) };
+    drm_client_destroy(client);
     // SAFETY: clearing the file's private data before the file is released.
     unsafe { (*file).priv_ = core::ptr::null_mut() };
 }

@@ -439,8 +439,8 @@ unsafe fn find_state(file: *mut DrmFile, handle: u32, point: u64, flags: u32) ->
 ///
 /// SAFETY: `dev` is a live device.
 unsafe fn eventfd_register(dev: *mut DrmDevice, entry: SyncobjEventfdEntry) {
-    // SAFETY: `dev` is live; the lock word belongs to it.
-    let lock = unsafe { lock_ptr(dev) };
+    // `dev` is live; the lock word belongs to it.
+    let lock = lock_ptr(dev);
     // SAFETY: `lock` is the device's lock; nothing is called out to under it.
     ptr::as_mut(lock).acquire();
     // SAFETY: `dev` is live; the registration list is the device's own.
@@ -452,13 +452,13 @@ unsafe fn eventfd_register(dev: *mut DrmDevice, entry: SyncobjEventfdEntry) {
 /// Release every pending registration of a device that is being torn down,
 /// without signalling any (nothing can be signalled then).
 ///
-/// SAFETY: `dev` is a live device in the middle of `drm_dev_unregister`.
-pub(crate) unsafe fn eventfd_drop_all(dev: *mut DrmDevice) {
+/// `dev` is a live device in the middle of `drm_dev_unregister`.
+pub(crate) fn eventfd_drop_all(dev: *mut DrmDevice) {
     if dev.is_null() {
         return;
     }
-    // SAFETY: `dev` is live; the lock word belongs to it.
-    let lock = unsafe { lock_ptr(dev) };
+    // `dev` is live; the lock word belongs to it.
+    let lock = lock_ptr(dev);
     // SAFETY: `lock` is the device's lock and nothing else holds it here; the
     // eventfds are released after the release below.
     ptr::as_mut(lock).acquire();
@@ -488,8 +488,8 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
     if dev.is_null() {
         return;
     }
-    // SAFETY: `dev` is live; the lock word belongs to it.
-    let lock = unsafe { lock_ptr(dev) };
+    // `dev` is live; the lock word belongs to it.
+    let lock = lock_ptr(dev);
     // SAFETY: `lock` is the device's lock and nothing else holds it here; the
     // mutex that `eventfd_node_signal` takes is only reached after the release
     // below, so no sleep happens under it.
