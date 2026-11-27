@@ -299,8 +299,11 @@ subdir('Cact/kernel/hypervisor/rust_hv')
 subdir('Cact/net/rust_net')
 subdir('Cact/drivers/gpu/drm/rust_drm')
 subdir('Cact/fs/rust_vfs')
-# The one Rust staticlib (all other kernel Rust crates are rlibs).
+# The one Rust staticlib (all other kernel Rust crates are rlibs).  The archive
+# is built by kernel_link; kernel_rust is the safe Rust <-> C interface crate
+# it (and every other crate) depends on.
 subdir('Cact/kernel/kernel_rust')
+subdir('Cact/kernel/kernel_link')
 subdir('Cact/crypto/hmac_ffi')
 
 # ------------------------------------------------------------------------------

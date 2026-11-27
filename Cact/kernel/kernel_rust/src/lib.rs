@@ -1,34 +1,34 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-//! The kernel's Rust link crate.
+//! The kernel's safe Rust <-> C interface crate.
 //!
-//! Every kernel Rust crate is an `rlib` so that Rust code can call Rust code
-//! with plain `use` (`cact_mm::kfree`, `sched::task_fork`, …) — `extern "C"`
-//! is reserved for the real C kernel (`printk`, VFS, ELF loader, APIC, …).
+//! This is the **one** Rust crate in the graph allowed to contain `unsafe`: it
+//! declares every `extern "C"` symbol the Rust side calls into the C kernel and
+//! wraps each in a safe Rust API, so the rest of the Rust graph talks to the C
+//! kernel without any `unsafe` of its own.  Every other crate carries
+//! `#![forbid(unsafe_code)]` and calls this crate instead.
 //!
-//! Something still has to be a `staticlib`, because meson links one archive
-//! into `kernel.bin`.  That is this crate: it depends on the whole Rust graph
-//! and pulls every crate into a single archive, so each symbol — and each
-//! `#[no_mangle]` C-ABI entry point — exists exactly once in the final image.
-//!
-//! It holds no code of its own.  The graph's single `#[panic_handler]` and
-//! `#[global_allocator]` both live in `cact_mm`, next to the heap they serve
-//! (a crate graph may define each exactly once).  This crate is therefore
-//! free of `unsafe` and forbids it outright.
+//! It is a **leaf**: it depends on no other crate in the graph.  The single
+//! staticlib that meson links into `kernel.bin` is `Cact/kernel/kernel_link`,
+//! which depends on this crate and on every other rlib.
 
 #![no_std]
-// This crate holds no code of its own — the graph's global allocator lives in
-// `cact_mm` (see the module docs) — so it must never grow any `unsafe`.  That
-// is stronger than the per-crate lint baseline the other crates carry, which
-// exists to audit the `unsafe` they legitimately need.
-#![forbid(unsafe_code)]
 
-pub use cact_drm as drm;
-pub use cact_hmac_ffi as hmac;
-pub use cact_hv as hv;
-pub use cact_mm as mm;
-pub use cact_net as net;
-pub use cact80211 as wireless;
-pub use cact_vfs as vfs;
-pub use sched as sched;
+// Safety baseline: implicit unsafe ops inside `unsafe fn` bodies are rejected,
+// and every `unsafe` block must carry a SAFETY comment (the latter enforced
+// under clippy).  This crate is the graph's only `unsafe`, so it keeps the
+// strongest settings the rest of the graph used to carry.
+#![deny(unsafe_op_in_unsafe_fn)]
+#![deny(unused_unsafe)]
+#![deny(clippy::undocumented_unsafe_blocks)]
+#![deny(clippy::missing_safety_doc)]
+#![deny(static_mut_refs)]
+#![deny(improper_ctypes, improper_ctypes_definitions)]
+#![deny(clippy::transmute_ptr_to_ref)]
+#![deny(clippy::transmute_ptr_to_ptr)]
+#![deny(clippy::useless_transmute)]
+#![deny(clippy::size_of_in_element_count)]
+#![deny(clippy::uninit_assumed_init)]
+#![deny(invalid_reference_casting)]
+#![deny(clippy::multiple_unsafe_ops_per_block)]
