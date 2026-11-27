@@ -6,11 +6,15 @@ name = "cact_hv"
 version = "0.1.0"
 edition = "2021"
 
-# An rlib, like every kernel Rust crate: `Cact/kernel/kernel_rust` is the one
+# An rlib, like every kernel Rust crate: `Cact/kernel/kernel_link` is the one
 # staticlib and pulls this crate (and its `#[no_mangle]` entry points) into
-# kernel.bin.
+# kernel.bin.  All C access goes through `kernel_rust`, the graph's one unsafe
+# crate, so this crate describes zero `unsafe` (it is `#![forbid(unsafe_code)]`).
 [lib]
 crate-type = ["lib"]
+
+[dependencies]
+kernel_rust = { path = "../../kernel_rust" }
 
 [profile.release]
 panic = "abort"

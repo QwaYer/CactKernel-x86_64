@@ -131,6 +131,9 @@ dependencies = [
 [[package]]
 name = "cact_hv"
 version = "0.1.0"
+dependencies = [
+ "kernel_rust",
+]
 
 [[package]]
 name = "cact_kernel"
