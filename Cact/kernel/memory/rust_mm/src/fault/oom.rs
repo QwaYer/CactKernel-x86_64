@@ -43,7 +43,6 @@ fn oom_score(t: *mut TaskStruct) -> u32 {
     ptr::as_ref(shared).mm.count
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn oom_kill() -> i32 {
     // `scheduler_lock` is the C scheduler spinlock; this is the only lock the
     // task-list walk needs and it is not held yet at this point.
@@ -118,14 +117,12 @@ pub extern "C" fn oom_kill() -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn oom_get_stats() -> OomStats {
     // Read-only snapshot of the OOM counters; no lock is needed to
     // observe a possibly-slightly-stale counter value.
     G_STATS.get()
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn oom_print_stats() {
     // Read-only snapshot of `G_STATS` for printing.
     let stats = G_STATS.get();

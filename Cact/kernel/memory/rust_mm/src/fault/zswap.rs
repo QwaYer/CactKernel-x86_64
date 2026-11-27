@@ -88,7 +88,6 @@ pub fn zswap_is_enabled() -> bool {
     G_ENABLED.load(Ordering::Relaxed) != 0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn zswap_is_enabled_ffi() -> i32 {
     G_ENABLED.load(Ordering::Relaxed)
 }
@@ -259,7 +258,6 @@ pub fn zswap_try_writeback(pd: *mut u64) -> bool {
 /// entries stay readable.  A lower percentage is refused: shrinking would have
 /// to invalidate handles held in page tables.  Returns 0, `-EINVAL` (bad
 /// percentage or a shrink) or `-ENOMEM` (no memory).
-#[unsafe(no_mangle)]
 pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) -> i32 {
     if max_pool_pct == 0 || max_pool_pct > 100 {
         return -EINVAL;
@@ -340,14 +338,12 @@ pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) ->
 
 /// Stop accepting new pages.  The pool is kept: already-pooled pages drain back
 /// through fault-in, and the pool stays valid for the life of the kernel.
-#[unsafe(no_mangle)]
 pub extern "C" fn zswap_disable() -> i32 {
     G_ENABLED.store(0, Ordering::Relaxed);
     0
 }
 
 /// `out` must point to a writable `ZswapStats`.
-#[unsafe(no_mangle)]
 pub extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
     if out.is_null() {
         return -1;
@@ -385,7 +381,6 @@ pub extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
 ///
 /// The value is read into a bounded, NUL-terminated buffer, so the parsing is
 /// ordinary safe indexing.
-#[unsafe(no_mangle)]
 pub extern "C" fn zswap_init() {
     /// Limit used by the bare `zswap=1` form.
     const BOOT_DEFAULT_PCT: u32 = 20;

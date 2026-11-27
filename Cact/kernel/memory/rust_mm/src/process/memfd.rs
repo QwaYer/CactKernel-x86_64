@@ -210,7 +210,6 @@ fn maybe_free_locked(slot: usize) {
     });
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_create(name: *const u8, name_len: u32, flags: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -255,7 +254,6 @@ pub extern "C" fn memfd_create(name: *const u8, name_len: u32, flags: i32) -> i3
 }
 
 /// Increment the fd reference count (node open / fork).  Returns handle.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_ref(handle: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -271,7 +269,6 @@ pub extern "C" fn memfd_ref(handle: i32) -> i32 {
 }
 
 /// Decrement the fd reference count (last node close).  Frees if possible.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_close(handle: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -292,7 +289,6 @@ pub extern "C" fn memfd_close(handle: i32) -> i32 {
 }
 
 /// Add a MAP_SHARED mmap-region reference.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_map_inc(handle: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -307,7 +303,6 @@ pub extern "C" fn memfd_map_inc(handle: i32) -> i32 {
 }
 
 /// Drop a MAP_SHARED mmap-region reference.  Frees if possible.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_map_dec(handle: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -327,7 +322,6 @@ pub extern "C" fn memfd_map_dec(handle: i32) -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_size(handle: i32) -> i64 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -373,7 +367,6 @@ pub(crate) fn memfd_grow_to(handle: i32, end: u32) -> i32 {
 /// memfd_read/memfd_write.  Frames are handed out by `kalloc`, so the returned
 /// pointer is a direct-map VA: usable as a plain kernel pointer, and turned back
 /// into the physical address with `v2p` where an entry or a device needs one.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -397,7 +390,6 @@ pub extern "C" fn memfd_get_page(handle: i32, idx: u32) -> *mut u8 {
     page
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
@@ -456,7 +448,6 @@ pub extern "C" fn memfd_read(handle: i32, off: u64, buf: *mut u8, size: u32) -> 
     })
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) -> i32 {
     if size == 0 {
         return 0;
@@ -519,7 +510,6 @@ pub extern "C" fn memfd_write(handle: i32, off: u64, buf: *const u8, size: u32) 
     })
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
     if ceil_pages(new_size) > MEMFD_PAGES_MAX as u64 {
         return -1;
@@ -556,7 +546,6 @@ pub extern "C" fn memfd_truncate(handle: i32, new_size: u64) -> i32 {
 /// Add seals to a memfd (F_ADD_SEALS).  Linux's rule: only an object created
 /// with MFD_ALLOW_SEALING may be sealed, and F_SEAL_SEAL, once set, freezes the
 /// set.  Returns 0, or -1 when the object refuses.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_add_seals(handle: i32, seals: u32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());
@@ -578,7 +567,6 @@ pub extern "C" fn memfd_add_seals(handle: i32, seals: u32) -> i32 {
 }
 
 /// The memfd's seal bits (F_GET_SEALS), or -1 when the handle is not a memfd.
-#[unsafe(no_mangle)]
 pub extern "C" fn memfd_get_seals(handle: i32) -> i32 {
     memfd_ensure_init();
     lock_acquire(MEMFD_LOCK.as_ptr());

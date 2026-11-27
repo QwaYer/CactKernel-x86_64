@@ -258,7 +258,6 @@ fn grow_heap(need: usize) -> bool {
     true
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn init_heap() {
     let start = heap_start();
     let end = heap_end();
@@ -526,7 +525,6 @@ pub struct HeapStats {
 /// Walk every region's block list once and fold it into a [`HeapStats`].  Each
 /// region's list is address-ordered and every block carries its own size, so one
 /// pass gives both the totals and the fragmentation shape.
-#[unsafe(no_mangle)]
 pub extern "C" fn heap_get_stats() -> HeapStats {
     let mut agg = HeapAggregate::new();
     let mut regions: u32 = 0;
@@ -554,14 +552,12 @@ pub extern "C" fn heap_get_stats() -> HeapStats {
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn get_free_heap_memory() -> u32 {
     heap_get_stats().free_bytes
 }
 
 /// One-line heap summary for the boot log and manual debugging; the same
 /// numbers `/proc/meminfo` reports, without the kB scaling.
-#[unsafe(no_mangle)]
 pub extern "C" fn kmalloc_print_stats() {
     let s = heap_get_stats();
     kprint_str(c"heap: free=".as_ptr() as *const u8);
@@ -671,7 +667,6 @@ fn absorb_next(block: *mut HeapBlock, next: *mut HeapBlock, hdr_size: u32) {
 ///
 /// `ptr` must be null or a live **heap** block pointer previously returned by the
 /// heap allocators (`kmalloc_raw` / `kmalloc_aligned_raw`) and not yet freed.
-#[unsafe(no_mangle)]
 pub extern "C" fn kmalloc_usable_size(ptr: *mut u8) -> usize {
     let Some((block, _off)) = raw_block(ptr) else {
         return 0;
@@ -688,7 +683,6 @@ pub extern "C" fn kmalloc_usable_size(ptr: *mut u8) -> usize {
 /// `ptr` must be null or a live heap block from the heap allocators that has not
 /// been freed, and `align` a power of two — the same alignment the block was
 /// allocated with.
-#[unsafe(no_mangle)]
 pub extern "C" fn krealloc_aligned_raw(
     ptr: *mut u8,
     new_size: usize,
@@ -776,7 +770,6 @@ pub extern "C" fn krealloc_aligned_raw(
 
 /// Allocate `size` bytes: from a slab size cache when the request fits one, from
 /// the heap otherwise.
-#[unsafe(no_mangle)]
 pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
     if size == 0 {
         return core::ptr::null_mut();
@@ -791,7 +784,6 @@ pub extern "C" fn kmalloc(size: usize) -> *mut u8 {
 /// Allocate `size` bytes aligned to `align`: the slab caches and heap blocks are
 /// all 8-aligned, so a request at or below that goes through `kmalloc`; a larger
 /// alignment needs the heap's back-pointer scheme.
-#[unsafe(no_mangle)]
 pub extern "C" fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
     if align <= 8 {
         kmalloc(size)
@@ -803,7 +795,6 @@ pub extern "C" fn kmalloc_aligned(size: usize, align: usize) -> *mut u8 {
 /// Free a block from `kmalloc` / `kmalloc_aligned` (any size or alignment).
 ///
 /// `ptr` must be null or a live block from those and not already freed.
-#[unsafe(no_mangle)]
 pub extern "C" fn kfree(ptr: *mut u8) {
     if ptr.is_null() {
         return;
@@ -823,7 +814,6 @@ pub extern "C" fn kfree(ptr: *mut u8) {
 /// `ptr` must be null or a live block from `kmalloc` / `kmalloc_aligned` that has
 /// not been freed, and `align` a power of two — the alignment it was allocated
 /// with.
-#[unsafe(no_mangle)]
 pub extern "C" fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8 {
     if ptr.is_null() {
         return kmalloc_aligned(new_size, align);

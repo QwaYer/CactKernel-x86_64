@@ -89,7 +89,6 @@ fn zstd_decompress(src: *const u8, len: usize, dst: *mut u8) -> usize {
 ///
 /// The returned pointer must be treated as opaque and only passed back to the
 /// `zpool_*` entry points; the caller must call [`zpool_destroy`] exactly once.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_create(
     capacity_pages: u32,
     budget_bytes: u64,
@@ -156,7 +155,6 @@ pub extern "C" fn zpool_create(
 ///
 /// `p` must be a pointer from [`zpool_create`] that has not been destroyed, and
 /// no other user (zram device, zswap) may still hold it.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_destroy(p: *mut c_void) {
     if p.is_null() {
         return;
@@ -191,7 +189,6 @@ pub extern "C" fn zpool_destroy(p: *mut c_void) {
 /// invalidate handles that live in page tables.
 ///
 /// `p` must be a live pool pointer that has not been destroyed.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budget: u64) -> i32 {
     if p.is_null() || new_capacity == 0 {
         return -1;
@@ -258,7 +255,6 @@ pub extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budget: u64)
 /// was written with.
 ///
 /// `p` must be a live pool pointer.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
     if p.is_null() {
         return -1;
@@ -276,7 +272,6 @@ pub extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
 ///
 /// `p` must be a live pool pointer; `page` must point at a readable 4 KiB page;
 /// `out_handle` must be writable.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle: *mut u32) -> i32 {
     if p.is_null() || page.is_null() || out_handle.is_null() {
         return -1;
@@ -364,7 +359,6 @@ pub extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle: *mut 
 /// stays allocated; the caller must release it with [`zpool_free`].
 ///
 /// `p` must be a live pool pointer; `page` must point at a writable 4 KiB page.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) -> i32 {
     if p.is_null() || page.is_null() {
         return -1;
@@ -417,7 +411,6 @@ pub extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) -> i32 
 /// free list.
 ///
 /// `p` must be a live pool pointer.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
     if p.is_null() {
         return;
@@ -456,7 +449,6 @@ pub extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
 /// Fill `out` with a snapshot of the pool's accounting.  Returns 0 or -1.
 ///
 /// `p` must be a live pool pointer; `out` must be writable.
-#[unsafe(no_mangle)]
 pub extern "C" fn zpool_get_stats(p: *mut c_void, out: *mut ZpoolStats) -> i32 {
     if p.is_null() || out.is_null() {
         return -1;

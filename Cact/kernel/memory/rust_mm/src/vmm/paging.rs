@@ -130,7 +130,6 @@ pub(crate) fn p2v(phys: u64) -> u64 {
 ///
 /// The C side uses this wherever a `kalloc`'d frame has to go into a page-table
 /// entry; it is declared for C in `memory.h`.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_v2p(ptr: *const u8) -> u64 {
     v2p(ptr)
 }
@@ -141,7 +140,6 @@ pub extern "C" fn vmm_v2p(ptr: *const u8) -> u64 {
 /// The C side uses this wherever an address out of a page-table entry — or out
 /// of `vmm_get_phys` — has to be dereferenced; it is declared for C in
 /// `memory.h`.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_p2v(phys: u64) -> *mut u8 {
     p2v(phys) as *mut u8
 }
@@ -502,7 +500,6 @@ fn build_kernel_map() {
 }
 
 /// Build the kernel's map and make it current.
-#[unsafe(no_mangle)]
 pub extern "C" fn init_paging() {
     build_kernel_map();
 
@@ -522,7 +519,6 @@ pub extern "C" fn init_paging() {
 /// installed later appears everywhere.
 ///
 /// `pd` must be null or a live page map the caller owns.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_sync_kernel_mmio_mappings(pd: *mut u64) {
     if pd.is_null() {
         return;
@@ -557,7 +553,6 @@ pub extern "C" fn vmm_sync_kernel_mmio_mappings(pd: *mut u64) {
 
 /// `pd` must be null or a live page map the caller owns and may mutate; the
 /// caller must serialise concurrent mapping changes.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr: u64, flags: i32) {
     if pd.is_null() {
         return;
@@ -646,7 +641,6 @@ pub extern "C" fn vmm_map(pd: *mut u64, virtual_addr: u64, physical_addr: u64, f
 /// Translate a virtual address to a physical one under `pd` (the kernel's map
 /// when `pd` is null).  Returns 0 when the mapping is absent; the page offset is
 /// preserved.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_get_phys(pd: *mut u64, virtual_addr: u64) -> u64 {
     let pml4 = if pd.is_null() { get_kernel_pd() } else { pd };
     if pml4.is_null() {
@@ -676,7 +670,6 @@ pub extern "C" fn vmm_get_phys(pd: *mut u64, virtual_addr: u64) -> u64 {
 /// Report the low flag bits of the mapping for `virtual_addr` under `pd` (0 when
 /// the address is unmapped).  The fault and diagnostic paths need the permission
 /// bits — is it present, user, writable — not the frame the mapping names.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_pte_flags(pd: *mut u64, virtual_addr: u64) -> u32 {
     let pml4 = if pd.is_null() { get_kernel_pd() } else { pd };
     if pml4.is_null() {
@@ -709,7 +702,6 @@ pub extern "C" fn vmm_pte_flags(pd: *mut u64, virtual_addr: u64) -> u32 {
 ///
 /// `pd` must be a live page map the caller owns and may mutate, and no other CPU
 /// may be walking the same tables concurrently.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_unmap(pd: *mut u64, virtual_addr: u64) -> u64 {
     if pd.is_null() {
         return 0;
@@ -749,7 +741,6 @@ pub extern "C" fn vmm_unmap(pd: *mut u64, virtual_addr: u64) -> u64 {
 /// `(PAT=0, PCD=0, PWT=0)`: the request clears PCD/PWT and quietly selects PAT
 /// entry 0 (write-back) instead of entry 4 (write-combining), which on real
 /// device memory means read-for-ownership traffic against MMIO.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_set_kernel_cache(va: u64, set: u64, clear: u64) {
     /// PAT bit in a 4 KiB page-table entry.
     const PTE_PAT: u64 = 0x080;
@@ -788,7 +779,6 @@ pub extern "C" fn vmm_set_kernel_cache(va: u64, set: u64, clear: u64) {
 /// A fresh address space: the kernel's own view of the high half, and a private
 /// copy of the low half's page-directory-pointer table so that user mappings can
 /// carve into it without touching the kernel's.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_create_address_space() -> *mut u64 {
     let pml4 = new_table();
     if pml4.is_null() {
@@ -845,7 +835,6 @@ pub extern "C" fn vmm_create_address_space() -> *mut u64 {
 
 /// `pd` must be null or a page map previously handed out by
 /// `vmm_create_address_space`, and must not be used again afterwards.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_free_address_space(pd: *mut u64) {
     if pd.is_null() {
         return;
@@ -911,7 +900,6 @@ pub extern "C" fn vmm_free_address_space(pd: *mut u64) {
 /// `src_pd` and `dst_pd` may be null; otherwise they are live page maps owned by
 /// the caller, and neither may be mutated concurrently for the duration of the
 /// call.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_copy_address_space(src_pd: *mut u64, dst_pd: *mut u64) {
     if src_pd.is_null() || dst_pd.is_null() {
         return;

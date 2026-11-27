@@ -10,7 +10,6 @@ use crate::process::shm::{
     find_shm_va, seg_free, seg_valid, shm_ensure_init, shm_unmap_from, ShmSeg, SHM_LOCK, SHM_TABLE,
 };
 
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
     shm_ensure_init();
 
@@ -104,7 +103,6 @@ pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
     va
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_dt(shmaddr: u32) -> i32 {
     shm_ensure_init();
 
@@ -174,7 +172,6 @@ pub extern "C" fn shm_dt(shmaddr: u32) -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_ctl(shmid: i32, cmd: i32, buf: *mut u8) -> i32 {
     shm_ensure_init();
     lock_acquire(SHM_LOCK.as_ptr());
@@ -219,7 +216,6 @@ pub extern "C" fn shm_ctl(shmid: i32, cmd: i32, buf: *mut u8) -> i32 {
     })
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_detach_all(pid: u32, page_directory: *mut u64) {
     shm_ensure_init();
     if page_directory.is_null() {

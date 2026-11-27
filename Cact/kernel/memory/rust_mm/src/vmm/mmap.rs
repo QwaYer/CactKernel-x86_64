@@ -152,7 +152,6 @@ fn clear_user_pte(pd: *mut u64, va: u32) {
 
 /// `tbl` may be null; otherwise it points to a live, writable `MmapTable` with
 /// room for `MMAP_MAX_REGIONS` regions.
-#[unsafe(no_mangle)]
 pub extern "C" fn mmap_table_init(tbl: *mut MmapTable) {
     if tbl.is_null() {
         return;
@@ -170,7 +169,6 @@ pub extern "C" fn mmap_table_init(tbl: *mut MmapTable) {
 
 /// `tbl` may be null; otherwise it points to a live, initialised `MmapTable`
 /// that stays valid for the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn mmap_find_region(tbl: *mut MmapTable, addr: u32) -> *mut MmapRegion {
     if tbl.is_null() {
         return core::ptr::null_mut();
@@ -193,7 +191,6 @@ pub extern "C" fn mmap_find_region(tbl: *mut MmapTable, addr: u32) -> *mut MmapR
 /// `pd` is a valid page directory and `tbl` a live `MmapTable`, both owned
 /// by the caller; they must stay valid and un-mutated by another thread for the
 /// duration of the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn do_mmap(
     pd: *mut u64,
     tbl: *mut MmapTable,
@@ -426,7 +423,6 @@ pub extern "C" fn do_mmap(
 
 /// `pd` is a valid page directory and `tbl` a live `MmapTable` owned by the
 /// caller, and neither may be mutated concurrently for the duration of the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn do_munmap(
     pd: *mut u64,
     tbl: *mut MmapTable,
@@ -598,7 +594,6 @@ pub extern "C" fn do_munmap(
 
 /// `pd` is a valid page directory and `tbl` a live `MmapTable` owned by the
 /// caller, and neither may be mutated concurrently for the duration of the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn do_mprotect(
     pd: *mut u64,
     tbl: *mut MmapTable,
@@ -656,7 +651,6 @@ pub extern "C" fn do_mprotect(
 
 /// `tbl` may be null; otherwise it points to a live, initialised `MmapTable`
 /// that stays valid for the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn mmap_print_regions(tbl: *const MmapTable) {
     if tbl.is_null() {
         return;

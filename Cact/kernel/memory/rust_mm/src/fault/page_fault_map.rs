@@ -12,7 +12,6 @@ use kernel_rust::ptr;
 
 /// `pd` is null or a valid page directory that the caller owns and may mutate;
 /// the caller must serialise concurrent page-table changes.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_map_demand(
     pd: *mut u64,
     virtual_addr: u64,
@@ -50,7 +49,6 @@ pub extern "C" fn vmm_map_demand(
 
 /// `pd` is null or a valid page directory that the caller owns and may mutate;
 /// the caller must serialise concurrent page-table changes.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_map_zero(
     pd: *mut u64,
     virtual_addr: u64,
@@ -93,7 +91,6 @@ pub extern "C" fn vmm_map_zero(
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_map_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // `pte` is the result of `pte_get` and is non-null on the left of `||`, so
@@ -110,7 +107,6 @@ pub extern "C" fn vmm_map_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_is_cow_page(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // `pte` is non-null on the left of `&&`; its COW bit is read from a live PTE.
@@ -121,7 +117,6 @@ pub extern "C" fn vmm_is_cow_page(pd: *mut u64, virtual_addr: u64) -> i32 {
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
     // `pte` is non-null on the left of `||`; a live PTE's COW bit is read.
@@ -177,7 +172,6 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
 
 /// `pd` is a valid page directory for the current address space; the function
 /// writes PTEs into it and allocates frames for the user stack window.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -> u32 {
     if pd.is_null() {
         return 0;
@@ -229,7 +223,6 @@ pub extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -> u32 {
 ///
 /// `pd` is a live page map the caller owns and may mutate, and no other CPU may
 /// race a walk of it; `out_phys` must have room for `ceil(size/4096)` `u64`s.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_pin_range(
     pd: *mut u64,
     va: u64,
@@ -289,7 +282,6 @@ pub extern "C" fn vmm_pin_range(
 ///
 /// `phys` must hold `count` frames previously pinned by `vmm_pin_range()` and
 /// not already unpinned.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
     if phys.is_null() {
         return;

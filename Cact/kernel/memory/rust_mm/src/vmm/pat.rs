@@ -59,7 +59,6 @@ fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
 /// the capability once.  Safe to call before any framebuffer activity, and again
 /// after a resume or during AP bring-up — the MSR is per-CPU, so every CPU needs
 /// the write, while only the first call logs.
-#[unsafe(no_mangle)]
 pub extern "C" fn pat_init() {
     let (_eax, _ebx, _ecx, edx) = cpuid(1, 0);
     if edx & (1 << PAT_CPUID_EDX_BIT) == 0 {
@@ -98,7 +97,6 @@ pub extern "C" fn pat_init() {
 /// Also used after a resume to re-apply the bits and drop the stale
 /// translations.  Returns 0 on success, -1 when PAT is unsupported, -2 for bad
 /// arguments.
-#[unsafe(no_mangle)]
 pub extern "C" fn pat_enable_wc_for_framebuffer(fb_va: u64, fb_pitch: u32, fb_height: u32) -> i32 {
     if fb_va == 0 || fb_pitch == 0 || fb_height == 0 {
         return -2;

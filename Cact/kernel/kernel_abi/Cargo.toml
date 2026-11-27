@@ -14,6 +14,7 @@ crate-type = ["lib"]
 
 [dependencies]
 cact_hv   = { path = "../hypervisor/rust_hv" }
+cact_mm   = { path = "../memory/rust_mm" }
 cact_net  = { path = "../../net/rust_net" }
 cact_sync = { path = "../sync" }
 cact80211 = { path = "../../net/wireless" }

@@ -12,7 +12,6 @@ use crate::alloc::slab::{
 
 const GENERIC_SIZES: [u32; GENERIC_CACHE_COUNT] = [8, 16, 32, 64, 128, 256, 512, 1024, 2048];
 
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_init() {
     irq_spinlock_init(G_CACHE_LOCK.as_ptr());
 
@@ -57,7 +56,6 @@ pub extern "C" fn slab_init() {
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_kmalloc(size: usize) -> *mut u8 {
     if size == 0 {
         return core::ptr::null_mut();
@@ -90,7 +88,6 @@ pub extern "C" fn slab_kmalloc(size: usize) -> *mut u8 {
 
 /// Free `ptr` (null, or a pointer to a live slab/heap block previously returned
 /// by this allocator and not yet freed).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_kfree(ptr: *mut u8) {
     // `kfree` already tells a slab object from a heap block by the page magic, so
     // this is just the same allocator's ordinary free.

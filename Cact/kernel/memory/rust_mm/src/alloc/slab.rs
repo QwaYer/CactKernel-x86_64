@@ -152,7 +152,6 @@ fn slab_destroy_slab(cache: *mut SlabCache, s: *mut Slab) {
 /// Create a cache named `name` (null or a readable, NUL-terminated byte string of
 /// at most `SLAB_NAME_LEN` bytes; `ctor`/`dtor` valid function pointers for the
 /// objects the cache will hand out).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_cache_create(
     name: *const u8,
     mut obj_size: u32,
@@ -216,7 +215,6 @@ pub extern "C" fn slab_cache_create(
 
 /// Allocate one object from `cache` (null, or a live cache from
 /// `slab_cache_create` that the caller does not destroy concurrently).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_alloc(cache: *mut SlabCache) -> *mut u8 {
     if cache.is_null() {
         return core::ptr::null_mut();
@@ -267,7 +265,6 @@ pub extern "C" fn slab_alloc(cache: *mut SlabCache) -> *mut u8 {
 
 /// Free `obj` back to `cache` (`cache` a live cache from `slab_cache_create`,
 /// `obj` a pointer currently allocated from it — or either null).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_free(cache: *mut SlabCache, obj: *mut u8) {
     if cache.is_null() || obj.is_null() {
         return;
@@ -342,7 +339,6 @@ pub extern "C" fn slab_object_size(ptr: *mut u8) -> u32 {
 /// Free `ptr` if it is a slab object; return false when it is not (the caller
 /// then frees it as a heap block).  This is the ownership test the dispatcher
 /// `kfree` runs on every free.
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_try_free(ptr: *mut u8) -> bool {
     if ptr.is_null() {
         return false;
@@ -362,7 +358,6 @@ pub extern "C" fn slab_try_free(ptr: *mut u8) -> bool {
 
 /// Shrink `cache` (null, or a live cache from `slab_cache_create` that the caller
 /// does not destroy concurrently): destroy its free slabs.
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_cache_shrink(cache: *mut SlabCache) {
     if cache.is_null() {
         return;
@@ -399,7 +394,6 @@ fn slab_shrink_locked(cache: *mut SlabCache) -> u32 {
 /// before evicting a page or killing a task, because an empty slab is the
 /// cheapest memory to recover.  A cache's *partial* slabs are left alone — their
 /// objects may still be in use.
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_shrink_all() -> u32 {
     let mut freed: u32 = 0;
     lock_acquire(G_CACHE_LOCK.as_ptr());
@@ -416,7 +410,6 @@ pub extern "C" fn slab_shrink_all() -> u32 {
 
 /// Destroy `cache` (null, or a pointer returned by `slab_cache_create`; it is
 /// freed here and must not be used again afterwards).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_cache_destroy(cache: *mut SlabCache) {
     if cache.is_null() {
         return;
@@ -478,7 +471,6 @@ pub extern "C" fn slab_cache_destroy(cache: *mut SlabCache) {
 
 /// Print `cache`'s usage (null, or a live, initialised `SlabCache` that stays
 /// valid for the call).
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_print_stats(cache: *const SlabCache) {
     if cache.is_null() {
         return;
@@ -532,7 +524,6 @@ pub extern "C" fn slab_print_stats(cache: *const SlabCache) {
 
 /// Bytes of physical frames currently held by all slab caches (full + partial +
 /// free slabs).  Reported by /proc/meminfo as `Slab`.
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_total_bytes() -> u32 {
     let mut bytes: u32 = 0;
     lock_acquire(G_CACHE_LOCK.as_ptr());
@@ -563,7 +554,6 @@ pub struct SlabInfoC {
 /// Snapshot up to `max` slab caches into `out`; returns the number written.
 /// `active` is the in-use object count (summed over the partial and full
 /// lists), `num_objs` the active+free object count, `slabs` the page count.
-#[unsafe(no_mangle)]
 pub extern "C" fn slab_snapshot(out: *mut SlabInfoC, max: u32) -> u32 {
     if out.is_null() || max == 0 {
         return 0;

@@ -476,6 +476,7 @@ dependencies = [
  "cact_crypto",
  "cact_drm",
  "cact_hv",
+ "cact_mm",
  "cact_net",
  "cact_sync",
 ]

@@ -7,7 +7,6 @@ use crate::ffi::*;
 use crate::alloc::heap::{kmalloc, kfree};
 use crate::vmm::paging::vmm_free_address_space;
 
-#[unsafe(no_mangle)]
 pub extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u8) -> i32 {
     if t.is_null() || frame.is_null() {
         return -1;
@@ -65,7 +64,6 @@ pub extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u8) -> i
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn proc_free_pages(t: *mut ProcPageTracker) {
     if t.is_null() {
         return;

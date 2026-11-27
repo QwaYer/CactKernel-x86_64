@@ -107,7 +107,6 @@ pub fn swap_is_enabled() -> bool {
 /// made a diskless boot advertise a swap area (and page against whatever device
 /// answered the LBA reads).  Capacity now comes from a real swap partition, via
 /// `swap_enable`.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_init(
     read_fn: extern "C" fn(u32, *mut u8, u32) -> i32,
     write_fn: extern "C" fn(u32, *const u8, u32) -> i32,
@@ -137,7 +136,6 @@ pub extern "C" fn swap_init(
 ///
 /// Rejects a zero slot count and a missing I/O callback, so swap cannot be
 /// turned on without a device behind it.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_enable(slots: u32) -> i32 {
     if slots == 0 {
         return -1;
@@ -177,7 +175,6 @@ pub extern "C" fn swap_enable(slots: u32) -> i32 {
 /// evictions.  The slot bitmap and its counters are kept on purpose — the slots
 /// held by swapped-out pages stay reserved, so re-attaching the (or another)
 /// device cannot hand them to a new page.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_disable() {
     // Only the enable flag and the advertised capacity change; the slot bitmap,
     // its counters and the slot *bound* stay put.
@@ -195,7 +192,6 @@ pub extern "C" fn swap_disable() {
     G_STATS.with(|stats| stats.total_slots = 0);
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_is_enabled_ffi() -> i32 {
     // `G_ENABLED` is immutable after `swap_init`.
     G_ENABLED.get()
@@ -205,7 +201,6 @@ pub extern "C" fn swap_is_enabled_ffi() -> i32 {
 /// and `phys_addr` is a page-aligned **physical** frame address (a PTE's frame,
 /// as `swap.h` documents) — the backing-store callback reads the page, so the
 /// address is translated through the direct map before the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) -> i32 {
     // `G_ENABLED` is immutable after `swap_init`.
     if G_ENABLED.get() == 0 {
@@ -293,7 +288,6 @@ fn read_slot(slot: SwapSlot, phys_addr: u64) -> i32 {
 /// Fill the frame at physical address `phys_addr` from swap slot `slot` (see
 /// `swap_out_page` for why the address is physical and how the callback's
 /// buffer is derived from it).
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
     if !swap_is_enabled() {
         return -1;
@@ -307,7 +301,6 @@ pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_free_slot(slot: SwapSlot) {
     // `G_ENABLED` immutable after boot init.
     if G_ENABLED.get() == 0 {
@@ -334,7 +327,6 @@ pub fn swapoff_in_progress() -> bool {
 
 /// Begin a `swapoff` migration: stop accepting new evictions and mark the walk
 /// in progress.  Returns 0, or -1 when a migration is already running.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_migrate_begin() -> i32 {
     if SWAPOFF
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
@@ -347,7 +339,6 @@ pub extern "C" fn swap_migrate_begin() -> i32 {
 }
 
 /// End a `swapoff` migration.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_migrate_end() {
     SWAPOFF.store(0, Ordering::Release);
 }
@@ -359,7 +350,6 @@ pub extern "C" fn swap_migrate_end() {
 ///
 /// `pd` is null or a live page directory that stays alive for the call: the
 /// caller holds `scheduler_lock`, so the owning task cannot exit underneath it.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
     if pd.is_null() {
         return 0;
@@ -416,7 +406,6 @@ pub extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
 /// [`swap_migrate_pd`] has run over every live address space: a slot still
 /// allocated then has no PTE left to name it (its owner is gone), so the device
 /// can be handed over clean.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_release_slots() {
     lock_acquire(G_SWAP_LOCK.as_ptr());
     // `G_BITMAP` is mutated under `G_SWAP_LOCK`.
@@ -447,7 +436,6 @@ pub fn eviction_in_progress() -> bool {
 
 /// `pd` is null or a valid page directory whose user PTEs the caller is allowed
 /// to mutate; the caller must not race another page-table walker.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     // Refuse a nested/concurrent eviction: see `EVICT_BUSY`.
     if EVICT_BUSY.fetch_add(1, Ordering::AcqRel) != 0 {
@@ -594,7 +582,6 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
 
 /// `pd` is null or a valid page directory whose user PTEs the caller is allowed
 /// to mutate; the caller must not race another page-table walker.
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32 {
     if pd.is_null() {
         return -1;
@@ -674,13 +661,11 @@ pub extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32 {
     0
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_get_stats() -> SwapStats {
     // Read-only snapshot of the swap counters for the C caller.
     G_STATS.get()
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn swap_print_stats() {
     // Read-only snapshot of the swap counters for printing.
     let stats = G_STATS.get();

@@ -28,7 +28,11 @@
 //! Rust-side memory management: physical allocator, kernel heap, page tables, COW,
 //! page faults, mmap, and per-process helpers. Calls into C for low-level VMM/PMM.
 
-mod ffi;
+// `ffi` holds the crate's C-ABI mirror types (`ContextFrame`, `Mb2MmapTable`,
+// the `*Stats` mirrors).  It is `pub` so `kernel_abi` can name those types in
+// the C-ABI thunks it now owns: a `pub struct` inside a private module is not
+// nameable from another crate, and the thunks must reproduce the exact ABI.
+pub mod ffi;
 // Rust API for other kernel crates: the same functions the C ABI exports, but
 // reachable as ordinary Rust items, so `sched`/`rust_drm`/`rust_net` call them
 // with `use cact_mm::…` instead of re-declaring `extern "C"` themselves.

@@ -69,7 +69,6 @@ pub(crate) fn mmio_window_base() -> u64 {
 }
 
 /// C entry point: ACPI/PCIe need the window base VA after PMM init.
-#[unsafe(no_mangle)]
 pub extern "C" fn cact_mmio_window_base() -> u32 {
     mmio_window_base() as u32
 }
@@ -115,7 +114,6 @@ pub(crate) fn heap_end() -> u32 {
 /// `end` is the highest module end address from the Multiboot2 tags; 0 when the
 /// medium carried no modules.  Must be called before `init_memory_manager`, and
 /// returns the boundary now in use (the low reservation raised past `end`).
-#[unsafe(no_mangle)]
 pub extern "C" fn pmm_reserve_boot_images(end: u32) -> u32 {
     const ALIGN: u32 = 2 * 1024 * 1024;
     let aligned = match end.checked_add(ALIGN - 1) {
@@ -269,7 +267,6 @@ fn pmm_alloc_tables(ram_hi: u64) {
 /// `mmap` must be null or point to a valid `Mb2MmapTable` (the bootloader's
 /// static MMAP table) that stays valid for the call, and this must be invoked
 /// once, single-threaded, during boot.
-#[unsafe(no_mangle)]
 pub extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
     if mmap.is_null() {
         klog_msg(LOG_WARN, c"pmm mmap pointer is null; using fallback".as_ptr() as *const u8);
@@ -300,7 +297,6 @@ pub extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
     pmm_alloc_tables(ram_hi);
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn init_memory_manager() {
     irq_spinlock_init(PAGE_LOCK.as_ptr());
     {
@@ -408,7 +404,6 @@ pub extern "C" fn init_memory_manager() {
 /// direct map (`p2v`), so a caller can dereference it, hand it to `vmm_map`
 /// after a `v2p`, or give it back to [`free_page`] unchanged.  A caller that
 /// needs the physical address itself asks `v2p`.
-#[unsafe(no_mangle)]
 pub extern "C" fn kalloc() -> *mut u8 {
     const MAX_RECLAIM_ROUNDS: u32 = 4;
 
@@ -540,7 +535,6 @@ pub(crate) fn kalloc_contig(nframes: u32) -> *mut u8 {
 /// VA — or a kernel-image VA of a PMM-managed page, or a C caller honouring the
 /// same contract) that has not already been freed.  The bitmap and the refcounts
 /// are indexed by physical address, so the translation happens here.
-#[unsafe(no_mangle)]
 pub extern "C" fn free_page(ptr: *mut u8) {
     if ptr.is_null() { return; }
 
@@ -646,14 +640,12 @@ pub(crate) fn page_ref_get_locked(ptr: *const u8) -> u16 {
 /// Installed RAM the PMM recognised at boot, in 4 KiB frames (fixed after
 /// `init_memory_manager`).  Includes the hard-reserved low region and the heap
 /// window; callers subtract what they want to exclude.
-#[unsafe(no_mangle)]
 pub extern "C" fn pmm_total_frames() -> u32 {
     TOTAL_USABLE_FRAMES.get()
 }
 
 /// Frames currently on the free list (bit clear in the PMM bitmap), in 4 KiB
 /// frames.  This excludes the low reservation and the heap window.
-#[unsafe(no_mangle)]
 pub extern "C" fn pmm_free_frames() -> u32 {
     let mut free: u32 = 0;
     lock_acquire(PAGE_LOCK.as_ptr());
@@ -673,7 +665,6 @@ pub extern "C" fn pmm_free_frames() -> u32 {
 /// `pmm_reserve_boot_images` past the Multiboot2 module images.  Nothing below
 /// it is handed to `kalloc` or the heap.  Reported by /proc/meminfo as
 /// `MemReserved`.
-#[unsafe(no_mangle)]
 pub extern "C" fn pmm_reserved_end() -> u32 {
     reserved_end()
 }

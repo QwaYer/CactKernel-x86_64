@@ -15,7 +15,6 @@ use kernel_rust::ptr;
 /// `src` and `dst` are live, distinct `MmapTable`s and `src_pd`/`dst_pd`
 /// valid page directories owned by the caller; none of them may be mutated
 /// concurrently for the duration of the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn mmap_table_clone(
     src: *mut MmapTable,
     dst: *mut MmapTable,
@@ -138,7 +137,6 @@ pub extern "C" fn mmap_table_clone(
 
 /// `tbl` may be null; otherwise it is a live `MmapTable` whose regions are
 /// mapped into `pd`, and `pd` is a valid page directory owned by the caller.
-#[unsafe(no_mangle)]
 pub extern "C" fn mmap_table_free(tbl: *mut MmapTable, pd: *mut u64) {
     if tbl.is_null() || pd.is_null() {
         return;

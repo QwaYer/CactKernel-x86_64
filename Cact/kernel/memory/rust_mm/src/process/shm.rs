@@ -171,7 +171,6 @@ pub(crate) fn shm_unmap_from(pd: *mut u64, va: u32, num_pages: u32) {
     }
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_get(key: i32, size: u32, flags: i32) -> i32 {
     shm_ensure_init();
     lock_acquire(SHM_LOCK.as_ptr());
@@ -261,7 +260,6 @@ pub extern "C" fn shm_get(key: i32, size: u32, flags: i32) -> i32 {
 
 /// Bytes of physical frames backing all live shared-memory segments.  Reported
 /// by /proc/meminfo as `Shmem`.
-#[unsafe(no_mangle)]
 pub extern "C" fn shm_total_bytes() -> u32 {
     lock_acquire(SHM_LOCK.as_ptr());
     // `SHM_TABLE` read while holding `SHM_LOCK`, so the segment fields cannot

@@ -159,7 +159,6 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
     halt_forever();
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn page_fault_init() {
     // Zero the stats struct at boot time, no concurrency.
     G_STATS.with(|s| ptr::write_bytes(s, 0, 1));
@@ -168,7 +167,6 @@ pub extern "C" fn page_fault_init() {
 /// `regs` points to the live interrupt frame the CPU pushed for this #PF (a
 /// fully valid `ContextFrame`), and the caller is the IDT vector entry running
 /// with interrupts disabled.
-#[unsafe(no_mangle)]
 pub extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
     let fault_addr = read_cr2_val();
     // `regs` is provided by the interrupt frame.
@@ -438,13 +436,11 @@ pub extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
 mod page_fault_map;
 pub use page_fault_map::*;
 
-#[unsafe(no_mangle)]
 pub extern "C" fn pf_get_stats() -> PfStats {
     // Read-only snapshot of the #PF counters for the C caller.
     G_STATS.get()
 }
 
-#[unsafe(no_mangle)]
 pub extern "C" fn pf_print_stats() {
     let mut buf = [0u8; 16];
     kprint_str(c"[PF] === Page Fault Statistics ===\n".as_ptr() as *const u8);

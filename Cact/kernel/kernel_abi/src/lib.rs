@@ -21,6 +21,7 @@
 
 mod crypto;
 mod drm;
+mod mm;
 mod net;
 mod sync;
 mod wireless;

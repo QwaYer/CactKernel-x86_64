@@ -19,7 +19,6 @@ const TABLE_ENTRIES: usize = 512;
 
 /// `src_pd` and `dst_pd` are the caller's valid, distinct page maps; neither may
 /// be mutated concurrently for the duration of the call.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_fork_address_space(src_pd: *mut u64, dst_pd: *mut u64) {
     if src_pd.is_null() || dst_pd.is_null() {
         return;

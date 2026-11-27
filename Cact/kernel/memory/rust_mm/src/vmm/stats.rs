@@ -80,7 +80,6 @@ pub fn current_proc() -> *const ProcMeta {
 ///
 /// `pd` may be null and `proc` may be null; both are treated as "nothing to
 /// report".
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_user_stats(pd: *mut u64, proc: *const ProcMeta) -> VmmUserStats {
     let mut out = VmmUserStats { anon_pages: 0, file_pages: 0, ptable_pages: 0 };
     if pd.is_null() {
@@ -153,7 +152,6 @@ pub extern "C" fn vmm_user_stats(pd: *mut u64, proc: *const ProcMeta) -> VmmUser
 /// Page-table pages the kernel's own address space holds: every present table
 /// below the PML4, at each level.  Reported by /proc/meminfo as part of
 /// `PageTables`; the figure is fixed after boot apart from MMIO windows.
-#[unsafe(no_mangle)]
 pub extern "C" fn vmm_kernel_ptable_pages() -> u32 {
     let pml4 = get_kernel_pd() as *const u64;
     let mut n = 1u32; // the PML4 itself
