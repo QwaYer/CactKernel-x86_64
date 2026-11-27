@@ -91,12 +91,12 @@ version = "0.1.0"
 dependencies = [
  "aead",
  "aes-gcm",
- "cact_shim",
  "chacha20",
  "const-oid",
  "elliptic-curve",
  "hkdf",
  "hmac",
+ "kernel_rust",
  "p256",
  "p384",
  "poly1305",
@@ -152,7 +152,6 @@ version = "0.1.0"
 dependencies = [
  "cact_crypto",
  "cact_mm",
- "cact_shim",
  "cact_sync",
  "kernel_rust",
  "rustls",
@@ -161,10 +160,6 @@ dependencies = [
  "smoltcp",
  "webpki-roots",
 ]
-
-[[package]]
-name = "cact_shim"
-version = "0.1.0"
 
 [[package]]
 name = "cact_sync"

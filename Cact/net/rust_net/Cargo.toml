@@ -14,7 +14,6 @@ kernel_rust = { path = "../../kernel/kernel_rust" }
 cact_mm = { path = "../../kernel/memory/rust_mm" }
 cact_sync = { path = "../../kernel/sync" }
 sched   = { path = "../../kernel/proc/sched" }
-cact_shim = { path = "../../crypto/cact_shim" }
 cact_crypto = { path = "../../crypto" }
 rustls = { path = "../../crypto/vendor/rustls-0.23.40/rustls", default-features = false, features = ["custom-provider", "hashbrown"] }
 rustls-pki-types = { path = "../../crypto/vendor/rustls-pki-types", features = ["alloc"] }

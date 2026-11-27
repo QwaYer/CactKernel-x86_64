@@ -69,10 +69,11 @@ struct CactTimeProvider;
 
 impl TimeProvider for CactTimeProvider {
     fn current_time(&self) -> Option<UnixTime> {
-        let now = cact_shim::time::SystemTime::now()
-            .duration_since(cact_shim::time::UNIX_EPOCH)
-            .ok()?;
-        Some(UnixTime::since_unix_epoch(core::time::Duration::from_secs(now.as_secs())))
+        // The kernel has no RTC: microseconds since boot are the clock (so a
+        // verified chain still fails on its validity dates, as noted above).
+        Some(UnixTime::since_unix_epoch(core::time::Duration::from_micros(
+            ffi_kernel::ktime_get_usec(),
+        )))
     }
 }
 

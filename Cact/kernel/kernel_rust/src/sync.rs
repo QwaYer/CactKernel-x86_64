@@ -12,6 +12,7 @@
 
 use core::cell::UnsafeCell;
 use core::ffi::c_void;
+use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::cpu;
@@ -132,6 +133,68 @@ impl IrqLock {
 impl Default for IrqLock {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// IRQ-safe spinlock `Mutex` with a `Deref`/`DerefMut` guard — the small lock
+/// for leaf kernel state that is touched from several contexts (the crypto
+/// crate's CSPRNG).  Distinct from [`mutex_t`](crate::sync), the
+/// scheduler-cooperating sleeping mutex: this one never sleeps, so it is safe
+/// from interrupt context.
+pub struct Mutex<T: ?Sized> {
+    lock: IrqLock,
+    data: UnsafeCell<T>,
+}
+
+// SAFETY: `Mutex` hands its `T` to whichever task holds the lock, and the
+// `UnsafeCell` is reachable only through a guard taken while `lock` is held, so
+// `T: Send` is enough to move the whole cell.
+unsafe impl<T: Send + ?Sized> Send for Mutex<T> {}
+// SAFETY: `&Mutex<T>` exposes `T` only through `lock()`, which serialises every
+// access on the IRQ-saving spinlock, so sharing needs only `T: Send`.
+unsafe impl<T: Send + ?Sized> Sync for Mutex<T> {}
+
+impl<T> Mutex<T> {
+    pub const fn new(t: T) -> Self {
+        Mutex {
+            lock: IrqLock::new(),
+            data: UnsafeCell::new(t),
+        }
+    }
+
+    /// Acquire the lock; interrupts are disabled until the returned guard drops.
+    pub fn lock(&self) -> MutexGuard<'_, T> {
+        self.lock.lock();
+        MutexGuard { mutex: self }
+    }
+}
+
+/// Exclusive access to a [`Mutex`]'s value; unlocks the mutex on drop.
+pub struct MutexGuard<'a, T: ?Sized> {
+    mutex: &'a Mutex<T>,
+}
+
+impl<T: ?Sized> Deref for MutexGuard<'_, T> {
+    type Target = T;
+    fn deref(&self) -> &T {
+        // SAFETY: the guard exists only while `mutex.lock` is held, so no other
+        // task holds a `&`/`&mut` to `data`, and the borrow cannot outlive the
+        // guard.
+        unsafe { &*self.mutex.data.get() }
+    }
+}
+
+impl<T: ?Sized> DerefMut for MutexGuard<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: `&mut self` proves this guard is the unique accessor and the
+        // mutex is still locked, so no other task can alias `data`.
+        unsafe { &mut *self.mutex.data.get() }
+    }
+}
+
+impl<T: ?Sized> Drop for MutexGuard<'_, T> {
+    fn drop(&mut self) {
+        self.mutex.lock.unlock();
     }
 }
 

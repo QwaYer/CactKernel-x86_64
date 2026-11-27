@@ -18,7 +18,7 @@
 //! is the classic no-hardware-entropy source — weaker, and worth knowing about:
 //! `cact_csprng_hw_entropy()` reports whether the hardware source was present.
 
-use cact_shim::sync::Mutex;
+use kernel_rust::sync::Mutex;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::{ChaCha20, Key, Nonce};
 use sha2::{Digest, Sha256};

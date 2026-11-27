@@ -10,9 +10,10 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
-cact_shim = { path = "cact_shim" }
+# The graph's one `unsafe` crate: the CSPRNG's IRQ-safe mutex comes from here.
+kernel_rust = { path = "../kernel/kernel_rust" }
 
-# vendored rustls (patched for cact_shim)
+# vendored rustls (already `#![no_std]`)
 rustls = { path = "vendor/rustls-0.23.40/rustls", default-features = false, features = ["hashbrown"] }
 # vendored webpki — same copy rustls uses, so the algorithms below slot straight
 # into its chain validation
