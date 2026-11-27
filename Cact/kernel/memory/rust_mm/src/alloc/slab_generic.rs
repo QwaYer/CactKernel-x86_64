@@ -4,7 +4,7 @@
 //! Generic (kmalloc-style) size caches on top of the slab allocator.
 
 use crate::ffi::*;
-use crate::safe::{KStatic, kprint_str, klog_msg};
+use crate::safe::{kprint_str, klog_msg};
 use crate::alloc::heap::{kmalloc_raw, kfree};
 use crate::alloc::slab::{
     slab_alloc, slab_cache_create, G_CACHE_LOCK, G_GENERIC_CACHES, GENERIC_CACHE_COUNT,
@@ -42,12 +42,12 @@ pub extern "C" fn slab_init() {
         }
         name[j] = 0;
 
-        // SAFETY: `name` is the NUL-terminated stack buffer initialised just above
+        // `name` is the NUL-terminated stack buffer initialised just above
         // (shorter than `SLAB_NAME_LEN`), and `ctor`/`dtor` are `None`.
-        let cache = unsafe { slab_cache_create(name.as_ptr(), size, None, None) };
-        // SAFETY: `G_GENERIC_CACHES` is populated during single-threaded boot by
+        let cache = slab_cache_create(name.as_ptr(), size, None, None);
+        // `G_GENERIC_CACHES` is populated during single-threaded boot by
         // `slab_init`; no allocator call can race it yet.
-        (unsafe { KStatic::get_mut(G_GENERIC_CACHES.as_ptr()) })[i] = cache;
+        G_GENERIC_CACHES.with(|caches| caches[i] = cache);
         if cache.is_null() {
             printk_color(c"slab: failed to create cache: ".as_ptr() as *const u8, COLOR_LIGHT_RED);
             printk_color(name.as_ptr(), COLOR_LIGHT_RED);
@@ -62,34 +62,37 @@ pub extern "C" fn slab_kmalloc(size: usize) -> *mut u8 {
     if size == 0 {
         return core::ptr::null_mut();
     }
-    // SAFETY: `G_GENERIC_CACHES` entries are written once by `slab_init` at boot
-    // and never mutated afterwards, so this read races nothing.
-    let caches = unsafe { KStatic::get_mut(G_GENERIC_CACHES.as_ptr()) };
-    for i in 0..GENERIC_CACHE_COUNT {
-        if size <= GENERIC_SIZES[i] as usize {
-            let cache = caches[i];
-            if !cache.is_null() {
-                // SAFETY: `cache` is a live cache installed by `slab_init` and
-                // never destroyed.
-                return unsafe { slab_alloc(cache) };
+    // `G_GENERIC_CACHES` entries are written once by `slab_init` at boot and never
+    // mutated afterwards, so this read races nothing.
+    let found = G_GENERIC_CACHES.with(|caches| {
+        for i in 0..GENERIC_CACHE_COUNT {
+            if size <= GENERIC_SIZES[i] as usize {
+                let cache = caches[i];
+                if !cache.is_null() {
+                    // `cache` is a live cache installed by `slab_init` and never
+                    // destroyed.
+                    return Some(cache);
+                }
+                // The size classes are created in order at boot, so a null entry
+                // means the caches are not up yet (an allocation this early must
+                // not fail): fall through to the heap, which serves it as a plain
+                // block.
+                break;
             }
-            // The size classes are created in order at boot, so a null entry means
-            // the caches are not up yet (an allocation this early must not fail):
-            // fall through to the heap, which serves it as a plain block.
-            break;
         }
+        None
+    });
+    if let Some(cache) = found {
+        return slab_alloc(cache);
     }
     kmalloc_raw(size)
 }
 
-/// # Safety
-///
-/// `ptr` must be null, or a pointer to a live slab/heap block previously
-/// returned by this allocator and not yet freed.
+/// Free `ptr` (null, or a pointer to a live slab/heap block previously returned
+/// by this allocator and not yet freed).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn slab_kfree(ptr: *mut u8) {
+pub extern "C" fn slab_kfree(ptr: *mut u8) {
     // `kfree` already tells a slab object from a heap block by the page magic, so
     // this is just the same allocator's ordinary free.
-    // SAFETY: caller contract.
-    unsafe { kfree(ptr) };
+    kfree(ptr);
 }

@@ -108,16 +108,16 @@ pub unsafe extern "C" fn zpool_create(
     }
     let links = kmalloc(cap * core::mem::size_of::<u32>()) as *mut u32;
     if links.is_null() {
-        // SAFETY: `pool_mem` is a live heap block from kmalloc above.
-        unsafe { kfree(pool_mem as *mut u8) };
+        // `pool_mem` is a live heap block from kmalloc above.
+        kfree(pool_mem as *mut u8);
         return core::ptr::null_mut();
     }
     let slots = kmalloc(cap * core::mem::size_of::<Slot>()) as *mut Slot;
     if slots.is_null() {
-        // SAFETY: `links` is a live heap block from kmalloc above.
-        unsafe { kfree(links as *mut u8) };
-        // SAFETY: `pool_mem` is a live heap block from kmalloc above.
-        unsafe { kfree(pool_mem as *mut u8) };
+        // `links` is a live heap block from kmalloc above.
+        kfree(links as *mut u8);
+        // `pool_mem` is a live heap block from kmalloc above.
+        kfree(pool_mem as *mut u8);
         return core::ptr::null_mut();
     }
 
@@ -174,18 +174,18 @@ pub unsafe extern "C" fn zpool_destroy(p: *mut c_void) {
     let slots = unsafe { core::slice::from_raw_parts_mut(pool.slots, cap) };
     for s in slots.iter_mut() {
         if !s.blob.is_null() {
-            // SAFETY: a non-null `blob` is a live heap block from `zpool_store`.
-            unsafe { kfree(s.blob) };
+            // a non-null `blob` is a live heap block from `zpool_store`.
+            kfree(s.blob);
             s.blob = core::ptr::null_mut();
         }
     }
 
-    // SAFETY: `links` was handed out by kmalloc in `zpool_create`.
-    unsafe { kfree(pool.links as *mut u8) };
-    // SAFETY: `slots` was handed out by kmalloc in `zpool_create`.
-    unsafe { kfree(pool.slots as *mut u8) };
-    // SAFETY: `p` was handed out by kmalloc in `zpool_create`.
-    unsafe { kfree(p as *mut u8) };
+    // `links` was handed out by kmalloc in `zpool_create`.
+    kfree(pool.links as *mut u8);
+    // `slots` was handed out by kmalloc in `zpool_create`.
+    kfree(pool.slots as *mut u8);
+    // `p` was handed out by kmalloc in `zpool_create`.
+    kfree(p as *mut u8);
 }
 
 /// Grow a pool's slot table and/or raise its payload budget, keeping every live
@@ -224,8 +224,8 @@ pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budge
     }
     let new_slots = kmalloc(cap * core::mem::size_of::<Slot>()) as *mut Slot;
     if new_slots.is_null() {
-        // SAFETY: `new_links` is a live heap block from kmalloc above.
-        unsafe { kfree(new_links as *mut u8) };
+        // `new_links` is a live heap block from kmalloc above.
+        kfree(new_links as *mut u8);
         return -1;
     }
     // SAFETY: `new_slots` is a fresh `cap`-entry block, so this zeroes it in
@@ -253,10 +253,10 @@ pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budge
     lock_release(core::ptr::addr_of_mut!(pool.lock));
 
     // The old tables are unreachable now (every reader holds the lock).
-    // SAFETY: `old_links` was handed out by kmalloc in `zpool_create`.
-    unsafe { kfree(old_links as *mut u8) };
-    // SAFETY: `old_slots` was handed out by kmalloc in `zpool_create`.
-    unsafe { kfree(old_slots as *mut u8) };
+    // `old_links` was handed out by kmalloc in `zpool_create`.
+    kfree(old_links as *mut u8);
+    // `old_slots` was handed out by kmalloc in `zpool_create`.
+    kfree(old_slots as *mut u8);
     0
 }
 
@@ -330,15 +330,15 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
     let blob = kmalloc_aligned(payload, 16);
     if blob.is_null() {
         fail_once(FAIL_BLOB, c"zpool: store refused — blob allocation failed");
-        // SAFETY: `scratch` is a live heap block from kmalloc above.
-        unsafe { kfree(scratch) };
+        // `scratch` is a live heap block from kmalloc above.
+        kfree(scratch);
         return -1;
     }
     // SAFETY: `blob` is a fresh `payload`-byte block and `src` is readable for
     // `payload` bytes (the scratch frame, or the caller's page).
     unsafe { core::ptr::copy_nonoverlapping(src, blob, payload) };
-    // SAFETY: `scratch` is a live heap block from kmalloc above.
-    unsafe { kfree(scratch) };
+    // `scratch` is a live heap block from kmalloc above.
+    kfree(scratch);
 
     // Reserve the slot.  The lock is taken only now: compression above is the
     // slow part and must not hold the pool spinlock.
@@ -351,8 +351,8 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
         Err(_) => {
             fail_once(FAIL_SLOT, c"zpool: store refused — no slot or budget");
             lock_release(core::ptr::addr_of_mut!(pool.lock));
-            // SAFETY: `blob` is a live heap block from kmalloc above.
-            unsafe { kfree(blob) };
+            // `blob` is a live heap block from kmalloc above.
+            kfree(blob);
             return -1;
         }
     };
@@ -403,8 +403,8 @@ pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) 
     let src = slots[handle as usize].blob;
     if src.is_null() || len == 0 || len > PAGE {
         lock_release(core::ptr::addr_of_mut!(pool.lock));
-        // SAFETY: `tmp` is a live heap block from kmalloc above.
-        unsafe { kfree(tmp) };
+        // `tmp` is a live heap block from kmalloc above.
+        kfree(tmp);
         return -1;
     }
     // SAFETY: `src` is a live `len`-byte blob and `tmp` is a `PAGE`-byte block.
@@ -419,8 +419,8 @@ pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) 
     } else {
         zstd_decompress(tmp, len, page) == PAGE
     };
-    // SAFETY: `tmp` is a live heap block from kmalloc above.
-    unsafe { kfree(tmp) };
+    // `tmp` is a live heap block from kmalloc above.
+    kfree(tmp);
 
     if ok { 0 } else { -1 }
 }
@@ -464,8 +464,8 @@ pub unsafe extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
     lock_release(core::ptr::addr_of_mut!(pool.lock));
 
     // Free the blob outside the lock; it is no longer reachable from the pool.
-    // SAFETY: `blob` is a live heap block from `zpool_store`.
-    unsafe { kfree(blob) };
+    // `blob` is a live heap block from `zpool_store`.
+    kfree(blob);
 }
 
 /// Fill `out` with a snapshot of the pool's accounting.  Returns 0 or -1.

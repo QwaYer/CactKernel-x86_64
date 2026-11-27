@@ -58,8 +58,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
 
     let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if child_p_raw.is_null() {
-        // SAFETY: `child_raw` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
+        // `child_raw` is a live allocation owned here.
+        cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
         // the lock was acquired above.
@@ -70,10 +70,10 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     // SAFETY: `kstack_alloc` has no preconditions and hands back a live stack or null.
     let kstack = unsafe { kstack_alloc() };
     if kstack.is_null() {
-        // SAFETY: `child_p_raw` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_p_raw as *mut c_void) as *mut u8) };
-        // SAFETY: `child_raw` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
+        // `child_p_raw` is a live allocation owned here.
+        cact_mm::kfree((child_p_raw as *mut c_void) as *mut u8);
+        // `child_raw` is a live allocation owned here.
+        cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
         // the lock was acquired above.
@@ -92,10 +92,10 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
             }
             // SAFETY: `kstack` is a live kernel stack owned here.
             unsafe { kstack_free(kstack as *mut c_void) };
-            // SAFETY: `child_p_raw` is a live allocation owned here.
-            unsafe { cact_mm::kfree((child_p_raw as *mut c_void) as *mut u8) };
-            // SAFETY: `child_raw` is a live allocation owned here.
-            unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
+            // `child_p_raw` is a live allocation owned here.
+            cact_mm::kfree((child_p_raw as *mut c_void) as *mut u8);
+            // `child_raw` is a live allocation owned here.
+            cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
             // SAFETY: `child_pd` is a live address space owned here.
             unsafe { cact_mm::vmm_free_address_space(child_pd) };
             // the lock was acquired above.
@@ -173,10 +173,10 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
-        // SAFETY: `child_p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `child` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
+        // `child_p` is a live allocation owned here.
+        cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `child` is a live allocation owned here.
+        cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
         // the lock was acquired above.
@@ -208,10 +208,10 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
-        // SAFETY: `child_p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `child` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
+        // `child_p` is a live allocation owned here.
+        cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `child` is a live allocation owned here.
+        cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
         // the lock was acquired above.
@@ -241,8 +241,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
 
     let child_mmap = cact_mm::kmalloc(core::mem::size_of::<MmapTable>()) as *mut MmapTable;
     if child_mmap.is_null() {
-        // SAFETY: `child_fds` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_fds as *mut c_void) as *mut u8) };
+        // `child_fds` is a live allocation owned here.
+        cact_mm::kfree((child_fds as *mut c_void) as *mut u8);
         child_p.fds = ptr::null_mut();
         for page in ustack_pages {
             // SAFETY: each entry is a page allocated by `kalloc` above.
@@ -250,10 +250,10 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
-        // SAFETY: `child_p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `child` is a live allocation owned here.
-        unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
+        // `child_p` is a live allocation owned here.
+        cact_mm::kfree((child_p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `child` is a live allocation owned here.
+        cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
         // the lock was acquired above.
@@ -706,8 +706,8 @@ fn reap_task_free(t: *mut TaskStruct, last: bool) {
                     unsafe { ffi::file_unref(ft as *mut c_void) };
                 }
             }
-            // SAFETY: `p.fds` is a live allocation owned by this dying thread group.
-            unsafe { cact_mm::kfree((p.fds as *mut c_void) as *mut u8) };
+            // `p.fds` is a live allocation owned by this dying thread group.
+            cact_mm::kfree((p.fds as *mut c_void) as *mut u8);
             p.fds = ptr::null_mut();
         }
 
@@ -719,8 +719,8 @@ fn reap_task_free(t: *mut TaskStruct, last: bool) {
                 // SAFETY: `mt` is the task's live mmap table and `pd` its live page directory.
                 unsafe { cact_mm::mmap_table_free(mt, pd) };
             }
-            // SAFETY: `mt` is a live allocation owned by this dying thread group.
-            unsafe { cact_mm::kfree((mt as *mut c_void) as *mut u8) };
+            // `mt` is a live allocation owned by this dying thread group.
+            cact_mm::kfree((mt as *mut c_void) as *mut u8);
             p.mmap_table = ptr::null_mut();
         }
 
@@ -754,10 +754,10 @@ fn reap_task_free(t: *mut TaskStruct, last: bool) {
         unsafe { kstack_free(p.stack_base) };
     }
 
-    // SAFETY: `proc_ptr` is the dying task's live `ProcMeta`; `p` is no longer live here.
-    unsafe { cact_mm::kfree((proc_ptr as *mut c_void) as *mut u8) };
-    // SAFETY: `t` is the dying task's live `TaskStruct`, exclusively owned here.
-    unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+    // `proc_ptr` is the dying task's live `ProcMeta`; `p` is no longer live here.
+    cact_mm::kfree((proc_ptr as *mut c_void) as *mut u8);
+    // `t` is the dying task's live `TaskStruct`, exclusively owned here.
+    cact_mm::kfree((t as *mut c_void) as *mut u8);
 }
 
 /// # Safety

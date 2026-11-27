@@ -57,7 +57,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u
         new_slots[t.count as usize..].fill(core::ptr::null_mut());
         // SAFETY: `t.pages` is the old `kmalloc`'d array that this call owns and
         // is replacing, so it is freed exactly once here.
-        unsafe { kfree(t.pages as *mut u8) };
+        kfree(t.pages as *mut u8);
         t.pages = new_arr;
         t.capacity = new_cap;
     }
@@ -89,7 +89,7 @@ pub unsafe extern "C" fn proc_free_pages(t: *mut ProcPageTracker) {
     if !t.pages.is_null() {
         // SAFETY: `t.pages` is an owned `kmalloc`'d allocation (per the caller
         // contract) that this destructor is allowed to release.
-        unsafe { kfree(t.pages as *mut u8) };
+        kfree(t.pages as *mut u8);
     }
 
     t.pages = core::ptr::null_mut();

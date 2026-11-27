@@ -195,7 +195,7 @@ fn maybe_free_locked(slot: usize) {
     // is the single release for it; the slot becomes reusable only after the
     // reset below.
     if !s.pages.is_null() {
-        unsafe { kfree(s.pages as *mut u8) };
+        kfree(s.pages as *mut u8);
         s.pages = core::ptr::null_mut();
     }
     s.pages_cap = 0;

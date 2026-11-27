@@ -130,11 +130,9 @@ fn ensure_bits(a: &mut AddrSpace, need_pages: usize) -> bool {
     let new_present = cact_mm::kmalloc(bytes);
     let new_dirty = cact_mm::kmalloc(bytes);
     if new_present.is_null() || new_dirty.is_null() {
-        // SAFETY: each non-null block was just allocated here and is owned here.
-        unsafe {
-            if !new_present.is_null() { cact_mm::kfree(new_present); }
-            if !new_dirty.is_null() { cact_mm::kfree(new_dirty); }
-        }
+        // Each non-null block was just allocated here and is owned here.
+        if !new_present.is_null() { cact_mm::kfree(new_present); }
+        if !new_dirty.is_null() { cact_mm::kfree(new_dirty); }
         return false;
     }
     // SAFETY: both new blocks are `bitmap_bytes(cap)`-byte `kmalloc` allocations

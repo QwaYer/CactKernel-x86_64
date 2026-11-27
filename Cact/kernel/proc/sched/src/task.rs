@@ -97,12 +97,10 @@ pub unsafe fn kstack_alloc() -> *mut u32 {
 /// `base` must be null or a pointer previously returned by `kstack_alloc`/`kmalloc` that has
 /// not already been freed.
 pub unsafe fn kstack_free(base: *mut c_void) {
-    // SAFETY: `base` is null-checked and, per the contract, is a live allocation from
+    // `base` is null-checked and, per the contract, is a live allocation from
     // `kstack_alloc`, so `kfree` is called on a valid block.
-    unsafe {
-        if !base.is_null() {
-            cact_mm::kfree((base) as *mut u8);
-        }
+    if !base.is_null() {
+        cact_mm::kfree((base) as *mut u8);
     }
 }
 
@@ -374,8 +372,8 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
 
     let mmap_tbl = cact_mm::kmalloc(core::mem::size_of::<MmapTable>()) as *mut MmapTable;
     if mmap_tbl.is_null() {
-        // SAFETY: `fds` is a live allocation owned here, so releasing it is sound.
-        unsafe { cact_mm::kfree((fds as *mut c_void) as *mut u8) };
+        // `fds` is a live allocation owned here, so releasing it is sound.
+        cact_mm::kfree((fds as *mut c_void) as *mut u8);
         p.fds = ptr::null_mut();
         return false;
     }
@@ -472,8 +470,8 @@ pub unsafe fn proc_shared_free(s: *mut ProcShared) {
     // SAFETY: `s` is live and owned here; freeing its tracker releases the process page array and
     // the address space it names.
     unsafe { cact_mm::proc_free_pages(core::ptr::addr_of_mut!((*s).mm)) };
-    // SAFETY: `s` is the live allocation owned here.
-    unsafe { cact_mm::kfree((s as *mut c_void) as *mut u8) };
+    // `s` is the live allocation owned here.
+    cact_mm::kfree((s as *mut c_void) as *mut u8);
 }
 
 /// # Safety

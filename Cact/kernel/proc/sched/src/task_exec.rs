@@ -106,8 +106,8 @@ pub unsafe extern "C" fn task_exec(
     // SAFETY: `shared` is the live thread-group state (non-null checked above).
     let old_tracker_pages = unsafe { (*shared).mm.pages };
     if !old_tracker_pages.is_null() {
-        // SAFETY: `old_tracker_pages` is the tracker array owned by this task.
-        unsafe { cact_mm::kfree((old_tracker_pages as *mut c_void) as *mut u8) };
+        // `old_tracker_pages` is the tracker array owned by this task.
+        cact_mm::kfree((old_tracker_pages as *mut c_void) as *mut u8);
     }
 
     let new_pd = vmm_create_address_space();

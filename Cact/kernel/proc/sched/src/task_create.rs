@@ -37,28 +37,28 @@ pub unsafe extern "C" fn create_task(entry_point: *const c_void) -> *mut TaskStr
 
     let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if p.is_null() {
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
     // SAFETY: `kstack_alloc` has no preconditions and returns a live stack or null.
     let stack = unsafe { kstack_alloc() };
     if stack.is_null() {
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
     if !task_zero_init(t, p) {
         // SAFETY: `stack` is a live kernel stack owned here.
         unsafe { kstack_free(stack as *mut c_void) };
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
@@ -118,18 +118,18 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
 
     let p = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if p.is_null() {
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
     // SAFETY: `kstack_alloc` has no preconditions and returns a live stack or null.
     let kstack = unsafe { kstack_alloc() };
     if kstack.is_null() {
-        // SAFETY: `p` and `t` are live allocations owned here.
-        unsafe { cact_mm::kfree((p as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` and `t` are live allocations owned here.
+        cact_mm::kfree((p as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
@@ -144,10 +144,10 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
             }
             // SAFETY: `kstack` is a live kernel stack owned here.
             unsafe { kstack_free(kstack as *mut c_void) };
-            // SAFETY: `p` is a live allocation owned here.
-            unsafe { cact_mm::kfree((p as *mut c_void) as *mut u8) };
-            // SAFETY: `t` is a live allocation owned here.
-            unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+            // `p` is a live allocation owned here.
+            cact_mm::kfree((p as *mut c_void) as *mut u8);
+            // `t` is a live allocation owned here.
+            cact_mm::kfree((t as *mut c_void) as *mut u8);
             return ptr::null_mut();
         }
         ustack_pages[i] = page as *mut c_void;
@@ -160,10 +160,10 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
 
@@ -280,10 +280,10 @@ pub unsafe extern "C" fn create_task_with_entry(
         // SAFETY: `p.stack_base` is this task's live kernel stack.
         unsafe { kstack_free(p.stack_base) };
         free_user_stack_pages(p);
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         return ptr::null_mut();
     }
     p.shared = shared;
@@ -369,10 +369,10 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
         // SAFETY: `p.stack_base` is this task's live kernel stack.
         unsafe { kstack_free(p.stack_base) };
         free_user_stack_pages(p);
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         // SAFETY: `pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(pd) };
         return ptr::null_mut();
@@ -415,12 +415,12 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
         unsafe { kstack_free(p.stack_base) };
         free_user_stack_pages(p);
         // The loader already released the tracker array and address space.
-        // SAFETY: `shared` is a live allocation owned here.
-        unsafe { cact_mm::kfree((shared as *mut c_void) as *mut u8) };
-        // SAFETY: `p` is a live allocation owned here.
-        unsafe { cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8) };
-        // SAFETY: `t` is a live allocation owned here.
-        unsafe { cact_mm::kfree((t as *mut c_void) as *mut u8) };
+        // `shared` is a live allocation owned here.
+        cact_mm::kfree((shared as *mut c_void) as *mut u8);
+        // `p` is a live allocation owned here.
+        cact_mm::kfree((p as *mut ProcMeta as *mut c_void) as *mut u8);
+        // `t` is a live allocation owned here.
+        cact_mm::kfree((t as *mut c_void) as *mut u8);
         // SAFETY: `pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(pd) };
         return ptr::null_mut();

@@ -104,6 +104,14 @@ pub fn kfree(ptr: *mut u8) {
     unsafe { sys::kfree(ptr) };
 }
 
+/// Return a 4 KiB frame to the physical allocator (`free_page`).
+///
+/// `ptr` must be a frame previously handed out by `kalloc` and not yet freed.
+pub fn free_page(ptr: *mut u8) {
+    // SAFETY: the caller passes a live frame obtained from `kalloc`.
+    unsafe { sys::free_page(ptr) };
+}
+
 /// Reclaim a `Box<T>` from a raw pointer produced by `Box::into_raw` (the
 /// type-erased ownership handoff the DRM pools use).
 pub fn box_free<T>(ptr: *mut T) {
