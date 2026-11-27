@@ -68,6 +68,13 @@ pub fn sema_up(s: &semaphore_t) {
     unsafe { up(s as *const semaphore_t as *mut semaphore_t) };
 }
 
+/// Safe wrapper over [`sema_try_down`]: `0` if a token was taken, `-1` otherwise.
+pub fn sema_try_down_ref(s: &semaphore_t) -> i32 {
+    // SAFETY: `s` is a live semaphore; `sema_try_down` only manipulates its own
+    // fields under `guard`.
+    unsafe { sema_try_down(s as *const semaphore_t as *mut semaphore_t) }
+}
+
 /// # Safety
 ///
 /// `s` must be non-null and properly aligned, must point to an initialised

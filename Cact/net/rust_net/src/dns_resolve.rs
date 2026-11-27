@@ -13,6 +13,8 @@
 use core::ffi::{c_char, c_int};
 use core::net::{Ipv4Addr, Ipv6Addr};
 
+use kernel_rust::ptr;
+
 use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::udp;
 use smoltcp::wire::IpAddress;
@@ -56,51 +58,30 @@ static mut DNS_SEMA: Semaphore = Semaphore {
     waiter_count: 0,
 };
 
-/// # Safety
-///
 /// `socks` must be the crate's single `SocketSet`.  The caller must hold the
 /// stack lock (or be `stack_init`, before the stack is published), because the
 /// shared DNS socket handle and the `DNS_SEMA` semaphore below are also touched
 /// by `resolve_once`/`remove_socket` under that lock.
 pub fn init_socket(socks: &mut SocketSet<'static>) {
-    // SAFETY: `DNS_HANDLE` is a `static mut Option<SocketHandle>` read and
-    // written only under the stack lock that the caller contract (see # Safety)
-    // requires, so this check cannot race `remove_socket`.
-    if unsafe { DNS_HANDLE }.is_some() {
+    if ptr::as_ref(core::ptr::addr_of!(DNS_HANDLE)).is_some() {
         return;
     }
-    // SAFETY: `sema_init` expects a pointer to a live `Semaphore`; `DNS_SEMA` is
-    // a kernel-lifetime static of exactly that type, and initialising it before
-    // any resolver can wait on it is serialized by the caller's stack lock.
-    unsafe { ffi_kernel::sema_init(core::ptr::addr_of_mut!(DNS_SEMA), 1) };
-    // SAFETY: `DNS_RX_META` is a kernel-lifetime packet-buffer static; it is
-    // handed to smoltcp only through this one shared socket, which the caller's
-    // stack lock keeps exclusive, and the slice stays inside the array.
-    let rx_meta = unsafe { &mut DNS_RX_META[..] };
-    // SAFETY: as above, for `DNS_RX_BUF`.
-    let rx_buf = unsafe { &mut DNS_RX_BUF[..] };
+    cact_sync::sema_init_ref(ptr::as_mut(core::ptr::addr_of_mut!(DNS_SEMA)), 1);
+    let rx_meta = &mut ptr::as_mut(core::ptr::addr_of_mut!(DNS_RX_META))[..];
+    let rx_buf = &mut ptr::as_mut(core::ptr::addr_of_mut!(DNS_RX_BUF))[..];
     let rx = udp::PacketBuffer::new(rx_meta, rx_buf);
-    // SAFETY: as above — `DNS_TX_META` is a kernel-lifetime static whose only
-    // user is this shared socket, created under the stack lock.
-    let tx_meta = unsafe { &mut DNS_TX_META[..] };
-    // SAFETY: as above, for `DNS_TX_BUF`.
-    let tx_buf = unsafe { &mut DNS_TX_BUF[..] };
+    let tx_meta = &mut ptr::as_mut(core::ptr::addr_of_mut!(DNS_TX_META))[..];
+    let tx_buf = &mut ptr::as_mut(core::ptr::addr_of_mut!(DNS_TX_BUF))[..];
     let tx = udp::PacketBuffer::new(tx_meta, tx_buf);
     let u = udp::Socket::new(rx, tx);
-    // SAFETY: `DNS_HANDLE` is written under the same stack lock as every other
-    // access, so no other task can observe a half-updated handle.
-    unsafe { DNS_HANDLE = Some(socks.add(u)) };
+    ptr::write(core::ptr::addr_of_mut!(DNS_HANDLE), Some(socks.add(u)));
 }
 
-/// # Safety
-///
 /// `socks` must be the same `SocketSet` passed to [`init_socket`], and the
 /// caller must hold the stack lock (or be tearing the stack down), so the shared
 /// DNS handle cannot be in use by a concurrent resolver.
 pub fn remove_socket(socks: &mut SocketSet<'static>) {
-    // SAFETY: as in `init_socket`, `DNS_HANDLE` is only mutated under the stack
-    // lock held by the caller, and `take` operates on that tear-free `Option`.
-    if let Some(h) = unsafe { (*core::ptr::addr_of_mut!(DNS_HANDLE)).take() } {
+    if let Some(h) = ptr::as_mut(core::ptr::addr_of_mut!(DNS_HANDLE)).take() {
         let _ = socks.remove(h);
     }
 }
@@ -278,10 +259,7 @@ fn encode_qname(out: &mut [u8], host: &str) -> Option<usize> {
 }
 
 fn flush_dns_recv(socks: &mut SocketSet<'static>) {
-    // SAFETY: `DNS_HANDLE` is a `static mut Option<SocketHandle>` read and
-    // written only under the stack lock; an `Option` read is tear-free, and a
-    // stale `None` merely makes this flush a no-op.
-    let Some(h) = (unsafe { DNS_HANDLE }) else {
+    let Some(h) = ptr::read(core::ptr::addr_of!(DNS_HANDLE)) else {
         return;
     };
     let s = socks.get_mut::<udp::Socket>(h);
@@ -351,9 +329,7 @@ fn try_recv_dns_reply(
     id: u16,
     qtype: u16,
 ) -> Option<DnsAnswer> {
-    // SAFETY: as in `flush_dns_recv`, `DNS_HANDLE` is only mutated under the stack
-    // lock; the tear-free `Option` read yields a live handle or `None`.
-    let h = unsafe { DNS_HANDLE }?;
+    let h = ptr::read(core::ptr::addr_of!(DNS_HANDLE))?;
     let s = socks.get_mut::<udp::Socket>(h);
     let (data, meta) = s.recv().ok()?;
     // Only a datagram from the server we queried, on port 53, can be its answer —
@@ -375,9 +351,7 @@ fn try_recv_dns_reply(
 /// Returns false when the socket is gone or the query could not be queued.
 fn send_query(query: &[u8], server: DnsServer, flush: bool) -> bool {
     stack::with_iface_sockets(|_iface, socks| {
-        // SAFETY: this closure runs under `with_iface_sockets` (stack lock held), the
-        // same lock every writer of `DNS_HANDLE` takes; the `Option` read cannot tear.
-        let h = match unsafe { DNS_HANDLE } {
+        let h = match ptr::read(core::ptr::addr_of!(DNS_HANDLE)) {
             Some(h) => h,
             None => return false,
         };
@@ -474,32 +448,20 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
 }
 
 /// Borrow a NUL-terminated C name as a byte slice, rejecting one longer than the
-/// 253-byte DNS limit.
-///
-/// # Safety
-///
-/// `name` must be a NUL-terminated string readable up to and including its
-/// terminator.
-unsafe fn c_name_bytes<'a>(name: *const c_char) -> Option<&'a [u8]> {
+/// 253-byte DNS limit.  `name` must be a NUL-terminated string readable up to
+/// and including its terminator.
+fn c_name_bytes(name: *const c_char) -> Option<&'static [u8]> {
     let mut len = 0usize;
     loop {
         if len > 253 {
             return None;
         }
-        // SAFETY: the caller contract makes `name` NUL-terminated, so `len <= 253`
-        // keeps `add` within its first 254 bytes.
-        let p = unsafe { name.add(len) };
-        // SAFETY: `p` is the address checked just above; a conforming
-        // NUL-terminated string has a byte at each of those offsets.
-        if unsafe { *p } == 0 {
+        if ptr::read(name.wrapping_add(len)) == 0 {
             break;
         }
         len += 1;
     }
-    // SAFETY: `name` is NUL-terminated per the caller contract and `len` is the
-    // byte count just scanned (<= 253), so exactly those initialised bytes are
-    // readable.
-    Some(unsafe { core::slice::from_raw_parts(name.cast::<u8>(), len) })
+    Some(ptr::slice(name.cast::<u8>(), len))
 }
 
 /// Take the shared resolver semaphore, returning 0 once held or -4 when a
@@ -512,39 +474,27 @@ fn dns_lock() -> c_int {
         if crate::socket::signal_pending() {
             return -4; // EINTR
         }
-        // SAFETY: `DNS_SEMA` is a kernel-lifetime `Semaphore` initialised by
-        // `init_socket`; `sema_try_down` is its matching non-blocking kernel
-        // service and takes no other lock.
-        if unsafe { ffi_kernel::sema_try_down(core::ptr::addr_of_mut!(DNS_SEMA)) } == 0 {
+        if cact_sync::sema_try_down_ref(ptr::as_ref(core::ptr::addr_of!(DNS_SEMA))) == 0 {
             return 0;
         }
-        // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
-        // count; it takes no pointers and is callable from task context.
-        unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+        sched::timer_wheel::sleep_ticks(1);
     }
 }
 
-/// # Safety
-/// `DNS_SEMA` is live whenever a lookup ran; this is the matching release.
-unsafe fn dns_unlock() {
-    // SAFETY: the caller holds a token taken by `dns_lock`, and `DNS_SEMA` is a
-    // kernel-lifetime semaphore.
-    unsafe { ffi_kernel::up(core::ptr::addr_of_mut!(DNS_SEMA)) };
+/// Release the shared resolver semaphore (`DNS_SEMA` is live whenever a lookup
+/// ran); the matching release for [`dns_lock`].
+fn dns_unlock() {
+    cact_sync::sema_up(ptr::as_ref(core::ptr::addr_of!(DNS_SEMA)));
 }
 
-pub unsafe fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32) -> c_int {
+pub fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32) -> c_int {
     if name.is_null() || out_ip_host.is_null() {
         return -1;
     }
-    // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and
-    // cleared by `stack_teardown`; a byte load cannot tear, and reading it as
-    // false fails the call closed.
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         return -1;
     }
-    // SAFETY: `name` is non-null (checked above) and, per the caller contract,
-    // NUL-terminated.
-    let Some(host) = (unsafe { c_name_bytes(name) }) else {
+    let Some(host) = c_name_bytes(name) else {
         return -1;
     };
     let r = dns_lock();
@@ -552,16 +502,13 @@ pub unsafe fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32)
         return r;
     }
     let resolved = resolve_a(host);
-    // SAFETY: `dns_lock` returned 0, so this is the matching release.
-    unsafe { dns_unlock() };
+    dns_unlock();
     if crate::socket::signal_pending() {
         return -4; // EINTR
     }
     match resolved {
         Some(ip) => {
-            // SAFETY: the caller contract (see # Safety) makes `out_ip_host` a writable,
-            // aligned `u32`; the null check at the top of the function excluded null.
-            unsafe { *out_ip_host = ip };
+            ptr::write(out_ip_host, ip);
             0
         }
         None => -1,
@@ -570,28 +517,20 @@ pub unsafe fn rust_net_dns_resolve_a(name: *const c_char, out_ip_host: *mut u32)
 
 /// Resolve a hostname to an IPv6 address (AAAA), writing the sixteen big-endian
 /// octets to `out_addr`.  Returns 0 on success, -1 on failure, -4 if interrupted.
-///
-/// # Safety
-///
 /// `name` must be a NUL-terminated C string readable up to and including its
 /// terminator, and `out_addr` must point to 16 writable bytes.  Either may be
 /// null, in which case the call returns -1 without touching memory.
-pub unsafe fn rust_net_dns_resolve_aaaa(
+pub fn rust_net_dns_resolve_aaaa(
     name: *const c_char,
     out_addr: *mut u8,
 ) -> c_int {
     if name.is_null() || out_addr.is_null() {
         return -1;
     }
-    // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and
-    // cleared by `stack_teardown`; a byte load cannot tear, and reading it as
-    // false fails the call closed.
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         return -1;
     }
-    // SAFETY: `name` is non-null (checked above) and, per the caller contract,
-    // NUL-terminated.
-    let Some(host) = (unsafe { c_name_bytes(name) }) else {
+    let Some(host) = c_name_bytes(name) else {
         return -1;
     };
     let r = dns_lock();
@@ -599,16 +538,13 @@ pub unsafe fn rust_net_dns_resolve_aaaa(
         return r;
     }
     let resolved = resolve_aaaa(host);
-    // SAFETY: `dns_lock` returned 0, so this is the matching release.
-    unsafe { dns_unlock() };
+    dns_unlock();
     if crate::socket::signal_pending() {
         return -4; // EINTR
     }
     match resolved {
         Some(addr) => {
-            // SAFETY: the caller contract (see # Safety) makes `out_addr` a
-            // 16-byte writable buffer and `addr` is a distinct local array.
-            unsafe { core::ptr::copy_nonoverlapping(addr.as_ptr(), out_addr, 16) };
+            ptr::copy_nonoverlapping(addr.as_ptr(), out_addr, 16);
             0
         }
         None => -1,
