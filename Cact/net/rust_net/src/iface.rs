@@ -8,6 +8,8 @@
 //! ioctls.  Those are kept for compatibility; this module adds an indexed view so
 //! a tool can list both the NIC and `lo`.
 
+use kernel_rust::ptr;
+
 use crate::config;
 use crate::runtime;
 use crate::stack;
@@ -50,10 +52,7 @@ const _: () = assert!(core::mem::size_of::<CactIfaceInfo>() == 116);
 /// is index 0 and is alone; each NIC takes a leading index and `lo` stays last
 /// (so a single NIC keeps the `[nic, lo]` view userspace already knows).
 pub fn rust_net_iface_count() -> i32 {
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool` set by
-    // `stack_init` and cleared by `stack_teardown`; a byte load cannot tear and
-    // reading it as false simply reports "no interfaces".
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         0
     } else {
         crate::runtime::rust_net_nic_count() + 1
@@ -65,32 +64,23 @@ pub fn rust_net_iface_count() -> i32 {
 /// `lo`.  Returns 0 on success, -1 when `out` is NULL, the stack is down, or
 /// `idx` is out of range.
 ///
-/// # Safety
-///
-/// `out` may be null (the call then returns -1), but if non-null it must point to
-/// a writable, properly aligned [`CactIfaceInfo`] that stays live for the call.
-pub unsafe fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -> i32 {
+/// `out` may be null (the call then returns -1); if non-null it must point to a
+/// writable, properly aligned [`CactIfaceInfo`].
+pub fn rust_net_iface_get(idx: u32, out: *mut CactIfaceInfo) -> i32 {
     if out.is_null() {
         return -1;
     }
-    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool`; a byte load
-    // cannot tear.
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         return -1;
     }
     let nics = crate::runtime::rust_net_nic_count();
     if idx as i32 >= nics + 1 {
         return -1;
     }
-    // SAFETY: the caller contract (see # Safety) makes `out` a live, aligned
-    // `CactIfaceInfo`, so this borrow is exclusive for the call and the byte
-    // write below stays within the struct.
-    let info = unsafe { &mut *out };
+    let info = ptr::as_mut(out);
     // Zero first so an entry that is only partly filled never leaks whatever was
     // in the caller's buffer.
-    // SAFETY: `info` points at one fully initialised `CactIfaceInfo`, so a
-    // one-element byte fill is in bounds.
-    unsafe { core::ptr::write_bytes(info as *mut CactIfaceInfo, 0, 1) };
+    ptr::write_bytes(info as *mut CactIfaceInfo, 0, 1);
     if (idx as i32) < nics {
         fill_nic(info, idx);
     } else {
@@ -119,12 +109,8 @@ pub fn rust_net_iface_set_cfg(
 /// Fill `info` with the `index`-th registered NIC and its own interface slot's
 /// addressing.
 fn fill_nic(info: &mut CactIfaceInfo, index: u32) {
-    // SAFETY: `info.name` is a live 16-byte buffer and `rust_net_nic_ifname`
-    // copies at most `cap` bytes, stopping at the terminator; it only fails
-    // (returns -1) for an out-of-range index, which leaves the name empty.
-    unsafe { runtime::rust_net_nic_ifname(index, info.name.as_mut_ptr(), info.name.len() as u32) };
-    // SAFETY: as above, for the 6-byte MAC buffer.
-    unsafe { runtime::rust_net_nic_mac(index, info.mac.as_mut_ptr()) };
+    runtime::rust_net_nic_ifname(index, info.name.as_mut_ptr(), info.name.len() as u32);
+    runtime::rust_net_nic_mac(index, info.mac.as_mut_ptr());
     // Report the interface slot's own addressing.  A NIC that has not been
     // configured by userspace shows 0.0.0.0 (unnumbered) rather than the primary's
     // address, so `ip addr` never paints a secondary NIC with the wrong address.
@@ -164,11 +150,9 @@ fn fill_loopback(info: &mut CactIfaceInfo) {
 /// last NIC — which also covers `lo`, the final index, since it owns no
 /// configurable address of its own.
 ///
-/// # Safety
-///
 /// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
 /// the duration of the call.
-pub unsafe fn rust_net_iface_set_cfg6(
+pub fn rust_net_iface_set_cfg6(
     index: u32,
     addr: *const u8,
     prefix: u32,
@@ -185,13 +169,9 @@ pub unsafe fn rust_net_iface_set_cfg6(
     let mut a = [0u8; 16];
     let mut g = [0u8; 16];
     let mut d = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes each pointer a live
-    // 16-byte readable buffer, and each destination is a distinct 16-byte array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16) };
-    // SAFETY: as above, for `gw` into `g`.
-    unsafe { core::ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16) };
-    // SAFETY: as above, for `dns` into `d`.
-    unsafe { core::ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16) };
+    ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16);
+    ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16);
+    ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16);
     crate::config::set_ipv6_config_slot(slot as usize, a, prefix.min(128) as u8, g, d)
 }
 
@@ -199,11 +179,9 @@ pub unsafe fn rust_net_iface_set_cfg6(
 /// (`CACT_NETCTL_NETCFG6`, root only) — the dual-stack counterpart of
 /// `rust_net_set_ipv4_config`.
 ///
-/// # Safety
-///
 /// `addr`, `gw` and `dns` must each point to 16 readable bytes that stay live for
 /// the duration of the call.
-pub unsafe fn rust_net_set_ipv6_config(
+pub fn rust_net_set_ipv6_config(
     addr: *const u8,
     prefix: u32,
     gw: *const u8,
@@ -215,12 +193,8 @@ pub unsafe fn rust_net_set_ipv6_config(
     let mut a = [0u8; 16];
     let mut g = [0u8; 16];
     let mut d = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes each pointer a live
-    // 16-byte readable buffer, and each destination is a distinct 16-byte array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16) };
-    // SAFETY: as above, for `gw` into `g`.
-    unsafe { core::ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16) };
-    // SAFETY: as above, for `dns` into `d`.
-    unsafe { core::ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16) };
+    ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 16);
+    ptr::copy_nonoverlapping(gw, g.as_mut_ptr(), 16);
+    ptr::copy_nonoverlapping(dns, d.as_mut_ptr(), 16);
     crate::config::set_ipv6_config_slot(0, a, prefix.min(128) as u8, g, d)
 }

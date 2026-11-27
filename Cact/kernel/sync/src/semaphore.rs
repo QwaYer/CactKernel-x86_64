@@ -49,6 +49,25 @@ fn sema_init_impl(s: &mut semaphore_t, val: i32) {
     s.waiters.fill(ptr::null_mut());
 }
 
+/// Safe wrapper over [`sema_init`]: initialise `s` with `val` tokens.
+pub fn sema_init_ref(s: &mut semaphore_t, val: i32) {
+    sema_init_impl(s, val);
+}
+
+/// Safe wrapper over [`down`]: block until a token is available.
+pub fn sema_down(s: &semaphore_t) {
+    // SAFETY: `s` is a live semaphore; `down` only manipulates its own fields
+    // under `guard`.
+    unsafe { down(s as *const semaphore_t as *mut semaphore_t) };
+}
+
+/// Safe wrapper over [`up`]: release a token.
+pub fn sema_up(s: &semaphore_t) {
+    // SAFETY: `s` is a live semaphore; `up` only manipulates its own fields under
+    // `guard`.
+    unsafe { up(s as *const semaphore_t as *mut semaphore_t) };
+}
+
 /// # Safety
 ///
 /// `s` must be non-null and properly aligned, must point to an initialised

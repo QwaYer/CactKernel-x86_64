@@ -1056,7 +1056,7 @@ pub(crate) fn iface_detach(slot: usize) {
 /// driver-teardown path and must not be using the stack concurrently: this resets
 /// every slot, so a concurrent `stack_poll` or syscall would observe a half-torn-down
 /// stack.
-pub unsafe fn stack_teardown() {
+pub fn stack_teardown() {
     let _stack_guard = StackGuard::new();
     // Release the shared DNS socket from slot 0's set before it is dropped.
     // SAFETY: the caller contract (see # Safety) excludes every other user of the
@@ -1172,7 +1172,7 @@ pub fn stack_poll() {
 /// `skb` must be null or a live, initialised [`Skb`] that this call owns (a frame
 /// received by a NIC driver): it is either queued or freed exactly once here, so
 /// the caller must not use it afterwards.
-pub unsafe fn stack_enqueue_rx(skb: *mut Skb) {
+pub fn stack_enqueue_rx(skb: *mut Skb) {
     if skb.is_null() {
         return;
     }
@@ -1219,9 +1219,7 @@ pub unsafe fn stack_enqueue_rx(skb: *mut Skb) {
     if queued {
         // Woken outside the lock: `up` can reach the scheduler, and this path may
         // hold interrupts off.
-        // SAFETY: `runtime::net_sema` is a kernel-lifetime semaphore; `up` is the
-        // matching kernel C release service.
-        unsafe { ffi_kernel::up(core::ptr::addr_of_mut!(runtime::net_sema)) };
+        crate::runtime::net_sema.with(|s| cact_sync::sema_up(s));
     }
 }
 

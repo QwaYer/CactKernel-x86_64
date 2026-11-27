@@ -255,9 +255,9 @@ pub fn register(hw: *mut Cact80211Hw) -> i32 {
     // field is initialised above.
     let nd = core::ptr::addr_of_mut!(NETDEV);
     unsafe { (*nd).mac = MacAddr { b: mac } };
-    // SAFETY: `register_netdev` takes a live `NetDriver`; this runs on the
-    // driver's bring-up path.
-    unsafe { register_netdev(nd) };
+    // `register_netdev` takes a live `NetDriver`; this runs on the driver's
+    // bring-up path.
+    register_netdev(nd);
     d.name_ready = true;
 
     0
@@ -559,8 +559,8 @@ fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize, da_off: u
     if buf[da_off] & 0x01 != 0 {
         d.rx_group += 1;
     }
-    // SAFETY: `skb` is a complete Ethernet frame that `netif_rx` consumes.
-    unsafe { netif_rx(skb) };
+    // `skb` is a complete Ethernet frame that `netif_rx` consumes.
+    netif_rx(skb);
 }
 
 // ── netdev callbacks ──────────────────────────────────────────────────────────

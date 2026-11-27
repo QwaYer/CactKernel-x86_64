@@ -17,6 +17,13 @@ use crate::task::{
     USER_CODE_SEL, USER_DATA_SEL, USER_STACK_BYTES, USER_STACK_PAGES,
 };
 
+/// Safe wrapper over [`create_task`]: spawn a kernel task at `entry_point`
+/// (a `'static` kernel function).
+pub fn spawn(entry_point: *const c_void) -> *mut TaskStruct {
+    // SAFETY: `entry_point` points at a `'static` kernel function.
+    unsafe { create_task(entry_point) }
+}
+
 /// # Safety
 ///
 /// `entry_point` must be a valid kernel entry trampoline for a new task; must be called with
