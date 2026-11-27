@@ -33,6 +33,7 @@ use core::ffi::{c_int, c_void};
 
 use kernel_rust::eventfd;
 use kernel_rust::fs::alloc_fd;
+use kernel_rust::mem::kfree;
 use kernel_rust::ptr;
 use kernel_rust::sync::sleep_ticks;
 use kernel_rust::user;
@@ -41,9 +42,7 @@ use crate::ffi::drm_copy_in;
 use crate::gem::lock_ptr;
 use crate::structs::{DrmDevice, DrmFile, Syncobj, SyncobjEventfdEntry};
 use crate::syncobj_state::SyncState;
-use crate::vfs::{
-    copy_cstr, File, VfsFileOps, VfsNode, VFS_CHARDEVICE, VFS_POLLERR, VFS_POLLIN,
-};
+use crate::vfs::{File, VfsFileOps, VfsNode, VFS_CHARDEVICE, VFS_POLLERR, VFS_POLLIN};
 
 /* ── uapi (uapi/drm.h) ──────────────────────────────────────────────────── */
 
@@ -186,25 +185,25 @@ struct SyncFileRef {
 /// timeline object too (it used to poll the binary bit, which a timeline object
 /// never sets).
 fn syncobj_signaled(dev: *mut DrmDevice, id: u32) -> bool {
-    // SAFETY: `dev` is the caller's live device; this finds the object by id.
-    let o = unsafe { (*dev).find_syncobj(id) };
+    // `dev` is the caller's live device; this finds the object by id.
+    let o = ptr::as_ref(dev).find_syncobj(id);
     if o.is_null() {
         return false;
     }
-    // SAFETY: `o` is the live object named by `id`; this reads its state.
-    unsafe { state_of(o) }.reached(0)
+    // `o` is the live object named by `id`; this reads its state.
+    state_of(o).reached(0)
 }
 
 extern "C" fn sync_file_poll(node: *mut VfsNode, _priv_: *mut c_void, _events: u32) -> c_int {
-    // SAFETY: devfs passes one of our own nodes, so this `priv_` read is in bounds.
-    let r = unsafe { (*node).priv_ } as *mut SyncFileRef;
+    // devfs passes one of our own nodes, so this `priv_` read is in bounds.
+    let r = ptr::as_ref(node).priv_ as *mut SyncFileRef;
     if r.is_null() {
         return VFS_POLLERR as c_int;
     }
-    // SAFETY: `r` is the live export record this node owns; this reads its device.
-    let dev = unsafe { (*r).dev };
-    // SAFETY: as above — the syncobj id it names.
-    let id = unsafe { (*r).id };
+    // `r` is the live export record this node owns; this reads its device.
+    let dev = ptr::as_ref(r).dev;
+    // As above — the syncobj id it names.
+    let id = ptr::as_ref(r).id;
     if syncobj_signaled(dev, id) {
         VFS_POLLIN as c_int
     } else {
@@ -234,23 +233,23 @@ extern "C" fn sync_file_ioctl(
 
 /// Closing the fd drops the export record, so the fd can no longer be imported.
 extern "C" fn sync_file_release(node: *mut VfsNode, _f: *mut File) {
-    // SAFETY: devfs passes one of our own nodes, so this `priv_` read is in bounds.
-    let r = unsafe { (*node).priv_ } as *mut SyncFileRef;
+    // devfs passes one of our own nodes, so this `priv_` read is in bounds.
+    let r = ptr::as_ref(node).priv_ as *mut SyncFileRef;
     if r.is_null() {
         return;
     }
-    // SAFETY: `r` is the live export record this node owns; this reads its device.
-    let dev = unsafe { (*r).dev };
-    // SAFETY: as above — the syncobj id it names.
-    let id = unsafe { (*r).id };
+    // `r` is the live export record this node owns; this reads its device.
+    let dev = ptr::as_ref(r).dev;
+    // As above — the syncobj id it names.
+    let id = ptr::as_ref(r).id;
     if !dev.is_null() {
-        // SAFETY: `dev` is the live device; this drops the export record for `node`.
-        unsafe { (*dev).sync_fds.retain(|&(_, sid, n)| !(n == node && sid == id)) };
+        // `dev` is the live device; this drops the export record for `node`.
+        ptr::as_mut(dev).sync_fds.retain(|&(_, sid, n)| !(n == node && sid == id));
     }
-    // SAFETY: `r` was allocated by `kmalloc` and is owned by this node.
-    unsafe { cact_mm::kfree(r as *mut u8) };
-    // SAFETY: clearing the node's private pointer after the free.
-    unsafe { (*node).priv_ = core::ptr::null_mut() };
+    // `r` was allocated by `kmalloc` and is owned by this node.
+    kfree(r as *mut u8);
+    // Clearing the node's private pointer after the free.
+    ptr::as_mut(node).priv_ = core::ptr::null_mut();
 }
 
 static mut SYNC_FILE_FOPS: VfsFileOps = VfsFileOps {
@@ -264,35 +263,35 @@ static mut SYNC_FILE_FOPS: VfsFileOps = VfsFileOps {
 
 /* ── per-file handles ───────────────────────────────────────────────────── */
 
-unsafe fn handle_of(file: *mut DrmFile, id: u32) -> u32 {
-    // SAFETY: `file` is the caller's open client; `next_syncobj_handle` only moves
+fn handle_of(file: *mut DrmFile, id: u32) -> u32 {
+    // `file` is the caller's open client; `next_syncobj_handle` only moves
     // forward, so the handle minted here is never a live key already, and this
     // borrow is exclusive for the mint.
-    let file = unsafe { &mut *file };
+    let file = ptr::as_mut(file);
     file.next_syncobj_handle += 1;
     let h = file.next_syncobj_handle;
     file.syncobjs.insert(h, id);
     h
 }
 
-unsafe fn object_of(file: *mut DrmFile, handle: u32) -> *mut Syncobj {
+fn object_of(file: *mut DrmFile, handle: u32) -> *mut Syncobj {
     if file.is_null() || handle == 0 {
         return core::ptr::null_mut();
     }
-    // SAFETY: `file` is non-null (checked above) and belongs to the caller, so this
+    // `file` is non-null (checked above) and belongs to the caller, so this
     // handle-map lookup is in bounds.
-    let id = match unsafe { (*file).syncobjs.get(&handle) } {
+    let id = match ptr::as_ref(file).syncobjs.get(&handle) {
         Some(&id) => id,
         None => return core::ptr::null_mut(),
     };
-    // SAFETY: `file` is the live client; this reads the device that minted the id.
-    let dev = unsafe { (*file).dev };
-    // SAFETY: `dev` is that live device and it created the id, so `find_syncobj`
+    // `file` is the live client; this reads the device that minted the id.
+    let dev = ptr::as_ref(file).dev;
+    // `dev` is that live device and it created the id, so `find_syncobj`
     // only returns a live object or null.
-    unsafe { (*dev).find_syncobj(id) }
+    ptr::as_ref(dev).find_syncobj(id)
 }
 
-unsafe fn read_u32s(ptr: u64, out: &mut [u32]) -> bool {
+fn read_u32s(ptr: u64, out: &mut [u32]) -> bool {
     if out.is_empty() {
         return true;
     }
@@ -311,7 +310,7 @@ unsafe fn read_u32s(ptr: u64, out: &mut [u32]) -> bool {
     user::copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes)
 }
 
-unsafe fn read_u64s(ptr: u64, out: &mut [u64]) -> bool {
+fn read_u64s(ptr: u64, out: &mut [u64]) -> bool {
     if out.is_empty() {
         return true;
     }
@@ -330,7 +329,7 @@ unsafe fn read_u64s(ptr: u64, out: &mut [u64]) -> bool {
     user::copy_from_user(out.as_mut_ptr() as *mut c_void, user, bytes)
 }
 
-unsafe fn write_u64s(ptr: u64, src: &[u64]) -> bool {
+fn write_u64s(ptr: u64, src: &[u64]) -> bool {
     if src.is_empty() {
         return true;
     }
@@ -359,14 +358,15 @@ fn wait_ticks(timeout_nsec: i64) -> u32 {
 /// Read an object's observable state.  The rules over it live in
 /// [`crate::syncobj_state`], away from the device state.
 ///
-/// SAFETY: `o` is a live syncobj.
-unsafe fn state_of(o: *mut Syncobj) -> SyncState {
-    // SAFETY: the caller's contract is `o` being live; one field read per block.
-    let timeline = unsafe { (*o).timeline };
-    // SAFETY: as above.
-    let signaled = unsafe { (*o).signaled };
-    // SAFETY: as above.
-    let point = unsafe { (*o).point };
+/// `o` is a live syncobj.
+fn state_of(o: *mut Syncobj) -> SyncState {
+    // the caller's contract is `o` being live; one field read per block.
+    let o = ptr::as_ref(o);
+    let timeline = o.timeline;
+    // as above.
+    let signaled = o.signaled;
+    // as above.
+    let point = o.point;
     SyncState {
         timeline,
         signaled,
@@ -377,13 +377,14 @@ unsafe fn state_of(o: *mut Syncobj) -> SyncState {
 /// Write back the half of the state that moves.  The flavour is fixed at
 /// creation, so it is never written back.
 ///
-/// SAFETY: `o` is a live syncobj and `st` describes it (a state read from it, or
-/// one whose [`SyncState::advance`]/[`SyncState::take_transfer`] has run).
-unsafe fn set_state(o: *mut Syncobj, st: SyncState) {
-    // SAFETY: the caller's contract is `o` being live; one field write per block.
-    unsafe { (*o).signaled = st.signaled };
-    // SAFETY: as above.
-    unsafe { (*o).point = st.point };
+/// `o` is a live syncobj and `st` describes it (a state read from it, or one
+/// whose [`SyncState::advance`]/[`SyncState::take_transfer`] has run).
+fn set_state(o: *mut Syncobj, st: SyncState) {
+    // the caller's contract is `o` being live; one field write per block.
+    let o = ptr::as_mut(o);
+    o.signaled = st.signaled;
+    // as above.
+    o.point = st.point;
 }
 
 /// `drm_syncobj_find_fence()` in this kernel's terms: 0 when the state `handle`
@@ -396,28 +397,28 @@ unsafe fn set_state(o: *mut Syncobj, st: SyncState) {
 /// produces points by itself, so waiting for one is the bounded poll the `WAIT`
 /// ioctls use rather than an interruptible fence wait.
 ///
-/// SAFETY: `file` is an open client.
-unsafe fn find_state(file: *mut DrmFile, handle: u32, point: u64, flags: u32) -> c_int {
+/// `file` is an open client.
+fn find_state(file: *mut DrmFile, handle: u32, point: u64, flags: u32) -> c_int {
     if flags & !DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT != 0 {
         return -22;
     }
-    // SAFETY: the caller's contract is `file` being an open client.
-    let o = unsafe { object_of(file, handle) };
+    // the caller's contract is `file` being an open client.
+    let o = object_of(file, handle);
     if o.is_null() {
         return -2; // -ENOENT
     }
     // A binary object has no points, so a non-zero one is a bad argument — as on
     // Linux, where the sequence lookup on a non-chain fence fails.
-    // SAFETY: `o` is the live object resolved above.
-    if !unsafe { state_of(o) }.takes_point(point) {
+    // `o` is the live object resolved above.
+    if !state_of(o).takes_point(point) {
         return -22;
     }
     let wait = flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_FOR_SUBMIT != 0;
     let mut ticks = wait_ticks(0);
     loop {
-        // SAFETY: `o` is the live object resolved above; the state is re-read
+        // `o` is the live object resolved above; the state is re-read
         // because another client can move it while this one waits.
-        if unsafe { state_of(o) }.reached(point) {
+        if state_of(o).reached(point) {
             return 0;
         }
         if !wait {
@@ -437,15 +438,15 @@ unsafe fn find_state(file: *mut DrmFile, handle: u32, point: u64, flags: u32) ->
 /// Add a registration under the device lock, so it cannot be lost against a
 /// concurrent reap (which takes the list out from under the same lock).
 ///
-/// SAFETY: `dev` is a live device.
-unsafe fn eventfd_register(dev: *mut DrmDevice, entry: SyncobjEventfdEntry) {
+/// `dev` is a live device.
+fn eventfd_register(dev: *mut DrmDevice, entry: SyncobjEventfdEntry) {
     // `dev` is live; the lock word belongs to it.
     let lock = lock_ptr(dev);
-    // SAFETY: `lock` is the device's lock; nothing is called out to under it.
+    // `lock` is the device's lock; nothing is called out to under it.
     ptr::as_mut(lock).acquire();
-    // SAFETY: `dev` is live; the registration list is the device's own.
-    unsafe { (*dev).syncobj_ev_fds.push(entry) };
-    // SAFETY: `lock` is the device's lock, held since the acquire above.
+    // `dev` is live; the registration list is the device's own.
+    ptr::as_mut(dev).syncobj_ev_fds.push(entry);
+    // `lock` is the device's lock, held since the acquire above.
     ptr::as_mut(lock).release();
 }
 
@@ -459,12 +460,12 @@ pub(crate) fn eventfd_drop_all(dev: *mut DrmDevice) {
     }
     // `dev` is live; the lock word belongs to it.
     let lock = lock_ptr(dev);
-    // SAFETY: `lock` is the device's lock and nothing else holds it here; the
+    // `lock` is the device's lock and nothing else holds it here; the
     // eventfds are released after the release below.
     ptr::as_mut(lock).acquire();
-    // SAFETY: `dev` is live; taking the list leaves an empty one behind.
-    let entries = core::mem::take(unsafe { &mut (*dev).syncobj_ev_fds });
-    // SAFETY: `lock` is the device's lock, held since the acquire above.
+    // `dev` is live; taking the list leaves an empty one behind.
+    let entries = core::mem::take(&mut ptr::as_mut(dev).syncobj_ev_fds);
+    // `lock` is the device's lock, held since the acquire above.
     ptr::as_mut(lock).release();
 
     for e in entries {
@@ -483,14 +484,14 @@ pub(crate) fn eventfd_drop_all(dev: *mut DrmDevice) {
 /// the same entry, and the eventfd is incremented outside it, because that path
 /// takes a mutex.
 ///
-/// SAFETY: `dev` is a live device.
-unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
+/// `dev` is a live device.
+fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
     if dev.is_null() {
         return;
     }
     // `dev` is live; the lock word belongs to it.
     let lock = lock_ptr(dev);
-    // SAFETY: `lock` is the device's lock and nothing else holds it here; the
+    // `lock` is the device's lock and nothing else holds it here; the
     // mutex that `eventfd_node_signal` takes is only reached after the release
     // below, so no sleep happens under it.
     ptr::as_mut(lock).acquire();
@@ -498,11 +499,11 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
     // The object may be gone: a destroyed object has had its registrations
     // reaped already, but a device teardown can race a signaler, so the lookup
     // is allowed to fail.
-    // SAFETY: `dev` is live; only a live object or null comes back.
-    let o = unsafe { (*dev).find_syncobj(id) };
-    // SAFETY: `dev` is live; taking the list leaves an empty one behind, so no
+    // `dev` is live; only a live object or null comes back.
+    let o = ptr::as_ref(dev).find_syncobj(id);
+    // `dev` is live; taking the list leaves an empty one behind, so no
     // borrow outlives this statement.
-    let old = core::mem::take(unsafe { &mut (*dev).syncobj_ev_fds });
+    let old = core::mem::take(&mut ptr::as_mut(dev).syncobj_ev_fds);
     let mut keep: Vec<SyncobjEventfdEntry> = Vec::with_capacity(old.len());
     // The eventfds to release, and whether each is to be signalled on the way out.
     let mut done: Vec<(*mut VfsNode, bool)> = Vec::new();
@@ -512,8 +513,8 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
             continue;
         }
         let reached = !o.is_null()
-            // SAFETY: the guard above left a live object in `o`.
-            && unsafe { state_of(o) }.reached(e.point);
+            // the guard above left a live object in `o`.
+            && state_of(o).reached(e.point);
         if notify && reached {
             done.push((e.node, true));
         } else if notify && !o.is_null() {
@@ -522,10 +523,10 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
             done.push((e.node, false)); // the object is not there any more
         }
     }
-    // SAFETY: `dev` is live; the list goes back under the lock, so a concurrent
+    // `dev` is live; the list goes back under the lock, so a concurrent
     // registration cannot be lost.
-    unsafe { (*dev).syncobj_ev_fds = keep };
-    // SAFETY: `lock` is the device's lock, held since the acquire above.
+    ptr::as_mut(dev).syncobj_ev_fds = keep;
+    // `lock` is the device's lock, held since the acquire above.
     ptr::as_mut(lock).release();
 
     for (node, signalled) in done {
@@ -541,8 +542,7 @@ unsafe fn eventfd_reap(dev: *mut DrmDevice, id: u32, notify: bool) {
 
 /* ── ioctls ─────────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_create(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_create(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -553,23 +553,22 @@ pub extern "C" fn syncobj_ioctl_create(file: *mut DrmFile, arg: *mut c_void) -> 
     if req.flags & !(DRM_SYNCOBJ_CREATE_SIGNALED | DRM_SYNCOBJ_CREATE_TYPE_TIMELINE) != 0 {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
     let timeline = req.flags & DRM_SYNCOBJ_CREATE_TYPE_TIMELINE != 0;
     let signaled = !timeline && req.flags & DRM_SYNCOBJ_CREATE_SIGNALED != 0;
-    // SAFETY: `dev` is the live device; this creates a syncobj on it.
-    let id = unsafe { (*dev).syncobj_create(timeline, signaled, 0) };
-    // SAFETY: `handle_of`'s contract: `file` is the caller's open client.
-    req.handle = unsafe { handle_of(file, id) };
+    // `dev` is the live device; this creates a syncobj on it.
+    let id = ptr::as_mut(dev).syncobj_create(timeline, signaled, 0);
+    // `handle_of`'s contract: `file` is the caller's open client.
+    req.handle = handle_of(file, id);
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 8)
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_destroy(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_destroy(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -577,31 +576,30 @@ pub extern "C" fn syncobj_ioctl_destroy(file: *mut DrmFile, arg: *mut c_void) ->
     if drm_copy_in(&mut req as *mut _ as *mut c_void, DRM_IOCTL_SYNCOBJ_DESTROY, arg, 8) != 0 {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this
+    // `file` is the caller's live client (checked non-null above); this
     // removes the handle from its map.
-    let id = match unsafe { (*file).syncobjs.remove(&req.handle) } {
+    let id = match ptr::as_mut(file).syncobjs.remove(&req.handle) {
         Some(id) => id,
         None => return -2, // -ENOENT
     };
     // The object goes away when the last handle to it does.
-    // SAFETY: as above — checking whether any other handle still names the id.
-    let still_held = unsafe { (*file).syncobjs.values().any(|&v| v == id) };
+    // As above — checking whether any other handle still names the id.
+    let still_held = ptr::as_ref(file).syncobjs.values().any(|&v| v == id);
     if !still_held {
-        // SAFETY: `file` is the live client; this reads its device.
-        let dev = unsafe { (*file).dev };
+        // `file` is the live client; this reads its device.
+        let dev = ptr::as_ref(file).dev;
         if !dev.is_null() {
             // Registrations waiting on this object go with it, unsignalled.
-            // SAFETY: `eventfd_reap`'s contract: `dev` is that live device.
-            unsafe { eventfd_reap(dev, id, false) };
-            // SAFETY: `dev` is the live device that owns the object.
-            unsafe { (*dev).syncobj_destroy(id) };
+            // `eventfd_reap`'s contract: `dev` is that live device.
+            eventfd_reap(dev, id, false);
+            // `dev` is the live device that owns the object.
+            ptr::as_mut(dev).syncobj_destroy(id);
         }
     }
     0
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -618,24 +616,24 @@ pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_voi
     if req.flags & !DRM_SYNCOBJ_HANDLE_TO_FD_FLAGS_EXPORT_SYNC_FILE != 0 {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
-    // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-    let obj = unsafe { object_of(file, req.handle) };
+    // `object_of`'s contract: `file` is the caller's open client.
+    let obj = object_of(file, req.handle);
     if obj.is_null() {
         return -2;
     }
-    // SAFETY: `obj` is the live object; this reads its id.
-    let id = unsafe { (*obj).id };
+    // `obj` is the live object; this reads its id.
+    let id = ptr::as_ref(obj).id;
 
     // Exporting the same object twice hands back the same fd, as on Linux.
-    // SAFETY: `dev` is the live device; this borrow of its exported-fd table is
+    // `dev` is the live device; this borrow of its exported-fd table is
     // consumed by the scan.
-    let sync_fds = unsafe { &(*dev).sync_fds };
+    let sync_fds = &ptr::as_ref(dev).sync_fds;
     for &(fd, sid, _) in sync_fds.iter() {
         if sid == id {
             req.fd = fd;
@@ -647,54 +645,54 @@ pub extern "C" fn syncobj_ioctl_handle_to_fd(file: *mut DrmFile, arg: *mut c_voi
     if node.is_null() {
         return -12;
     }
-    // SAFETY: `node` is the fresh `kmalloc` node just checked non-null, so zeroing
+    // `node` is the fresh `kmalloc` node just checked non-null, so zeroing
     // one `VfsNode` covers exactly that allocation.
-    unsafe { core::ptr::write_bytes(node, 0, 1) };
+    ptr::write_bytes(node, 0, 1);
     {
-        // SAFETY: `node` is the fresh, exclusively-owned node; this borrow is
+        // `node` is the fresh, exclusively-owned node; this borrow is
         // consumed by the field stores below.
-        let node = unsafe { &mut *node };
-        // SAFETY: `node.name` is a 128-byte array and the literal is
-        // NUL-terminated, so `copy_cstr`'s contract is met.
-        unsafe { copy_cstr(node.name.as_mut_ptr(), 128, c"syncobj".as_ptr() as *const u8) };
+        let node = ptr::as_mut(node);
+        // `node.name` is a zeroed 128-byte array and the literal is
+        // NUL-terminated, so copying it names the node as `copy_cstr` did.
+        let name = b"syncobj\0";
+        ptr::copy_nonoverlapping(name.as_ptr(), node.name.as_mut_ptr(), name.len());
         node.ntype = VFS_CHARDEVICE;
         node.fops = core::ptr::addr_of_mut!(SYNC_FILE_FOPS);
     }
 
     let r = cact_mm::kmalloc(core::mem::size_of::<SyncFileRef>()) as *mut SyncFileRef;
     if r.is_null() {
-        // SAFETY: `node` is the un-published node allocated above.
-        unsafe { cact_mm::kfree(node as *mut u8) };
+        // `node` is the un-published node allocated above.
+        kfree(node as *mut u8);
         return -12;
     }
     {
-        // SAFETY: `r` is the fresh, exclusively-owned export record; this borrow is
+        // `r` is the fresh, exclusively-owned export record; this borrow is
         // consumed by the field stores below.
-        let r_ref = unsafe { &mut *r };
+        let r_ref = ptr::as_mut(r);
         r_ref.dev = dev;
         r_ref.id = id;
     }
-    // SAFETY: `node` is the live node; storing its private export record.
-    unsafe { (*node).priv_ = r as *mut c_void };
+    // `node` is the live node; storing its private export record.
+    ptr::as_mut(node).priv_ = r as *mut c_void;
 
     // `node` is the live node to install as the new fd's file.
     let fd = alloc_fd(node as *mut c_void);
     if fd < 0 {
-        // SAFETY: `r` and `node` were allocated above and not published.
-        unsafe { cact_mm::kfree(r as *mut u8) };
-        // SAFETY: as above.
-        unsafe { cact_mm::kfree(node as *mut u8) };
+        // `r` and `node` were allocated above and not published.
+        kfree(r as *mut u8);
+        // As above.
+        kfree(node as *mut u8);
         return -24; // -EMFILE
     }
-    // SAFETY: `dev` is the live device; recording the new export under the lock-free
+    // `dev` is the live device; recording the new export under the lock-free
     // per-device table the other paths also touch.
-    unsafe { (*dev).sync_fds.push((fd, id, node)) };
+    ptr::as_mut(dev).sync_fds.push((fd, id, node));
     req.fd = fd;
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 16)
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_fd_to_handle(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_fd_to_handle(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -711,16 +709,16 @@ pub extern "C" fn syncobj_ioctl_fd_to_handle(file: *mut DrmFile, arg: *mut c_voi
     if req.flags & !DRM_SYNCOBJ_FD_TO_HANDLE_FLAGS_IMPORT_SYNC_FILE != 0 {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
     let mut id = 0u32;
-    // SAFETY: `dev` is the live device; this borrow of its exported-fd table is
+    // `dev` is the live device; this borrow of its exported-fd table is
     // consumed by the scan.
-    let sync_fds = unsafe { &(*dev).sync_fds };
+    let sync_fds = &ptr::as_ref(dev).sync_fds;
     for &(fd, sid, _) in sync_fds.iter() {
         if fd == req.fd {
             id = sid;
@@ -730,18 +728,16 @@ pub extern "C" fn syncobj_ioctl_fd_to_handle(file: *mut DrmFile, arg: *mut c_voi
     if id == 0 {
         return -22; // not a sync file this device exported
     }
-    // SAFETY: `handle_of`'s contract: `file` is the caller's open client.
-    req.handle = unsafe { handle_of(file, id) };
+    // `handle_of`'s contract: `file` is the caller's open client.
+    req.handle = handle_of(file, id);
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 16)
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_signal(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_signal(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     syncobj_set(file, arg, DRM_IOCTL_SYNCOBJ_SIGNAL, true)
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_reset(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_reset(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     syncobj_set(file, arg, DRM_IOCTL_SYNCOBJ_RESET, false)
 }
 
@@ -763,38 +759,38 @@ fn syncobj_set(file: *mut DrmFile, arg: *mut c_void, cmd: u32, on: bool) -> c_in
         return -22;
     }
     let mut handles: Vec<u32> = vec![0u32; n];
-    // SAFETY: `read_u32s`'s contract: `req.handles` is the user array and `handles`
+    // `read_u32s`'s contract: `req.handles` is the user array and `handles`
     // has exactly `n` elements.
-    if !unsafe { read_u32s(req.handles, &mut handles) } {
+    if !read_u32s(req.handles, &mut handles) {
         return -14;
     }
     for h in handles {
-        // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-        let o = unsafe { object_of(file, h) };
+        // `object_of`'s contract: `file` is the caller's open client.
+        let o = object_of(file, h);
         if o.is_null() {
             return -2;
         }
-        // SAFETY: `o` is the live object; this reads its flavour.
-        if unsafe { state_of(o) }.timeline {
+        // `o` is the live object; this reads its flavour.
+        if state_of(o).timeline {
             return -22; // use the timeline ioctls for a timeline object
         }
-        // SAFETY: as above — its id, for the registrations waiting on it.
-        let id = unsafe { (*o).id };
-        // SAFETY: `o` is the live object; this reads its state.
-        let mut st = unsafe { state_of(o) };
+        // As above — its id, for the registrations waiting on it.
+        let id = ptr::as_ref(o).id;
+        // `o` is the live object; this reads its state.
+        let mut st = state_of(o);
         if on {
             st.signal();
         } else {
             st.reset();
         }
-        // SAFETY: as above — writing back the bit that moved.
-        unsafe { set_state(o, st) };
+        // As above — writing back the bit that moved.
+        set_state(o, st);
         if on {
             // A signal is the moment a registered eventfd can fire.
-            // SAFETY: `file` is the caller's open client; this reads its device.
-            let dev = unsafe { (*file).dev };
-            // SAFETY: `eventfd_reap`'s contract: `dev` is that live device.
-            unsafe { eventfd_reap(dev, id, true) };
+            // `file` is the caller's open client; this reads its device.
+            let dev = ptr::as_ref(file).dev;
+            // `eventfd_reap`'s contract: `dev` is that live device.
+            eventfd_reap(dev, id, true);
         }
     }
     0
@@ -809,8 +805,7 @@ fn syncobj_set(file: *mut DrmFile, arg: *mut c_void, cmd: u32, on: bool) -> c_in
 /// and so is a source that has not reached the state being asked for — this
 /// kernel holds no pending fences, so there is nothing else a transfer could
 /// put on the destination.
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_transfer(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_transfer(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -829,36 +824,35 @@ pub extern "C" fn syncobj_ioctl_transfer(file: *mut DrmFile, arg: *mut c_void) -
         return -22;
     }
     // The source must carry the state that is being moved.
-    // SAFETY: `find_state`'s contract: `file` is an open client.
-    let rc = unsafe { find_state(file, req.src_handle, req.src_point, req.flags) };
+    // `find_state`'s contract: `file` is an open client.
+    let rc = find_state(file, req.src_handle, req.src_point, req.flags);
     if rc != 0 {
         return rc;
     }
-    // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-    let dst = unsafe { object_of(file, req.dst_handle) };
+    // `object_of`'s contract: `file` is the caller's open client.
+    let dst = object_of(file, req.dst_handle);
     if dst.is_null() {
         return -2; // -ENOENT
     }
-    // SAFETY: `dst` is the live destination; this reads its state.
-    let mut st = unsafe { state_of(dst) };
+    // `dst` is the live destination; this reads its state.
+    let mut st = state_of(dst);
     if st.take_transfer(req.dst_point).is_err() {
         return -22; // a point belongs to a timeline object, the bit to a binary one
     }
-    // SAFETY: `dst` is the live destination; only the fields the transfer moved
+    // `dst` is the live destination; only the fields the transfer moved
     // are written back.
-    unsafe { set_state(dst, st) };
-    // SAFETY: `dst` is the live destination; this reads its id for the reap.
-    let id = unsafe { (*dst).id };
-    // SAFETY: `file` is the caller's open client; this reads its device.
-    let dev = unsafe { (*file).dev };
-    // SAFETY: `eventfd_reap`'s contract: `dev` is that live device, and the
+    set_state(dst, st);
+    // `dst` is the live destination; this reads its id for the reap.
+    let id = ptr::as_ref(dst).id;
+    // `file` is the caller's open client; this reads its device.
+    let dev = ptr::as_ref(file).dev;
+    // `eventfd_reap`'s contract: `dev` is that live device, and the
     // destination just changed.
-    unsafe { eventfd_reap(dev, id, true) };
+    eventfd_reap(dev, id, true);
     0
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -881,20 +875,20 @@ pub extern "C" fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_
     let all = req.flags & DRM_SYNCOBJ_WAIT_FLAGS_WAIT_ALL != 0;
 
     let mut handles: Vec<u32> = vec![0u32; n];
-    // SAFETY: `read_u32s`'s contract: `req.handles` is the user array and `handles`
+    // `read_u32s`'s contract: `req.handles` is the user array and `handles`
     // has exactly `n` elements.
-    if !unsafe { read_u32s(req.handles, &mut handles) } {
+    if !read_u32s(req.handles, &mut handles) {
         return -14;
     }
     let mut objs: Vec<*mut Syncobj> = Vec::with_capacity(n);
     for &h in handles.iter() {
-        // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-        let o = unsafe { object_of(file, h) };
+        // `object_of`'s contract: `file` is the caller's open client.
+        let o = object_of(file, h);
         if o.is_null() {
             return -2;
         }
-        // SAFETY: `o` is the live object; this reads its flavour.
-        if unsafe { state_of(o) }.timeline {
+        // `o` is the live object; this reads its flavour.
+        if state_of(o).timeline {
             return -22; // timeline objects use TIMELINE_WAIT
         }
         objs.push(o);
@@ -905,9 +899,9 @@ pub extern "C" fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_
         let mut done = 0usize;
         let mut first = 0u32;
         for (i, &o) in objs.iter().enumerate() {
-            // SAFETY: `o` is a live object collected above; a binary object is
+            // `o` is a live object collected above; a binary object is
             // done exactly when its bit is set, which is what `reached(0)` asks.
-            if unsafe { state_of(o) }.reached(0) {
+            if state_of(o).reached(0) {
                 done += 1;
                 if first == 0 {
                     first = i as u32;
@@ -929,8 +923,7 @@ pub extern "C" fn syncobj_ioctl_wait(file: *mut DrmFile, arg: *mut c_void) -> c_
     crate::ffi::drm_copy_out(arg, &req as *const _ as *const c_void, 40)
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_timeline_signal(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_timeline_signal(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -950,45 +943,44 @@ pub extern "C" fn syncobj_ioctl_timeline_signal(file: *mut DrmFile, arg: *mut c_
     }
     let mut handles: Vec<u32> = vec![0u32; n];
     let mut points: Vec<u64> = vec![0u64; n];
-    // SAFETY: `read_u32s`'s contract: `req.handles` is the user array and `handles`
+    // `read_u32s`'s contract: `req.handles` is the user array and `handles`
     // has exactly `n` elements.
-    if !unsafe { read_u32s(req.handles, &mut handles) } {
+    if !read_u32s(req.handles, &mut handles) {
         return -14;
     }
-    // SAFETY: `read_u64s`'s contract: `req.points` is the user array and `points` has
+    // `read_u64s`'s contract: `req.points` is the user array and `points` has
     // exactly `n` elements.
-    if !unsafe { read_u64s(req.points, &mut points) } {
+    if !read_u64s(req.points, &mut points) {
         return -14;
     }
     for i in 0..n {
-        // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-        let o = unsafe { object_of(file, handles[i]) };
+        // `object_of`'s contract: `file` is the caller's open client.
+        let o = object_of(file, handles[i]);
         if o.is_null() {
             return -2;
         }
-        // SAFETY: `o` is the live object; this reads its state.
-        let mut st = unsafe { state_of(o) };
+        // `o` is the live object; this reads its state.
+        let mut st = state_of(o);
         if !st.timeline {
             return -22;
         }
         // A timeline point only moves forward — and when it does not, nothing
         // registered on this object can have become ready.
         if st.advance(points[i]) {
-            // SAFETY: as above — writing back the point that moved.
-            unsafe { set_state(o, st) };
-            // SAFETY: as above — its id, for the registrations waiting on it.
-            let id = unsafe { (*o).id };
-            // SAFETY: `file` is the caller's open client; this reads its device.
-            let dev = unsafe { (*file).dev };
-            // SAFETY: `eventfd_reap`'s contract: `dev` is that live device.
-            unsafe { eventfd_reap(dev, id, true) };
+            // As above — writing back the point that moved.
+            set_state(o, st);
+            // As above — its id, for the registrations waiting on it.
+            let id = ptr::as_ref(o).id;
+            // `file` is the caller's open client; this reads its device.
+            let dev = ptr::as_ref(file).dev;
+            // `eventfd_reap`'s contract: `dev` is that live device.
+            eventfd_reap(dev, id, true);
         }
     }
     0
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_query(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_query(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -1006,35 +998,34 @@ pub extern "C" fn syncobj_ioctl_query(file: *mut DrmFile, arg: *mut c_void) -> c
         return -22;
     }
     let mut handles: Vec<u32> = vec![0u32; n];
-    // SAFETY: `read_u32s`'s contract: `req.handles` is the user array and `handles`
+    // `read_u32s`'s contract: `req.handles` is the user array and `handles`
     // has exactly `n` elements.
-    if !unsafe { read_u32s(req.handles, &mut handles) } {
+    if !read_u32s(req.handles, &mut handles) {
         return -14;
     }
     let mut points: Vec<u64> = vec![0u64; n];
     for i in 0..n {
-        // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-        let o = unsafe { object_of(file, handles[i]) };
+        // `object_of`'s contract: `file` is the caller's open client.
+        let o = object_of(file, handles[i]);
         if o.is_null() {
             return -2;
         }
-        // SAFETY: `o` is the live object; this reads its flavour.
-        if !unsafe { state_of(o) }.timeline {
+        // `o` is the live object; this reads its flavour.
+        if !state_of(o).timeline {
             return -22;
         }
-        // SAFETY: `o` is the live object; this reads the point to report.
-        points[i] = unsafe { state_of(o) }.point;
+        // `o` is the live object; this reads the point to report.
+        points[i] = state_of(o).point;
     }
-    // SAFETY: `write_u64s`'s contract: `req.points` is the user array and `points`
+    // `write_u64s`'s contract: `req.points` is the user array and `points`
     // has exactly `n` elements.
-    if !unsafe { write_u64s(req.points, &points) } {
+    if !write_u64s(req.points, &points) {
         return -14;
     }
     0
 }
 
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -1060,25 +1051,25 @@ pub extern "C" fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_vo
 
     let mut handles: Vec<u32> = vec![0u32; n];
     let mut points: Vec<u64> = vec![0u64; n];
-    // SAFETY: `read_u32s`'s contract: `req.handles` is the user array and `handles`
+    // `read_u32s`'s contract: `req.handles` is the user array and `handles`
     // has exactly `n` elements.
-    if !unsafe { read_u32s(req.handles, &mut handles) } {
+    if !read_u32s(req.handles, &mut handles) {
         return -14;
     }
-    // SAFETY: `read_u64s`'s contract: `req.points` is the user array and `points` has
+    // `read_u64s`'s contract: `req.points` is the user array and `points` has
     // exactly `n` elements.
-    if !unsafe { read_u64s(req.points, &mut points) } {
+    if !read_u64s(req.points, &mut points) {
         return -14;
     }
     let mut objs: Vec<*mut Syncobj> = Vec::with_capacity(n);
     for &h in handles.iter() {
-        // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-        let o = unsafe { object_of(file, h) };
+        // `object_of`'s contract: `file` is the caller's open client.
+        let o = object_of(file, h);
         if o.is_null() {
             return -2;
         }
-        // SAFETY: `o` is the live object; this reads its flavour.
-        if !unsafe { state_of(o) }.timeline {
+        // `o` is the live object; this reads its flavour.
+        if !state_of(o).timeline {
             return -22;
         }
         objs.push(o);
@@ -1093,8 +1084,8 @@ pub extern "C" fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_vo
             // means "no particular point" — so this compares the raw point rather
             // than going through `reached()`, whose 0 means "any point at all"
             // (the fence-shaped question a transfer and an eventfd ask).
-            // SAFETY: `o` is a live object collected above; this reads its point.
-            if unsafe { state_of(o) }.point >= points[i] {
+            // `o` is a live object collected above; this reads its point.
+            if state_of(o).point >= points[i] {
                 done += 1;
                 if first == 0 {
                     first = i as u32;
@@ -1129,8 +1120,7 @@ pub extern "C" fn syncobj_ioctl_timeline_wait(file: *mut DrmFile, arg: *mut c_vo
 /// `WAIT_AVAILABLE` is accepted and has no effect: a point that exists is a
 /// point that is signalled here, so waiting for availability and waiting for
 /// the signal are the same wait.
-#[no_mangle]
-pub extern "C" fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -1150,18 +1140,18 @@ pub extern "C" fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) ->
     if req.flags & !DRM_SYNCOBJ_WAIT_FLAGS_WAIT_AVAILABLE != 0 {
         return -22;
     }
-    // SAFETY: `object_of`'s contract: `file` is the caller's open client.
-    let o = unsafe { object_of(file, req.handle) };
+    // `object_of`'s contract: `file` is the caller's open client.
+    let o = object_of(file, req.handle);
     if o.is_null() {
         return -2; // -ENOENT
     }
-    // SAFETY: `o` is the live object; this reads its state, which decides whether
+    // `o` is the live object; this reads its state, which decides whether
     // `req.point` is a fair question to ask of it.
-    if !unsafe { state_of(o) }.takes_point(req.point) {
+    if !state_of(o).takes_point(req.point) {
         return -22; // a point belongs to a timeline object
     }
-    // SAFETY: as above — its id, which is what a registration is keyed on.
-    let id = unsafe { (*o).id };
+    // As above — its id, which is what a registration is keyed on.
+    let id = ptr::as_ref(o).id;
 
     let mut node: *mut VfsNode = core::ptr::null_mut();
     // `node_get` looks `req.fd` up in the calling task's table and, on success,
@@ -1171,28 +1161,26 @@ pub extern "C" fn syncobj_ioctl_eventfd(file: *mut DrmFile, arg: *mut c_void) ->
         return rc;
     }
 
-    // SAFETY: `file` is the caller's open client; this reads its device.
-    let dev = unsafe { (*file).dev };
+    // `file` is the caller's open client; this reads its device.
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         // `node` is the reference just taken and nothing else owns it yet.
         eventfd::node_put(node as *mut c_void);
         return -22;
     }
-    // SAFETY: `dev` is the live device; the registration goes on under the device
+    // `dev` is the live device; the registration goes on under the device
     // lock, so a concurrent reap cannot drop it.
-    unsafe {
-        eventfd_register(
-            dev,
-            SyncobjEventfdEntry {
-                id,
-                point: req.point,
-                node,
-            },
-        )
-    };
+    eventfd_register(
+        dev,
+        SyncobjEventfdEntry {
+            id,
+            point: req.point,
+            node,
+        },
+    );
     // An object that has already reached the point fires right here; otherwise
     // the entry stays until a SIGNAL/TIMELINE_SIGNAL/TRANSFER moves it.
-    // SAFETY: `eventfd_reap`'s contract: `dev` is that live device.
-    unsafe { eventfd_reap(dev, id, true) };
+    // `eventfd_reap`'s contract: `dev` is that live device.
+    eventfd_reap(dev, id, true);
     0
 }
