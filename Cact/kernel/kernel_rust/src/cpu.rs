@@ -264,3 +264,15 @@ pub fn enable_paging() {
     // SAFETY: the caller has loaded a valid CR3 first.
     unsafe { sys::enable_paging() };
 }
+
+/// Park the calling CPU forever in `hlt` — the kernel's panic/unrecoverable
+/// parking loop.  A CPU that has nothing left to do halts here (rather than
+/// spinning) until a reset or a non-maskable interrupt.
+pub fn halt_forever() -> ! {
+    loop {
+        // SAFETY: `hlt` only halts this CPU until the next interrupt and touches
+        // no memory; callers run with maskable interrupts masked, so the CPU
+        // stays parked.
+        unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }
+    }
+}

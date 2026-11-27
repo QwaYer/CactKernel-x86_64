@@ -11,21 +11,9 @@
 // Parking the CPU
 // ---------------------------------------------------------------------------
 
-/// Park this CPU permanently in `hlt`.
-///
-/// The kernel's one `hlt` loop: a CPU that has nothing left to do (a kernel
-/// page fault on the boot path) halts here rather than spinning, so it stays
-/// parked until a reset or a non-maskable interrupt.
-pub fn halt_forever() -> ! {
-    loop {
-        // SAFETY: `hlt` only halts this CPU until the next interrupt and touches
-        // no memory; the call sites run with maskable interrupts masked, so the
-        // CPU stays parked.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
-        }
-    }
-}
+/// Park this CPU permanently in `hlt` (the kernel page-fault halt path) — the
+/// graph's one `hlt` loop, defined in `kernel_rust::cpu`.
+pub use kernel_rust::cpu::halt_forever;
 
 // ---------------------------------------------------------------------------
 // Helper: zero a page safely

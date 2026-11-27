@@ -82,15 +82,8 @@ fn panic(info: &core::panic::PanicInfo) -> ! {
     // before parking, so a Rust fault is diagnosable from COM1 alone instead of
     // leaving a bare "[RUST] PANIC" with no message and no file:line.
     let _ = core::fmt::write(&mut PanicConsole, format_args!("[RUST] PANIC: {info}\n"));
-    // SAFETY: panicking CPU, unrecoverable state; `cli` touches no memory and clearing IF stops
-    // the interrupt storm while the CPU parks below.
-    unsafe {
-        core::arch::asm!("cli", options(nomem, nostack));
-    }
-    loop {
-        // SAFETY: hlt is the only safe way to spin in a kernel panic.
-        unsafe {
-            core::arch::asm!("hlt", options(nomem, nostack));
-        }
-    }
+    // Panicking CPU, unrecoverable state: clearing IF stops the interrupt storm
+    // while the CPU parks in `hlt` below.
+    kernel_rust::cpu::interrupts_disable();
+    kernel_rust::cpu::halt_forever()
 }
