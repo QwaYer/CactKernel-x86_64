@@ -8,13 +8,12 @@ use crate::pmm::{kalloc, free_page, page_ref_inc, page_ref_get_locked, PAGE_LOCK
 use crate::vmm::paging::{vmm_map, p2v, v2p};
 use crate::fault::page_fault::{ensure_private_pte, pte_get};
 use crate::safe::{zero_page, flush_tlb, lock_acquire, lock_release};
+use kernel_rust::ptr;
 
-/// # Safety
-///
-/// `pd` must be null or a valid page directory that the caller owns and may
-/// mutate; the caller must serialise concurrent page-table changes.
+/// `pd` is null or a valid page directory that the caller owns and may mutate;
+/// the caller must serialise concurrent page-table changes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_map_demand(
+pub extern "C" fn vmm_map_demand(
     pd: *mut u64,
     virtual_addr: u64,
     size: u32,
@@ -36,23 +35,21 @@ pub unsafe extern "C" fn vmm_map_demand(
 
     let mut va = start;
     while va < end {
-        // SAFETY: `pd` is the caller's live page map; the walk creates the
-        // private tables this entry needs.
-        let entry = unsafe { ensure_private_pte(pd, va, flags) };
+        // `pd` is the caller's live page map; the walk creates the private
+        // tables this entry needs.
+        let entry = ensure_private_pte(pd, va, flags);
         if entry.is_null() {
             return -1;
         }
-        // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = (PAGE_DEMAND | (flags & (PAGE_USER | PAGE_RW))) as u64 };
+        // `entry` is an in-bounds page-table entry.
+        ptr::write(entry, (PAGE_DEMAND | (flags & (PAGE_USER | PAGE_RW))) as u64);
         va += PAGE_SIZE as u64;
     }
     0
 }
 
-/// # Safety
-///
-/// `pd` must be null or a valid page directory that the caller owns and may
-/// mutate; the caller must serialise concurrent page-table changes.
+/// `pd` is null or a valid page directory that the caller owns and may mutate;
+/// the caller must serialise concurrent page-table changes.
 #[unsafe(no_mangle)]
 pub extern "C" fn vmm_map_zero(
     pd: *mut u64,
@@ -79,14 +76,14 @@ pub extern "C" fn vmm_map_zero(
 
     let mut va = start;
     while va < end {
-        // SAFETY: `pd` is the caller's live page map; the walk creates the
-        // private tables this entry needs.
-        let entry = unsafe { ensure_private_pte(pd, va, flags) };
+        // `pd` is the caller's live page map; the walk creates the private
+        // tables this entry needs.
+        let entry = ensure_private_pte(pd, va, flags);
         if entry.is_null() {
             return -1;
         }
-        // SAFETY: `entry` is an in-bounds page-table entry.
-        unsafe { *entry = (PAGE_DEMAND | PAGE_ZERO | (flags & (PAGE_USER | PAGE_RW))) as u64 };
+        // `entry` is an in-bounds page-table entry.
+        ptr::write(entry, (PAGE_DEMAND | PAGE_ZERO | (flags & (PAGE_USER | PAGE_RW))) as u64);
         // The entry replaces whatever the VA was mapped to before (an identity
         // entry, a previous mapping): the old translation lives on in the TLB
         // and would keep serving stores until an unrelated CR3 load drops it.
@@ -99,16 +96,16 @@ pub extern "C" fn vmm_map_zero(
 #[unsafe(no_mangle)]
 pub extern "C" fn vmm_map_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
-    // SAFETY: `pte` is the result of `pte_get` and is non-null on the left of `||`,
-    // so the present-bit test reads a valid PTE.
-    if pte.is_null() || unsafe { *pte & PAGE_PRESENT as u64 == 0 } {
+    // `pte` is the result of `pte_get` and is non-null on the left of `||`, so
+    // the present-bit test reads a valid PTE.
+    if pte.is_null() || ptr::read(pte) & PAGE_PRESENT as u64 == 0 {
         return -1;
     }
-    // SAFETY: `pte` is the non-null live PTE returned by `pte_get`.
-    let val = unsafe { *pte };
-    // SAFETY: `pte` is non-null (checked above), so storing the COW-marked value
-    // back is in bounds.
-    unsafe { *pte = (val & !(PAGE_RW as u64)) | PAGE_COW as u64 };
+    // `pte` is the non-null live PTE returned by `pte_get`.
+    let val = ptr::read(pte);
+    // `pte` is non-null (checked above), so storing the COW-marked value back is
+    // in bounds.
+    ptr::write(pte, (val & !(PAGE_RW as u64)) | PAGE_COW as u64);
     flush_tlb(virtual_addr & !0xFFF);
     0
 }
@@ -116,9 +113,8 @@ pub extern "C" fn vmm_map_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vmm_is_cow_page(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
-    // SAFETY: `pte` is non-null on the left of `&&`; its COW bit is read from a live
-    // PTE.
-    if !pte.is_null() && unsafe { *pte & PAGE_COW as u64 != 0 } {
+    // `pte` is non-null on the left of `&&`; its COW bit is read from a live PTE.
+    if !pte.is_null() && ptr::read(pte) & PAGE_COW as u64 != 0 {
         1
     } else {
         0
@@ -128,16 +124,16 @@ pub extern "C" fn vmm_is_cow_page(pd: *mut u64, virtual_addr: u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     let pte = pte_get(pd, virtual_addr);
-    // SAFETY: `pte` is non-null on the left of `||`; a live PTE's COW bit is read.
-    if pte.is_null() || unsafe { *pte & PAGE_COW as u64 == 0 } {
+    // `pte` is non-null on the left of `||`; a live PTE's COW bit is read.
+    if pte.is_null() || ptr::read(pte) & PAGE_COW as u64 == 0 {
         return -1;
     }
 
-    // SAFETY: pte is valid and has COW flag; the low bits masked off give the
+    // `pte` is valid and has the COW flag; the low bits masked off give the
     // page-aligned physical frame it names.
-    let old_phys = unsafe { *pte & !0xFFF };
-    // SAFETY: `pte` is non-null and COW-flagged; reading its value is valid.
-    let pte_val = unsafe { *pte };
+    let old_phys = ptr::read(pte) & !0xFFF;
+    // `pte` is non-null and COW-flagged; reading its value is valid.
+    let pte_val = ptr::read(pte);
     let flags = ((pte_val & 0xFFF) & !(PAGE_COW as u64)) | PAGE_RW as u64 | PAGE_PRESENT as u64;
 
     // ── Sole-owner fast path ─────────────────────────────────────────────────
@@ -146,9 +142,9 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     // physical frame (C-01: two processes writing to one physical frame).
     lock_acquire(PAGE_LOCK.as_ptr());
     if page_ref_get_locked(p2v(old_phys) as *const u8) == 1 {
-        // SAFETY: writing the private copy's frame into the live COW PTE addressed by
+        // Writing the private copy's frame into the live COW PTE addressed by
         // `pte`; the entry takes the frame's physical address.
-        unsafe { *pte = (old_phys & !0xFFF) | flags; }
+        ptr::write(pte, (old_phys & !0xFFF) | flags);
         lock_release(PAGE_LOCK.as_ptr());
         flush_tlb(virtual_addr & !0xFFF);
         return 0;
@@ -162,15 +158,13 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
         return -1;
     }
 
-    // SAFETY: `old_phys` is the shared frame named by the live COW PTE (reached
-    // through the direct map) and `new_phys` a fresh `kalloc` page, so the 4 KiB
-    // copy is in bounds.
-    unsafe {
-        core::ptr::copy_nonoverlapping(p2v(old_phys) as *const u8, new_phys, PAGE_SIZE as usize)
-    };
-    // SAFETY: `pte` is non-null (checked above), so storing the private copy's
-    // frame's physical address back is in bounds.
-    unsafe { *pte = (v2p(new_phys) & !0xFFF) | flags };
+    // `old_phys` is the shared frame named by the live COW PTE (reached through
+    // the direct map) and `new_phys` a fresh `kalloc` page, so the 4 KiB copy is
+    // in bounds.
+    ptr::copy_nonoverlapping(p2v(old_phys) as *const u8, new_phys, PAGE_SIZE as usize);
+    // `pte` is non-null (checked above), so storing the private copy's frame's
+    // physical address back is in bounds.
+    ptr::write(pte, (v2p(new_phys) & !0xFFF) | flags);
 
     // Release our reference to the shared frame.
     // The frame is live and PMM-managed; this call releases exactly one reference to it.
@@ -181,12 +175,10 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     0
 }
 
-/// # Safety
-///
-/// `pd` must be a valid page directory for the current address space; the
-/// function writes PTEs into it and allocates frames for the user stack window.
+/// `pd` is a valid page directory for the current address space; the function
+/// writes PTEs into it and allocates frames for the user stack window.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -> u32 {
+pub extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -> u32 {
     if pd.is_null() {
         return 0;
     }
@@ -205,9 +197,9 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -
             return 0;
         }
         zero_page(phys);
-        // SAFETY: `pd` is valid (checked at entry), `va` lies in the user stack
-        // window and `phys` is the zeroed frame just allocated for it; the
-        // mapping takes the frame's physical address.
+        // `pd` is valid (checked at entry), `va` lies in the user stack window
+        // and `phys` is the zeroed frame just allocated for it; the mapping takes
+        // the frame's physical address.
         vmm_map(
             pd,
             va,
@@ -235,12 +227,10 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -
 /// Returns the number of pages pinned, or -1 (nothing left pinned) when a page
 /// cannot be backed.
 ///
-/// # Safety
-///
-/// `pd` must be a live page map the caller owns and may mutate, and no other CPU
-/// may race a walk of it; `out_phys` must have room for `ceil(size/4096)` `u64`s.
+/// `pd` is a live page map the caller owns and may mutate, and no other CPU may
+/// race a walk of it; `out_phys` must have room for `ceil(size/4096)` `u64`s.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_pin_range(
+pub extern "C" fn vmm_pin_range(
     pd: *mut u64,
     va: u64,
     size: u64,
@@ -261,34 +251,34 @@ pub unsafe extern "C" fn vmm_pin_range(
     while cur < end {
         let pte = pte_get(pd, cur);
         if pte.is_null() {
-            // SAFETY: `out_phys[0..n]` holds frames pinned in this call.
-            return unsafe { unpin_prefix(out_phys, n) };
+            // `out_phys[0..n]` holds frames pinned in this call.
+            return unpin_prefix(out_phys, n);
         }
-        // SAFETY: `pte` is a live in-bounds page-table entry.
-        let mut val = unsafe { *pte };
+        // `pte` is a live in-bounds page-table entry.
+        let mut val = ptr::read(pte);
         if val & PAGE_PRESENT as u64 == 0 {
             // Lazy anonymous page: install a zeroed frame (the demand fault path
             // would do the same on first touch).  Anything else is unmapped.
             if val & PAGE_DEMAND as u64 == 0 {
-                // SAFETY: as above.
-                return unsafe { unpin_prefix(out_phys, n) };
+                // As above.
+                return unpin_prefix(out_phys, n);
             }
             let frame = kalloc();
             if frame.is_null() {
-                // SAFETY: as above.
-                return unsafe { unpin_prefix(out_phys, n) };
+                // As above.
+                return unpin_prefix(out_phys, n);
             }
             zero_page(frame);
             val = (v2p(frame) & !0xFFF) | (PAGE_PRESENT | PAGE_USER | PAGE_RW) as u64;
-            // SAFETY: `pte` is the live entry for this address; the store
-            // publishes the materialised mapping.
-            unsafe { *pte = val; }
+            // `pte` is the live entry for this address; the store publishes the
+            // materialised mapping.
+            ptr::write(pte, val);
             flush_tlb(cur);
         }
         let phys = val & !0xFFF;
         page_ref_inc(p2v(phys) as *const u8);
-        // SAFETY: `n` stays below the caller's page count while `cur < end`.
-        unsafe { *out_phys.add(n as usize) = phys; }
+        // `n` stays below the caller's page count while `cur < end`.
+        ptr::write(out_phys.wrapping_add(n as usize), phys);
         n += 1;
         cur += PAGE_SIZE as u64;
     }
@@ -297,19 +287,17 @@ pub unsafe extern "C" fn vmm_pin_range(
 
 /// Release the references taken by `vmm_pin_range()`, unpinning the frames.
 ///
-/// # Safety
-///
 /// `phys` must hold `count` frames previously pinned by `vmm_pin_range()` and
 /// not already unpinned.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
+pub extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
     if phys.is_null() {
         return;
     }
     let mut i = 0u64;
     while i < count {
-        // SAFETY: each entry is a frame pinned by `vmm_pin_range`.
-        let p = unsafe { *phys.add(i as usize) };
+        // Each entry is a frame pinned by `vmm_pin_range`.
+        let p = ptr::read(phys.wrapping_add(i as usize));
         if p != 0 {
             // `p` is a live PMM-managed frame; this releases exactly the
             // reference the matching pin took.
@@ -321,8 +309,8 @@ pub unsafe extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
 
 /// Unpin the first `n` frames of `out_phys` (the failure path of
 /// `vmm_pin_range`).  Returns -1 so callers can `return` it directly.
-unsafe fn unpin_prefix(out_phys: *mut u64, n: i64) -> i64 {
-    // SAFETY: `out_phys[0..n]` holds frames pinned in this call.
-    unsafe { vmm_unpin_frames(out_phys as *const u64, n as u64) };
+fn unpin_prefix(out_phys: *mut u64, n: i64) -> i64 {
+    // `out_phys[0..n]` holds frames pinned in this call.
+    vmm_unpin_frames(out_phys as *const u64, n as u64);
     -1
 }

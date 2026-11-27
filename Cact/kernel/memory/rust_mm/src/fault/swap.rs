@@ -9,69 +9,74 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::ffi::*;
 use crate::pmm::{kalloc, free_page};
-use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
+use crate::safe::{lock_acquire, lock_release, kprint_str, kprint_int, klog_msg, flush_tlb};
 use crate::vmm::paging::{p2v, v2p};
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
 
 use super::swap_pte;
 use super::zswap;
 
 pub type SwapSlot = u32;
-pub type SwapReadFn = Option<unsafe extern "C" fn(u32, *mut u8, u32) -> i32>;
-pub type SwapWriteFn = Option<unsafe extern "C" fn(u32, *const u8, u32) -> i32>;
+pub type SwapReadFn = Option<extern "C" fn(u32, *mut u8, u32) -> i32>;
+pub type SwapWriteFn = Option<extern "C" fn(u32, *const u8, u32) -> i32>;
 
-static G_READ: KStatic<SwapReadFn> = KStatic::new(None);
-static G_WRITE: KStatic<SwapWriteFn> = KStatic::new(None);
-static G_BITMAP: KStatic<[u8; SWAP_BITMAP_SIZE as usize]> = KStatic::new([0u8; SWAP_BITMAP_SIZE as usize]);
-static G_TOTAL_SLOTS: KStatic<u32> = KStatic::new(0);
-static G_ENABLED: KStatic<i32> = KStatic::new(0);
-static G_STATS: KStatic<SwapStats> = KStatic::new(SwapStats {
+static G_READ: KCell<SwapReadFn> = KCell::new(None);
+static G_WRITE: KCell<SwapWriteFn> = KCell::new(None);
+static G_BITMAP: KCell<[u8; SWAP_BITMAP_SIZE as usize]> = KCell::new([0u8; SWAP_BITMAP_SIZE as usize]);
+static G_TOTAL_SLOTS: KCell<u32> = KCell::new(0);
+static G_ENABLED: KCell<i32> = KCell::new(0);
+static G_STATS: KCell<SwapStats> = KCell::new(SwapStats {
     total_slots: 0,
     used_slots: 0,
     pages_swapped_out: 0,
     pages_swapped_in: 0,
     swap_failures: 0,
 });
-static G_SWAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
+static G_SWAP_LOCK: KCell<IrqSpinlock> = KCell::new(IrqSpinlock::new());
 /// Clock hand for the eviction scan: the user virtual address the next scan
 /// starts from (page-aligned, inside the user window).  Only advanced by
 /// `swap_evict_page`; a torn read across CPUs merely restarts the scan earlier.
-static G_CLOCK_VA: KStatic<u32> = KStatic::new(USER_SPACE_START);
+static G_CLOCK_VA: KCell<u32> = KCell::new(USER_SPACE_START);
 
 fn bitmap_alloc() -> SwapSlot {
-    // SAFETY: `G_TOTAL_SLOTS` is written once by `swap_init` at boot; `bitmap_alloc`
+    // `G_TOTAL_SLOTS` is written once by `swap_init` at boot; `bitmap_alloc`
     // itself is only called while holding `G_SWAP_LOCK`.
-    let total = *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) };
-    // SAFETY: `G_BITMAP` slot bitmap, mutated under `G_SWAP_LOCK` — held by every
-    // caller of `bitmap_alloc`.
-    let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
-    // SAFETY: `G_STATS.used_slots` alongside the bitmap update, under `G_SWAP_LOCK`.
-    let stats = unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
-    for i in 0..total {
-        if bm[(i / 8) as usize] & (1u8 << (i % 8)) == 0 {
-            bm[(i / 8) as usize] |= 1u8 << (i % 8);
-            stats.used_slots += 1;
-            return i;
-        }
-    }
-    u32::MAX
+    let total = G_TOTAL_SLOTS.get();
+    // The slot bitmap and the used-slot counter are mutated together under
+    // `G_SWAP_LOCK`, held by every caller of `bitmap_alloc`.
+    G_BITMAP.with(|bm| {
+        G_STATS.with(|stats| {
+            for i in 0..total {
+                if bm[(i / 8) as usize] & (1u8 << (i % 8)) == 0 {
+                    bm[(i / 8) as usize] |= 1u8 << (i % 8);
+                    stats.used_slots += 1;
+                    return i;
+                }
+            }
+            u32::MAX
+        })
+    })
 }
 
 fn bitmap_free(slot: SwapSlot) {
-    // SAFETY: `G_TOTAL_SLOTS` read; `bitmap_free` callers hold `G_SWAP_LOCK`.
-    let total = *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) };
+    // `G_TOTAL_SLOTS` read; `bitmap_free` callers hold `G_SWAP_LOCK`.
+    let total = G_TOTAL_SLOTS.get();
     if slot >= total {
         return;
     }
-    // SAFETY: `G_BITMAP` mutated under `G_SWAP_LOCK`.
-    let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
-    // SAFETY: `G_STATS.used_slots` decremented with the bitmap, under `G_SWAP_LOCK`.
-    let stats = unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
-    if bm[(slot / 8) as usize] & (1u8 << (slot % 8)) != 0 {
-        bm[(slot / 8) as usize] &= !(1u8 << (slot % 8));
-        if stats.used_slots > 0 {
-            stats.used_slots -= 1;
-        }
-    }
+    // The slot bitmap and the used-slot counter are mutated together under
+    // `G_SWAP_LOCK`.
+    G_BITMAP.with(|bm| {
+        G_STATS.with(|stats| {
+            if bm[(slot / 8) as usize] & (1u8 << (slot % 8)) != 0 {
+                bm[(slot / 8) as usize] &= !(1u8 << (slot % 8));
+                if stats.used_slots > 0 {
+                    stats.used_slots -= 1;
+                }
+            }
+        })
+    });
 }
 
 fn slot_to_lba(slot: SwapSlot) -> u32 {
@@ -91,9 +96,9 @@ pub fn swap_pte_is_swapped(pte: u64) -> bool {
 }
 
 pub fn swap_is_enabled() -> bool {
-    // SAFETY: `G_ENABLED` is written once by `swap_init` during boot and only read
+    // `G_ENABLED` is written once by `swap_init` during boot and only read
     // afterwards, so it is effectively immutable.
-    *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } != 0
+    G_ENABLED.get() != 0
 }
 
 /// Install the backing-store I/O callbacks and leave swap **disabled**.
@@ -104,30 +109,23 @@ pub fn swap_is_enabled() -> bool {
 /// `swap_enable`.
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_init(
-    read_fn: unsafe extern "C" fn(u32, *mut u8, u32) -> i32,
-    write_fn: unsafe extern "C" fn(u32, *const u8, u32) -> i32,
+    read_fn: extern "C" fn(u32, *mut u8, u32) -> i32,
+    write_fn: extern "C" fn(u32, *const u8, u32) -> i32,
 ) -> i32 {
-    // SAFETY: boot-time `swap_init`: single-threaded, no other swap user yet.
-    *unsafe { KStatic::get_mut(G_READ.as_ptr()) } = Some(read_fn);
-    // SAFETY: same single-threaded boot init of `G_WRITE`.
-    *unsafe { KStatic::get_mut(G_WRITE.as_ptr()) } = Some(write_fn);
+    // Boot-time `swap_init`: single-threaded, no other swap user yet.
+    G_READ.set(Some(read_fn));
+    G_WRITE.set(Some(write_fn));
 
-    {
-        // SAFETY: zeroing the `G_BITMAP` slot bitmap during single-threaded boot init.
-        let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
-        bm.fill(0);
-    }
-    // SAFETY: zeroing stats at boot time.
-    unsafe {
-        core::ptr::write_bytes(G_STATS.as_ptr() as *mut u8, 0, core::mem::size_of::<SwapStats>());
-    }
-    // SAFETY: no capacity until a backing device is attached.
-    *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } = 0;
+    G_BITMAP.with(|bm| bm.fill(0));
+    // Zero the stats block at boot time; a fresh, all-zero `SwapStats`.
+    G_STATS.with(|s| ptr::write_bytes(s, 0, 1));
+    // No capacity until a backing device is attached.
+    G_TOTAL_SLOTS.set(0);
 
     irq_spinlock_init(G_SWAP_LOCK.as_ptr());
-    // SAFETY: stays off; set last so no reader can see `G_ENABLED` before the
-    // tables above are initialised.
-    *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 0;
+    // Stays off; set last so no reader can see `G_ENABLED` before the tables
+    // above are initialised.
+    G_ENABLED.set(0);
 
     // Boot-time, single-threaded: initialise the zswap front-end's own lock so
     // the first `zswap_enable` from /dev/zmem cannot race it.
@@ -144,40 +142,34 @@ pub extern "C" fn swap_enable(slots: u32) -> i32 {
     if slots == 0 {
         return -1;
     }
-    // SAFETY: `G_READ`/`G_WRITE` are set once by `swap_init` and never changed.
-    if unsafe { KStatic::get_mut(G_READ.as_ptr()) }.is_none()
-        || unsafe { KStatic::get_mut(G_WRITE.as_ptr()) }.is_none()
-    {
+    // `G_READ`/`G_WRITE` are set once by `swap_init` and never changed.
+    if G_READ.get().is_none() || G_WRITE.get().is_none() {
         return -1;
     }
     let total = if slots > SWAP_MAX_SLOTS { SWAP_MAX_SLOTS } else { slots };
 
     lock_acquire(G_SWAP_LOCK.as_ptr());
-    {
-        // SAFETY: `G_STATS` mutated under `G_SWAP_LOCK`.
-        let stats = unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
+    G_STATS.with(|stats| {
         // Resetting the bitmap is only correct while nothing is swapped out:
         // slots still held by swapped-out pages must stay reserved across a
         // device re-attach (a rescan drops and recreates the partition), or a
         // later fault-in would read whatever page took the slot.
         if stats.used_slots == 0 {
-            // SAFETY: `G_BITMAP` mutated under `G_SWAP_LOCK`.
-            let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
-            bm.fill(0);
+            G_BITMAP.with(|bm| bm.fill(0));
         }
         stats.total_slots = total;
         stats.swap_failures = 0;
-    }
+    });
     lock_release(G_SWAP_LOCK.as_ptr());
 
-    // SAFETY: `G_TOTAL_SLOTS` bounds `bitmap_alloc`; published before enabling
-    // so no swapper can see capacity with a stale slot count.
-    *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } = total;
-    // SAFETY: restart the eviction clock hand on a new backing store.
-    *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) } = USER_SPACE_START;
-    // SAFETY: enabling, last, so no concurrent reader sees `G_ENABLED` set
-    // before the tables above are ready.
-    *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 1;
+    // `G_TOTAL_SLOTS` bounds `bitmap_alloc`; published before enabling so no
+    // swapper can see capacity with a stale slot count.
+    G_TOTAL_SLOTS.set(total);
+    // Restart the eviction clock hand on a new backing store.
+    G_CLOCK_VA.set(USER_SPACE_START);
+    // Enabling, last, so no concurrent reader sees `G_ENABLED` set before the
+    // tables above are ready.
+    G_ENABLED.set(1);
     0
 }
 
@@ -187,10 +179,10 @@ pub extern "C" fn swap_enable(slots: u32) -> i32 {
 /// device cannot hand them to a new page.
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_disable() {
-    // SAFETY: only the enable flag and the advertised capacity change; the slot
-    // bitmap, its counters and the slot *bound* stay put.
-    *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 0;
-    // SAFETY: `G_STATS.total_slots` is the *advertised* capacity; `used_slots` is
+    // Only the enable flag and the advertised capacity change; the slot bitmap,
+    // its counters and the slot *bound* stay put.
+    G_ENABLED.set(0);
+    // `G_STATS.total_slots` is the *advertised* capacity; `used_slots` is
     // deliberately left alone.
     //
     // `G_TOTAL_SLOTS` itself is deliberately NOT cleared: it bounds `read_slot`
@@ -200,25 +192,23 @@ pub extern "C" fn swap_disable() {
     // bound check (`slot >= 0` is always true once the bound is gone), so
     // `swapoff` could never fault a page back in — it reported -ENOMEM with RAM
     // to spare.
-    (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).total_slots = 0;
+    G_STATS.with(|stats| stats.total_slots = 0);
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_is_enabled_ffi() -> i32 {
-    // SAFETY: `G_ENABLED` is immutable after `swap_init`.
-    *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) }
+    // `G_ENABLED` is immutable after `swap_init`.
+    G_ENABLED.get()
 }
 
-/// # Safety
-///
-/// `out_slot` must be null or point to a writable `SwapSlot` valid for the
-/// call, and `phys_addr` must be a page-aligned **physical** frame address (a
-/// PTE's frame, as `swap.h` documents) — the backing-store callback reads the
-/// page, so the address is translated through the direct map before the call.
+/// `out_slot` is null or points to a writable `SwapSlot` valid for the call,
+/// and `phys_addr` is a page-aligned **physical** frame address (a PTE's frame,
+/// as `swap.h` documents) — the backing-store callback reads the page, so the
+/// address is translated through the direct map before the call.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) -> i32 {
-    // SAFETY: `G_ENABLED` is immutable after `swap_init`.
-    if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 {
+pub extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) -> i32 {
+    // `G_ENABLED` is immutable after `swap_init`.
+    if G_ENABLED.get() == 0 {
         return -1;
     }
     if !phys_addr.is_multiple_of(PAGE_SIZE as u64) {
@@ -230,37 +220,37 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) 
     lock_release(G_SWAP_LOCK.as_ptr());
 
     if slot == u32::MAX {
-        // SAFETY: `G_STATS.swap_failures` — a diagnostic counter; this increment is not
-        // taken under `G_SWAP_LOCK` and is not serialised across CPUs, but a lost count
-        // is harmless.
-        (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).swap_failures += 1;
+        // `G_STATS.swap_failures` — a diagnostic counter; this increment is not
+        // taken under `G_SWAP_LOCK` and is not serialised across CPUs, but a lost
+        // count is harmless.
+        G_STATS.with(|stats| stats.swap_failures += 1);
         klog_msg(LOG_WARN, c"swap out failed: no free slots".as_ptr() as *const u8);
         return -1;
     }
 
     let lba = slot_to_lba(slot);
-    // SAFETY: `G_WRITE` callback pointer is set once at boot and left unchanged.
-    let write_fn = *unsafe { KStatic::get_mut(G_WRITE.as_ptr()) };
+    // `G_WRITE` callback pointer is set once at boot and left unchanged.
+    let write_fn = G_WRITE.get();
     let write_fn = match write_fn {
         Some(f) => f,
         None => return -1,
     };
-    // SAFETY: calling the C-provided write function; `phys_addr` is a physical
-    // address, so the page it reads is the direct-map alias.
-    let rc = unsafe { write_fn(lba, p2v(phys_addr) as *const u8, PAGE_SIZE / 512) };
+    // Call the C-provided write function; `phys_addr` is a physical address, so
+    // the page it reads is the direct-map alias.
+    let rc = write_fn(lba, p2v(phys_addr) as *const u8, PAGE_SIZE / 512);
     if rc != 0 {
         lock_acquire(G_SWAP_LOCK.as_ptr());
         bitmap_free(slot);
         lock_release(G_SWAP_LOCK.as_ptr());
-        // SAFETY: `G_STATS.swap_failures` — unlocked diagnostic counter, see above.
-        (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).swap_failures += 1;
+        // `G_STATS.swap_failures` — unlocked diagnostic counter, see above.
+        G_STATS.with(|stats| stats.swap_failures += 1);
         return -1;
     }
 
-    // SAFETY: `G_STATS.pages_swapped_out` — unlocked diagnostic counter, see above.
-    (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).pages_swapped_out += 1;
-    // SAFETY: out_slot is a valid pointer provided by the caller.
-    unsafe { *out_slot = slot; }
+    // `G_STATS.pages_swapped_out` — unlocked diagnostic counter, see above.
+    G_STATS.with(|stats| stats.pages_swapped_out += 1);
+    // `out_slot` is a valid pointer provided by the caller.
+    ptr::write(out_slot, slot);
     0
 }
 
@@ -271,9 +261,9 @@ pub unsafe extern "C" fn swap_out_page(phys_addr: u64, out_slot: *mut SwapSlot) 
 /// once — by the winner.  Reading and releasing in one step (as this used to)
 /// would let the two free the same slot twice, or read one already reused.
 fn read_slot(slot: SwapSlot, phys_addr: u64) -> i32 {
-    // SAFETY: `G_TOTAL_SLOTS` immutable after boot init; slot reads are validated
+    // `G_TOTAL_SLOTS` immutable after boot init; slot reads are validated
     // against it.
-    if slot >= *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } {
+    if slot >= G_TOTAL_SLOTS.get() {
         return -1;
     }
     if !phys_addr.is_multiple_of(PAGE_SIZE as u64) {
@@ -281,22 +271,22 @@ fn read_slot(slot: SwapSlot, phys_addr: u64) -> i32 {
     }
 
     let lba = slot_to_lba(slot);
-    // SAFETY: `G_READ` callback pointer is set once at boot and left unchanged.
-    let read_fn = *unsafe { KStatic::get_mut(G_READ.as_ptr()) };
+    // `G_READ` callback pointer is set once at boot and left unchanged.
+    let read_fn = G_READ.get();
     let read_fn = match read_fn {
         Some(f) => f,
         None => return -1,
     };
-    // SAFETY: calling the C-provided read function; `phys_addr` is a physical
-    // address, so the page it fills is the direct-map alias.
-    let rc = unsafe { read_fn(lba, p2v(phys_addr) as *mut u8, PAGE_SIZE / 512) };
+    // Call the C-provided read function; `phys_addr` is a physical address, so
+    // the page it fills is the direct-map alias.
+    let rc = read_fn(lba, p2v(phys_addr) as *mut u8, PAGE_SIZE / 512);
     if rc != 0 {
-        // SAFETY: `G_STATS.swap_failures` — unlocked diagnostic counter, see above.
-        (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).swap_failures += 1;
+        // `G_STATS.swap_failures` — unlocked diagnostic counter, see above.
+        G_STATS.with(|stats| stats.swap_failures += 1);
         return -1;
     }
-    // SAFETY: `G_STATS.pages_swapped_in` — unlocked diagnostic counter, see above.
-    (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).pages_swapped_in += 1;
+    // `G_STATS.pages_swapped_in` — unlocked diagnostic counter, see above.
+    G_STATS.with(|stats| stats.pages_swapped_in += 1);
     0
 }
 
@@ -319,8 +309,8 @@ pub extern "C" fn swap_in_page(slot: SwapSlot, phys_addr: u64) -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_free_slot(slot: SwapSlot) {
-    // SAFETY: `G_ENABLED` immutable after boot init.
-    if *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } == 0 {
+    // `G_ENABLED` immutable after boot init.
+    if G_ENABLED.get() == 0 {
         return;
     }
     lock_acquire(G_SWAP_LOCK.as_ptr());
@@ -367,12 +357,10 @@ pub extern "C" fn swap_migrate_end() {
 /// on the device.  Returns 0 when everything migrated, or -1 when a frame could
 /// not be had (the caller then leaves swap attached).
 ///
-/// # Safety
-///
-/// `pd` must be null or a live page directory that stays alive for the call: the
+/// `pd` is null or a live page directory that stays alive for the call: the
 /// caller holds `scheduler_lock`, so the owning task cannot exit underneath it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
+pub extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
     if pd.is_null() {
         return 0;
     }
@@ -381,12 +369,12 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
     let end = USER_STACK_TOP as u64;
     let mut va = USER_SPACE_START as u64;
     while va < end {
-        // SAFETY: `pd` is a live page map and the walk only reads it.
+        // `pd` is a live page map and the walk only reads it.
         let w = crate::vmm::paging::walk(pd, va, false, false);
         if !w.pte_entry.is_null() {
             let entry = w.pte_entry as *mut AtomicU64;
-            // SAFETY: `entry` points at one live atomic PTE.
-            let pte = unsafe { (*entry).load(Ordering::Acquire) };
+            // `entry` points at one live atomic PTE.
+            let pte = ptr::as_ref(entry).load(Ordering::Acquire);
             if swap_pte::is_swapped(pte) && !swap_pte::in_zswap(pte) {
                 let slot = swap_pte::decode(pte);
                 let frame = kalloc();
@@ -403,11 +391,10 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
                 let new_pte = (v2p(frame) & !0xFFF)
                     | (pte & ((PAGE_RW | PAGE_USER) as u64))
                     | PAGE_PRESENT as u64;
-                // SAFETY: `entry` points at one live atomic PTE.
-                let won = unsafe {
-                    (*entry).compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
-                }
-                .is_ok();
+                // `entry` points at one live atomic PTE.
+                let won = ptr::as_ref(entry)
+                    .compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok();
                 if won {
                     lock_acquire(G_SWAP_LOCK.as_ptr());
                     bitmap_free(slot);
@@ -432,13 +419,14 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_release_slots() {
     lock_acquire(G_SWAP_LOCK.as_ptr());
-    // SAFETY: `G_BITMAP` is mutated under `G_SWAP_LOCK`.
-    let bm = unsafe { KStatic::get_mut(G_BITMAP.as_ptr()) };
-    for b in bm.iter_mut() {
-        *b = 0;
-    }
-    // SAFETY: `G_STATS.used_slots` is cleared with the bitmap, under `G_SWAP_LOCK`.
-    unsafe { KStatic::get_mut(G_STATS.as_ptr()) }.used_slots = 0;
+    // `G_BITMAP` is mutated under `G_SWAP_LOCK`.
+    G_BITMAP.with(|bm| {
+        for b in bm.iter_mut() {
+            *b = 0;
+        }
+    });
+    // `G_STATS.used_slots` is cleared with the bitmap, under `G_SWAP_LOCK`.
+    G_STATS.with(|stats| stats.used_slots = 0);
     lock_release(G_SWAP_LOCK.as_ptr());
 }
 
@@ -457,10 +445,8 @@ pub fn eviction_in_progress() -> bool {
     EVICT_BUSY.load(Ordering::Acquire) != 0
 }
 
-/// # Safety
-///
-/// `pd` must be null or a valid page directory whose user PTEs the caller is
-/// allowed to mutate; the caller must not race another page-table walker.
+/// `pd` is null or a valid page directory whose user PTEs the caller is allowed
+/// to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     // Refuse a nested/concurrent eviction: see `EVICT_BUSY`.
@@ -474,10 +460,8 @@ pub extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     rc
 }
 
-/// # Safety
-///
-/// `pd` must be null or a valid page directory whose user PTEs the caller is
-/// allowed to mutate; the caller must not race another page-table walker.
+/// `pd` is null or a valid page directory whose user PTEs the caller is allowed
+/// to mutate; the caller must not race another page-table walker.
 fn swap_evict_page_inner(pd: *mut u64) -> i32 {
     // Evicting is possible with a swap device, with the zswap pool, or with both.
     if pd.is_null() || (!swap_is_enabled() && !zswap::zswap_is_enabled()) {
@@ -487,9 +471,9 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
     let mut iterations: u32 = 0;
     let max_iter: u32 = 2 * 1024 * 992;
 
-    // SAFETY: `G_CLOCK_VA` is the clock hand's virtual address, only advanced by
+    // `G_CLOCK_VA` is the clock hand's virtual address, only advanced by
     // `swap_evict_page`; a torn read across CPUs merely restarts the scan earlier.
-    let mut va = *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) };
+    let mut va = G_CLOCK_VA.get();
     if va < USER_SPACE_START || va >= USER_STACK_TOP {
         va = USER_SPACE_START;
     }
@@ -500,13 +484,13 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
         // Resolve `va` to its page-table entry through the real four-level walk
         // (reading only, `create` false), so the scan follows exactly the tables
         // the CPU walks rather than assuming a two-level layout.
-        // SAFETY: `pd` is the caller's live page map and the walk only reads it.
+        // `pd` is the caller's live page map and the walk only reads it.
         let w = crate::vmm::paging::walk(pd, va as u64, false, false);
         if !w.pte_entry.is_null() {
             let pte_entry = w.pte_entry as *mut AtomicU64;
-            // SAFETY: `pte_entry` points at one live atomic PTE; a relaxed load is
-            // a single atomic access, so no torn value can be observed.
-            let pte = unsafe { (*pte_entry).load(Ordering::Relaxed) };
+            // `pte_entry` points at one live atomic PTE; a relaxed load is a
+            // single atomic access, so no torn value can be observed.
+            let pte = ptr::as_ref(pte_entry).load(Ordering::Relaxed);
 
             if pte & PAGE_PRESENT as u64 != 0
                 && !swap_pte_is_swapped(pte)
@@ -515,9 +499,9 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
                 if pte & PTE_ACCESSED as u64 != 0 {
                     // Second chance: give an accessed page another lap and clear
                     // Accessed so the next pass sees it as a candidate.
-                    // SAFETY: `pte_entry` points at one live atomic PTE; the
-                    // fetch_and is a single atomic RMW, so no torn value is seen.
-                    unsafe { (*pte_entry).fetch_and(!(PTE_ACCESSED as u64), Ordering::AcqRel) };
+                    // `pte_entry` points at one live atomic PTE; the fetch_and is
+                    // a single atomic RMW, so no torn value is seen.
+                    ptr::as_ref(pte_entry).fetch_and(!(PTE_ACCESSED as u64), Ordering::AcqRel);
                     flush_tlb(va as u64);
                 } else {
                     let phys = pte & !0xFFF;
@@ -536,8 +520,8 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
                     // shared-memory page's frame belongs to the page cache / an
                     // shm object, and freeing one from here corrupts that owner
                     // (under pressure this faulted in `file_unref`).
-                    // SAFETY: `current_proc()` is the running task's `ProcMeta`
-                    // (or null, which classifies the address as anonymous).
+                    // `current_proc()` is the running task's `ProcMeta` (or null,
+                    // which classifies the address as anonymous).
                     if !crate::vmm::stats::va_is_anonymous(crate::vmm::stats::current_proc(), va) {
                         va += PAGE_SIZE;
                         if va >= USER_STACK_TOP {
@@ -553,18 +537,18 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
                         encoded = Some(swap_pte::encode_zswap(handle));
                     } else {
                         if swap_is_enabled() {
-                            // SAFETY: `pd` is the caller's live page directory;
-                            // the writeback walk only touches its own user PTEs.
-                            unsafe { zswap::zswap_try_writeback(pd) };
+                            // `pd` is the caller's live page directory; the
+                            // writeback walk only touches its own user PTEs.
+                            zswap::zswap_try_writeback(pd);
                             if let Some(handle) = zswap::zswap_store(phys) {
                                 encoded = Some(swap_pte::encode_zswap(handle));
                             }
                         }
                         if encoded.is_none() && swap_is_enabled() {
                             let mut slot: SwapSlot = 0;
-                            // SAFETY: `phys` is the page-aligned frame selected by
-                            // the scan and `slot` a live local.
-                            if unsafe { swap_out_page(phys, &mut slot) } == 0 {
+                            // `phys` is the page-aligned frame selected by the
+                            // scan and `slot` a live local.
+                            if swap_out_page(phys, &mut slot) == 0 {
                                 encoded = Some(swap_encode_pte(slot));
                             }
                         }
@@ -577,9 +561,9 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
 
                     let mut new_pte = encoded;
                     new_pte |= (pte & ((PAGE_RW | PAGE_USER) as u64)) & !(PAGE_PRESENT as u64);
-                    // SAFETY: `pte_entry` is the live PTE for `va`; the store
-                    // publishes the swapped-out entry.
-                    unsafe { (*pte_entry).store(new_pte, Ordering::Release) };
+                    // `pte_entry` is the live PTE for `va`; the store publishes
+                    // the swapped-out entry.
+                    ptr::as_ref(pte_entry).store(new_pte, Ordering::Release);
 
                     flush_tlb(va as u64);
 
@@ -590,10 +574,9 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
                     free_page(p2v(phys) as *mut u8);
 
                     let next = va + PAGE_SIZE;
-                    // SAFETY: saving the clock hand after a successful eviction;
+                    // Saving the clock hand after a successful eviction;
                     // best-effort scan position shared between CPUs, see above.
-                    *unsafe { KStatic::get_mut(G_CLOCK_VA.as_ptr()) } =
-                        if next >= USER_STACK_TOP { USER_SPACE_START } else { next };
+                    G_CLOCK_VA.set(if next >= USER_STACK_TOP { USER_SPACE_START } else { next });
                     return 0;
                 }
             }
@@ -609,20 +592,18 @@ fn swap_evict_page_inner(pd: *mut u64) -> i32 {
     -1
 }
 
-/// # Safety
-///
-/// `pd` must be null or a valid page directory whose user PTEs the caller is
-/// allowed to mutate; the caller must not race another page-table walker.
+/// `pd` is null or a valid page directory whose user PTEs the caller is allowed
+/// to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32 {
+pub extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32 {
     if pd.is_null() {
         return -1;
     }
 
     let page_va = fault_addr & !0xFFF;
 
-    // SAFETY: `pd` is a live page map and the walk only reads it (`create`
-    // false), so nothing is allocated or mutated.
+    // `pd` is a live page map and the walk only reads it (`create` false), so
+    // nothing is allocated or mutated.
     let w = crate::vmm::paging::walk(pd, page_va, false, false);
     if w.pte_entry.is_null() {
         return -1;
@@ -630,9 +611,9 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
     // The page table exists, so the walk found one: the entry the swap markers
     // live in.
     let pte_entry = w.pte_entry as *mut AtomicU64;
-    // SAFETY: `pte_entry` points at one live atomic PTE; an acquire load is a
-    // single atomic access.
-    let pte = unsafe { (*pte_entry).load(Ordering::Acquire) };
+    // `pte_entry` points at one live atomic PTE; an acquire load is a single
+    // atomic access.
+    let pte = ptr::as_ref(pte_entry).load(Ordering::Acquire);
 
     if !swap_pte_is_swapped(pte) {
         return -1;
@@ -672,11 +653,10 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
 
     let old_flags = pte & ((PAGE_RW | PAGE_USER) as u64);
     let new_pte = (v2p(phys) & !0xFFF) | old_flags | PAGE_PRESENT as u64;
-    // SAFETY: `pte_entry` points at one live atomic PTE.
-    let won = unsafe {
-        (*pte_entry).compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
-    }
-    .is_ok();
+    // `pte_entry` points at one live atomic PTE.
+    let won = ptr::as_ref(pte_entry)
+        .compare_exchange(pte, new_pte, Ordering::AcqRel, Ordering::Acquire)
+        .is_ok();
     if won {
         if from_pool {
             zswap::free_handle(slot);
@@ -696,14 +676,14 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
 
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_get_stats() -> SwapStats {
-    // SAFETY: read-only snapshot of the swap counters for the C caller.
-    *unsafe { KStatic::get_mut(G_STATS.as_ptr()) }
+    // Read-only snapshot of the swap counters for the C caller.
+    G_STATS.get()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn swap_print_stats() {
-    // SAFETY: read-only snapshot of the swap counters for printing.
-    let stats = *unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
+    // Read-only snapshot of the swap counters for printing.
+    let stats = G_STATS.get();
     kprint_str(c"[SWAP] === Swap Statistics ===\n".as_ptr() as *const u8);
     kprint_str(c"  total_slots:       ".as_ptr() as *const u8);
     kprint_int(stats.total_slots as i32);

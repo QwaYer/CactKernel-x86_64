@@ -7,59 +7,23 @@
 //! behind safe interfaces, following the kernel's synchronization protocol
 //! (IRQ-safe spinlocks) to guarantee memory safety at runtime.
 
-use core::cell::UnsafeCell;
-
 // ---------------------------------------------------------------------------
-// KStatic — a `Sync` wrapper for mutable statics
+// Parking the CPU
 // ---------------------------------------------------------------------------
 
-/// A `Sync`-safe wrapper around `UnsafeCell<T>` for kernel mutable statics.
+/// Park this CPU permanently in `hlt`.
 ///
-/// # Safety contract
-///
-/// The kernel uses `IrqSpinlock` to serialize access to shared mutable state.
-/// Any code that calls [`KStatic::get_mut`] or [`KStatic::as_ptr`] must
-/// already hold the appropriate spinlock (or be in a single-threaded boot
-/// context where no concurrent access is possible).
-pub struct KStatic<T>(UnsafeCell<T>);
-
-// SAFETY: Access is guarded by IrqSpinlock at every call site.
-unsafe impl<T> Sync for KStatic<T> {}
-
-// SAFETY: Access is guarded by IrqSpinlock at every call site.
-unsafe impl<T> Send for KStatic<T> {}
-
-impl<T> KStatic<T> {
-    /// Create a new `KStatic` with the given initial value.
-    pub const fn new(val: T) -> Self {
-        KStatic(UnsafeCell::new(val))
-    }
-
-    /// Obtain a mutable reference to the inner value of a `KStatic` **static**.
-    ///
-    /// Takes the pointer by value (see [`KStatic::as_ptr`]) rather than handing
-    /// out a `&mut T` borrowed from a shared reference: `KStatic` is an
-    /// interior-mutability wrapper, so the shared reference itself proves
-    /// nothing about exclusive access — the caller's lock protocol does.
-    ///
-    /// # Safety
-    ///
-    /// `ptr` must come from [`KStatic::as_ptr`] on a `static KStatic`, and the
-    /// caller must be entitled to access that static's inner value exclusively
-    /// for the returned reference's lifetime: it holds the `IrqSpinlock` that
-    /// serialises the static (or the kernel is still single-threaded at boot).
-    /// No other reference to the same value may be live for that lifetime.
-    pub unsafe fn get_mut<'a>(ptr: *mut T) -> &'a mut T {
-        // SAFETY: the caller contract above makes `ptr` point to a live static
-        // value that this call is allowed to borrow exclusively.
-        unsafe { &mut *ptr }
-    }
-
-    /// Obtain a raw mutable pointer to the inner value.
-    ///
-    /// Useful for passing to C FFI functions that expect `*mut T`.
-    pub fn as_ptr(&self) -> *mut T {
-        self.0.get()
+/// The kernel's one `hlt` loop: a CPU that has nothing left to do (a kernel
+/// page fault on the boot path) halts here rather than spinning, so it stays
+/// parked until a reset or a non-maskable interrupt.
+pub fn halt_forever() -> ! {
+    loop {
+        // SAFETY: `hlt` only halts this CPU until the next interrupt and touches
+        // no memory; the call sites run with maskable interrupts masked, so the
+        // CPU stays parked.
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
     }
 }
 

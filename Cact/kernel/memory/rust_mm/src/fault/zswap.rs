@@ -25,7 +25,9 @@ use crate::comp::zpool::{
     zpool_store,
 };
 use crate::ffi::*;
-use crate::safe::{KStatic, flush_tlb, klog_msg, lock_acquire, lock_release};
+use crate::safe::{flush_tlb, klog_msg, lock_acquire, lock_release};
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
 
 use super::swap_pte;
 
@@ -35,8 +37,8 @@ const ENOMEM: i32 = 12;
 
 /// The pool, set exactly once (under `G_INIT_LOCK` in [`zswap_enable`]) and
 /// never freed; an unlocked read is therefore sound, like `swap`'s own flags.
-static G_POOL: KStatic<*mut c_void> = KStatic::new(core::ptr::null_mut());
-static G_INIT_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
+static G_POOL: KCell<*mut c_void> = KCell::new(core::ptr::null_mut());
+static G_INIT_LOCK: KCell<IrqSpinlock> = KCell::new(IrqSpinlock::new());
 /// Serialises first-use initialisation of `G_INIT_LOCK` itself.
 static G_INIT_DONE: AtomicI32 = AtomicI32::new(0);
 
@@ -58,14 +60,13 @@ static G_WB_CLOCK: AtomicU32 = AtomicU32::new(USER_SPACE_START);
 /// `zswap_enable(writeback=1)` and kept for the life of the kernel (the pool it
 /// serves is never freed either).  Used serially: only one eviction runs at a
 /// time, so only one writeback does.
-static G_WB_FRAME: KStatic<*mut u8> = KStatic::new(core::ptr::null_mut());
+static G_WB_FRAME: KCell<*mut u8> = KCell::new(core::ptr::null_mut());
 
 /// Read the pool pointer (see the `G_POOL` note for why this needs no lock).
 fn pool() -> *mut c_void {
-    // SAFETY: `G_POOL` is written once and the pool it names is never freed, so
+    // `G_POOL` is written once and the pool it names is never freed, so
     // an unlocked read cannot observe a dangling value.
-    let p = unsafe { *KStatic::get_mut(G_POOL.as_ptr()) };
-    p
+    G_POOL.get()
 }
 
 fn init_lock() {
@@ -102,8 +103,6 @@ fn pool_load_keep(p: *mut c_void, handle: u32, frame: *mut u8) -> bool {
 
 /// Compress the frame at physical `phys` into the pool.  Returns the pool
 /// handle, or `None` when zswap is off or the pool is full / out of memory.
-///
-/// # Safety contract
 ///
 /// `phys` must be a page-aligned physical frame address of a live frame the
 /// caller is about to evict.
@@ -172,11 +171,9 @@ pub fn zswap_load(handle: u32, phys: u64) -> bool {
 ///
 /// The caller must have verified that a swap device is attached.
 ///
-/// # Safety
-///
 /// `pd` must be a live page directory whose user PTEs the caller may mutate and
 /// must not race another page-table walker.
-unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
+fn zswap_writeback_one(pd: *mut u64) -> bool {
     let p = pool();
     if p.is_null() || pd.is_null() {
         return false;
@@ -190,20 +187,20 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
     let mut it: u32 = 0;
     while it < max_iter {
         it += 1;
-        // SAFETY: `pd` is the caller's live page map; the walk only reads it.
+        // `pd` is the caller's live page map; the walk only reads it.
         let w = crate::vmm::paging::walk(pd, va as u64, false, false);
         if !w.pte_entry.is_null() {
             let entry = w.pte_entry as *mut AtomicU64;
-            // SAFETY: `entry` points at one live atomic PTE.
-            let pte = unsafe { (*entry).load(Ordering::Acquire) };
+            // `entry` points at one live atomic PTE.
+            let pte = ptr::as_ref(entry).load(Ordering::Acquire);
             if swap_pte::in_zswap(pte) {
                 let handle = swap_pte::decode(pte);
                 // Use the frame reserved at enable, not `kalloc`: writeback runs
                 // inside eviction, where the PMM is empty and its reclaim is
                 // suppressed, so `kalloc` would always fail (see `G_WB_FRAME`).
-                // SAFETY: `G_WB_FRAME` is set once under `G_INIT_LOCK` before any
+                // `G_WB_FRAME` is set once under `G_INIT_LOCK` before any
                 // writeback can run, and is never freed.
-                let frame = unsafe { *KStatic::get_mut(G_WB_FRAME.as_ptr()) };
+                let frame = G_WB_FRAME.get();
                 if frame.is_null() {
                     return false;
                 }
@@ -212,9 +209,9 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
                 }
                 let mut slot: u32 = 0;
                 let frame_phys = crate::vmm::paging::v2p(frame);
-                // SAFETY: `frame_phys` is the reserved frame's live address and
-                // `slot` a live local.
-                if unsafe { crate::fault::swap::swap_out_page(frame_phys, &mut slot) } != 0 {
+                // `frame_phys` is the reserved frame's live address and `slot` a
+                // live local.
+                if crate::fault::swap::swap_out_page(frame_phys, &mut slot) != 0 {
                     // Nowhere to put it: leave the pool entry (and the PTE) as
                     // they were — nothing has been freed yet.
                     return false;
@@ -224,8 +221,8 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
 
                 let new_pte = swap_pte::encode_device(slot)
                     | (pte & ((PAGE_RW | PAGE_USER) as u64));
-                // SAFETY: `entry` points at one live atomic PTE.
-                unsafe { (*entry).store(new_pte, Ordering::Release) };
+                // `entry` points at one live atomic PTE.
+                ptr::as_ref(entry).store(new_pte, Ordering::Release);
                 flush_tlb(va as u64);
                 G_WRITEBACKS.fetch_add(1, Ordering::Relaxed);
                 let next = va + PAGE_SIZE;
@@ -247,15 +244,12 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
 /// Try to make room in a full pool by migrating one pooled page of `pd` to the
 /// swap device.  A no-op (`false`) unless `writeback` is on.
 ///
-/// # Safety
-///
-/// As [`zswap_writeback_one`].
-pub unsafe fn zswap_try_writeback(pd: *mut u64) -> bool {
+/// As [`zswap_writeback_one`] for `pd`.
+pub fn zswap_try_writeback(pd: *mut u64) -> bool {
     if G_WRITEBACK.load(Ordering::Relaxed) == 0 {
         return false;
     }
-    // SAFETY: forwarded to the caller's contract.
-    unsafe { zswap_writeback_one(pd) }
+    zswap_writeback_one(pd)
 }
 
 /// Enable the front-end and point it at `max_pool_pct`% of RAM, compressing at
@@ -287,27 +281,27 @@ pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) ->
     // Reserve the writeback scratch frame first — see `G_WB_FRAME`: it can only
     // be taken while the PMM still has frames, and taking it before the pool
     // leaves a failure with nothing to undo.
-    if writeback != 0 && unsafe { *KStatic::get_mut(G_WB_FRAME.as_ptr()) }.is_null() {
+    if writeback != 0 && G_WB_FRAME.get().is_null() {
         let f = crate::pmm::kalloc();
         if f.is_null() {
             lock_release(G_INIT_LOCK.as_ptr());
             return -ENOMEM;
         }
-        // SAFETY: the reservation is written once, under `G_INIT_LOCK`, before
-        // any eviction can reach the writeback path.
-        *unsafe { KStatic::get_mut(G_WB_FRAME.as_ptr()) } = f;
+        // The reservation is written once, under `G_INIT_LOCK`, before any
+        // eviction can reach the writeback path.
+        G_WB_FRAME.set(f);
     }
 
-    // SAFETY: pool creation/growth is serialised by `G_INIT_LOCK`.
-    let pool = unsafe { *KStatic::get_mut(G_POOL.as_ptr()) };
+    // Pool creation/growth is serialised by `G_INIT_LOCK`.
+    let pool = G_POOL.get();
     let rc = if pool.is_null() {
         // `zpool_create` builds a fresh pool or returns null.
         let new_pool = zpool_create(capacity, pages64 * PAGE_SIZE as u64, level);
         if new_pool.is_null() {
             -ENOMEM
         } else {
-            // SAFETY: the pool pointer is written once, here, under `G_INIT_LOCK`.
-            *unsafe { KStatic::get_mut(G_POOL.as_ptr()) } = new_pool;
+            // The pool pointer is written once, here, under `G_INIT_LOCK`.
+            G_POOL.set(new_pool);
             0
         }
     } else {
@@ -352,11 +346,9 @@ pub extern "C" fn zswap_disable() -> i32 {
     0
 }
 
-/// # Safety
-///
-/// `out` must be null or point to a writable `ZswapStats`.
+/// `out` must point to a writable `ZswapStats`.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
+pub extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
     if out.is_null() {
         return -1;
     }
@@ -382,8 +374,8 @@ pub unsafe extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
             st.original_bytes = pool_st.original_bytes;
         }
     }
-    // SAFETY: `out` is a writable `ZswapStats` (checked non-null).
-    unsafe { *out = st };
+    // `out` is a writable `ZswapStats` (checked non-null).
+    ptr::write(out, st);
     0
 }
 

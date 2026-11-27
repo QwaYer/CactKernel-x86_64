@@ -6,9 +6,11 @@
 //! Runs with the scheduler lock held while walking the global task list.
 
 use crate::ffi::*;
-use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, kprint_int};
+use crate::safe::{lock_acquire, lock_release, kprint_str, kprint_int};
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
 
-static G_STATS: KStatic<OomStats> = KStatic::new(OomStats {
+static G_STATS: KCell<OomStats> = KCell::new(OomStats {
     oom_kills: 0,
     pages_reclaimed: 0,
     last_killed_pid: 0,
@@ -18,10 +20,9 @@ fn oom_score(t: *mut TaskStruct) -> u32 {
     if t.is_null() {
         return 0;
     }
-    // SAFETY: `t` is a valid `TaskStruct` pointer from the task list (the caller
-    // walks it under the scheduler lock); this shared borrow is consumed by the
-    // checks below.
-    let t = unsafe { &*t };
+    // `t` is a valid `TaskStruct` pointer from the task list (the caller walks
+    // it under the scheduler lock).
+    let t = ptr::as_ref(t);
     if t.is_kernel != 0 {
         return 0;
     }
@@ -35,15 +36,11 @@ fn oom_score(t: *mut TaskStruct) -> u32 {
         return 0;
     }
     // The page count lives in the thread group's shared state now.
-    // SAFETY: `t.proc` is non-null (checked above) and points at the task's live
-    // `ProcMeta`, which the task list owns, so this field read is in bounds.
-    let shared = unsafe { (*t.proc).shared };
+    let shared = ptr::as_ref(t.proc).shared;
     if shared.is_null() {
         return 0;
     }
-    // SAFETY: `shared` is the task group's live state (non-null checked above), so
-    // the tracker count is in bounds.
-    unsafe { (*shared).mm.count }
+    ptr::as_ref(shared).mm.count
 }
 
 #[unsafe(no_mangle)]
@@ -61,7 +58,7 @@ pub extern "C" fn oom_kill() -> i32 {
     let mut victim: *mut TaskStruct = core::ptr::null_mut();
     let mut best_score: u32 = 0;
 
-    // SAFETY: walking the task list while holding scheduler_lock.
+    // Walk the task list while holding scheduler_lock.
     let mut t = head;
     let mut count = 0;
     while !t.is_null() && count < 256 {
@@ -70,9 +67,9 @@ pub extern "C" fn oom_kill() -> i32 {
             best_score = score;
             victim = t;
         }
-        // SAFETY: `t` is a node of the task list, traversed while `scheduler_lock` is
+        // `t` is a node of the task list, traversed while `scheduler_lock` is
         // held.
-        t = unsafe { (*t).next };
+        t = ptr::as_ref(t).next;
         count += 1;
     }
 
@@ -82,19 +79,15 @@ pub extern "C" fn oom_kill() -> i32 {
         return -1;
     }
 
-    // SAFETY: victim is valid.
-    let victim_pid = unsafe { (*victim).pid };
-    // SAFETY: `victim` was selected from the task list and its `proc` field is
-    // owned by the task; `scheduler_lock` is still held here.
-    let victim_proc = unsafe { (*victim).proc };
-    // SAFETY: `victim_proc` is that task's live `ProcMeta`, so this field read is
-    // in bounds.
-    let victim_shared = unsafe { (*victim_proc).shared };
+    let victim_pid = ptr::as_ref(victim).pid;
+    // `victim` was selected from the task list and its `proc` field is owned by
+    // the task; `scheduler_lock` is still held here.
+    let victim_proc = ptr::as_ref(victim).proc;
+    let victim_shared = ptr::as_ref(victim_proc).shared;
     let victim_pages = if victim_shared.is_null() {
         0
     } else {
-        // SAFETY: `victim_shared` is the victim group's live state (non-null here).
-        unsafe { (*victim_shared).mm.count }
+        ptr::as_ref(victim_shared).mm.count
     };
 
     // We hold the scheduler lock, so the locked variant is the correct one.
@@ -103,13 +96,14 @@ pub extern "C" fn oom_kill() -> i32 {
     // Matching release of `scheduler_lock` before returning.
     lock_release(scheduler_lock());
 
-    // SAFETY: `G_STATS` is the OOM statistics block; `oom_kill` is its only writer.
+    // `G_STATS` is the OOM statistics block; `oom_kill` is its only writer.
     // It is not serialised against a concurrent OOM kill on another CPU, but the
     // fields are best-effort counters, so a lost update is harmless.
-    let stats = unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
-    stats.oom_kills += 1;
-    stats.pages_reclaimed += victim_pages;
-    stats.last_killed_pid = victim_pid;
+    G_STATS.with(|stats| {
+        stats.oom_kills += 1;
+        stats.pages_reclaimed += victim_pages;
+        stats.last_killed_pid = victim_pid;
+    });
 
     let mut buf = [0u8; 16];
     printk_color(c"\noom: Killed pid=".as_ptr() as *const u8, COLOR_LIGHT_RED);
@@ -126,15 +120,15 @@ pub extern "C" fn oom_kill() -> i32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oom_get_stats() -> OomStats {
-    // SAFETY: read-only snapshot of the OOM counters; no lock is needed to
+    // Read-only snapshot of the OOM counters; no lock is needed to
     // observe a possibly-slightly-stale counter value.
-    *unsafe { KStatic::get_mut(G_STATS.as_ptr()) }
+    G_STATS.get()
 }
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oom_print_stats() {
-    // SAFETY: read-only snapshot of `G_STATS` for printing.
-    let stats = *unsafe { KStatic::get_mut(G_STATS.as_ptr()) };
+    // Read-only snapshot of `G_STATS` for printing.
+    let stats = G_STATS.get();
     kprint_str(c"oom: === OOM Killer Statistics ===\n".as_ptr() as *const u8);
     kprint_str(c"  oom_kills:       ".as_ptr() as *const u8);
     kprint_int(stats.oom_kills as i32);
