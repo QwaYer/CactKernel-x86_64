@@ -49,7 +49,7 @@ const UDP_WRITE_STALL_TICKS: u32 = 300;
 fn now_ticks() -> u32 {
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    unsafe { ffi_kernel::timer_ticks_get() }
+    ffi_kernel::timer_ticks_get()
 }
 
 /// True when a signal is waiting for the current task.

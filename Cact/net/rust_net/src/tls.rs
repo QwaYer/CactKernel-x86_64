@@ -153,15 +153,9 @@ fn make_config(skip_verify: bool) -> Arc<ClientConfig> {
     )
 }
 
-// SAFETY: backed by the C-ABI tcp_recv exported by this crate.
-unsafe extern "C" {
-    fn tcp_recv(sock: c_int, buf: *mut u8, max_len: u16) -> i32;
-}
-
 /// Current kernel tick counter (safe wrapper).
 fn now_ticks() -> u32 {
-    // SAFETY: ffi_kernel re-exports the C timer.
-    unsafe { ffi_kernel::timer_ticks_get() }
+    ffi_kernel::timer_ticks_get()
 }
 
 /// Sleep for `t` ticks (safe wrapper).
@@ -213,11 +207,7 @@ fn tcp_write(sock: i32, buf: &[u8]) -> Result<(), ()> {
 /// Read up to `buf.len()` encrypted bytes from the TCP socket (0 means nothing
 /// available right now; the caller polls again later).
 fn tcp_read(sock: i32, buf: &mut [u8]) -> Result<usize, ()> {
-    let max = core::cmp::min(buf.len(), u16::MAX as usize) as u16;
-    // SAFETY: `tcp_recv` is the crate's C-ABI TCP receive entry point; `sock` is a
-    // live socket index and `buf` is a `max`-byte writable buffer owned by this
-    // call for its duration.
-    let n = unsafe { tcp_recv(sock, buf.as_mut_ptr(), max) };
+    let n = kernel_rust::net::tcp_recv(sock, buf);
     if n < 0 {
         Err(())
     } else {

@@ -40,4 +40,5 @@ pub mod console;
 pub mod cpu;
 pub mod frame;
 pub mod mem;
+pub mod net;
 pub mod ptr;

@@ -103,7 +103,7 @@ const EINTR: i32 = 4;
 fn wait_connected(sock: i32) -> i32 {
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    let deadline = unsafe { ffi_kernel::timer_ticks_get() }.saturating_add(CONNECT_TIMEOUT_TICKS);
+    let deadline = ffi_kernel::timer_ticks_get().saturating_add(CONNECT_TIMEOUT_TICKS);
     loop {
         // Drive the interface here rather than waiting for `net_poll_task`: a
         // loopback handshake never reaches the NIC, so it would otherwise inch
@@ -127,7 +127,7 @@ fn wait_connected(sock: i32) -> i32 {
         }
         // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
-        if unsafe { ffi_kernel::timer_ticks_get() } >= deadline {
+        if ffi_kernel::timer_ticks_get() >= deadline {
             return -ETIMEDOUT;
         }
         // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick
@@ -376,7 +376,7 @@ fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
     }
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    let deadline = unsafe { ffi_kernel::timer_ticks_get() }.saturating_add(CLOSE_TIMEOUT_TICKS);
+    let deadline = ffi_kernel::timer_ticks_get().saturating_add(CLOSE_TIMEOUT_TICKS);
     loop {
         // Poll here rather than waiting for `net_poll_task`: the timer task
         // only kicks it every NET_POLL_PERIOD_TICKS, and every close() would
@@ -389,7 +389,7 @@ fn wait_close_settled(slot: usize, h: smoltcp::iface::SocketHandle) -> bool {
         }
         // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
-        if unsafe { ffi_kernel::timer_ticks_get() } >= deadline {
+        if ffi_kernel::timer_ticks_get() >= deadline {
             return false;
         }
         // SAFETY: `sched_sleep_ticks` is a kernel C service taking a plain tick

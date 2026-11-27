@@ -1,40 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-//! Kernel services used by the Rust network stack: heap, logging, scheduler hooks, VFS, I/O ports.
+//! Kernel services used by the Rust network stack.
 //!
-//! All symbols are implemented in C and linked into the final kernel image.
+//! The `extern "C"` surface itself now lives in `kernel_rust` (the graph's one
+//! `unsafe` crate); this module re-exports its safe wrappers under the names the
+//! stack already used, plus a few helpers kept here.
 
-use core::ffi::{c_char, c_int};
+use core::ffi::c_int;
 
-use crate::types::{MacAddr, Skb, VfsNode};
+use crate::types::{MacAddr, Skb};
 
-unsafe extern "C" {
-
-    pub fn printk(s: *mut c_char);
-    pub fn printk_color(s: *mut c_char, color: u32);
-    pub fn printk_hex(v: u32);
-
-    pub fn itoa(v: c_int, out: *mut c_char);
-
-
-    pub fn timer_ticks_get() -> u32;
-    pub fn ktime_get_usec() -> u64;
-    pub fn ktime_busy_wait_us(us: u64);
-
-    /// Pending, unmasked signal on the current task; blocking waits poll it so a
-    /// task stuck in a socket read can still be interrupted (Ctrl+C).
-
-    /// IRQ-saving spinlock (kernel `irq_spinlock_t`: a spin word + saved flags).
-
-    pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut c_char) -> c_int;
-    pub fn write_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut c_char) -> c_int;
-    pub fn open_vfs(node: *mut VfsNode);
-    pub fn close_vfs(node: *mut VfsNode);
-
-    pub fn inb(port: u16) -> u8;
-    pub fn outw(port: u16, data: u16);
-}
+// Safe wrappers over the C kernel services (declared and wrapped in `kernel_rust`).
+pub use kernel_rust::net::{ktime_busy_wait_us, ktime_get_usec, timer_ticks_get};
 
 pub use cact_mm::kmalloc;
 // The scheduler's semaphore/lock entry points are `cact_sync`'s own
@@ -68,12 +46,7 @@ pub fn klog_static(level: c_int, msg: &'static [u8]) {
     buf[2..2 + len].copy_from_slice(&msg[..len]);
     buf[2 + len] = b'\n';
     buf[3 + len] = 0;
-    // SAFETY: `buf` is a local array that is NUL-terminated at `buf[3 + len]`
-    // (len is capped at `buf.len() - 3`), so `printk`'s C-string contract is
-    // met, and the array outlives the call.
-    unsafe {
-        printk(buf.as_mut_ptr().cast());
-    }
+    kernel_rust::console::printk_bytes(&buf[..3 + len + 1]);
 }
 
 pub fn mac_equal(a: &MacAddr, b: &MacAddr) -> bool {

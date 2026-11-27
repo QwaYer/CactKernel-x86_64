@@ -10,6 +10,7 @@ edition = "2021"
 crate-type = ["lib"]
 
 [dependencies]
+kernel_rust = { path = "../../kernel/kernel_rust" }
 cact_mm = { path = "../../kernel/memory/rust_mm" }
 cact_sync = { path = "../../kernel/sync" }
 sched   = { path = "../../kernel/proc/sched" }

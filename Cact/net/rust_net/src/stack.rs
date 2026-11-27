@@ -904,9 +904,9 @@ fn slot_build(slot: usize, mac: [u8; 6]) {
     let mut cfg = Config::new(HardwareAddress::Ethernet(eth));
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick counter;
     // it takes no pointers and is callable from this path.
-    cfg.random_seed = u64::from(unsafe { ffi_kernel::timer_ticks_get() });
+    cfg.random_seed = u64::from(ffi_kernel::timer_ticks_get());
     // SAFETY: as above — the same monotonic tick read.
-    let now = ticks_to_instant(unsafe { ffi_kernel::timer_ticks_get() });
+    let now = ticks_to_instant(ffi_kernel::timer_ticks_get());
     // The device is a view over this slot's PHY; `Interface::new` does not retain
     // it, so the borrow ends before `s.iface` is stored below.
     let mut dev = SlotDev {
@@ -1121,7 +1121,7 @@ pub fn stack_poll() {
     }
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick counter;
     // it is callable from task context.
-    let now = ticks_to_instant(unsafe { ffi_kernel::timer_ticks_get() });
+    let now = ticks_to_instant(ffi_kernel::timer_ticks_get());
     for slot in 0..NET_IF_MAX {
         // SAFETY: `IFACES` is only used under `STACK_LOCK`, held here, so these are
         // disjoint field borrows of one live slot.

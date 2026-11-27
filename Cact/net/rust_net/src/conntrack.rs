@@ -252,7 +252,7 @@ pub(crate) fn track(key: &Key, tcp_flags: u8, len: u32, related: Option<&Key>) -
     let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from task/interrupt context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
 
     if let Some((i, rev)) = find(table, key) {
         let c = &mut table[i];
@@ -346,7 +346,7 @@ pub(crate) fn age() {
     let table = unsafe { &mut *core::ptr::addr_of_mut!(CONNS) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from this context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
     for c in table.iter_mut() {
         if !c.used {
             continue;
@@ -386,7 +386,7 @@ pub unsafe extern "C" fn rust_net_fw_conn_get(idx: u32, out: *mut CactFwConn) ->
     let table = unsafe { &*core::ptr::addr_of!(CONNS) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from this context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
     let mut seen = 0u32;
     for c in table.iter() {
         if !c.used {

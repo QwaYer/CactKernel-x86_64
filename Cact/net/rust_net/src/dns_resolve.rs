@@ -291,7 +291,7 @@ fn flush_dns_recv(socks: &mut SocketSet<'static>) {
 fn pick_ephemeral_port() -> u16 {
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    let t = unsafe { ffi_kernel::timer_ticks_get() };
+    let t = ffi_kernel::timer_ticks_get();
     0xc000u16 | (t as u16 & 0x3fff)
 }
 
@@ -401,7 +401,7 @@ fn send_query(query: &[u8], server: DnsServer, flush: bool) -> bool {
 fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16) -> Option<DnsAnswer> {
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    let id = (unsafe { ffi_kernel::timer_ticks_get() } as u16) ^ 0xa5a5;
+    let id = (ffi_kernel::timer_ticks_get() as u16) ^ 0xa5a5;
     let mut w = 0usize;
     query_buf.get_mut(w..w + 2)?.copy_from_slice(&id.to_be_bytes());
     w += 2;
@@ -432,7 +432,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
 
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    let start = unsafe { ffi_kernel::timer_ticks_get() };
+    let start = ffi_kernel::timer_ticks_get();
     let deadline = start.saturating_add(DNS_TIMEOUT_TICKS);
     let mut next_wake = start;
     // One retransmission: a single lost UDP packet (or a server that dropped
@@ -440,7 +440,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
     let mut next_retry = start.saturating_add(DNS_RETRY_TICKS);
     // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
     // counter; it takes no pointers and is callable from task context.
-    while unsafe { ffi_kernel::timer_ticks_get() } < deadline {
+    while ffi_kernel::timer_ticks_get() < deadline {
         stack::stack_poll();
         // A pending signal ends the lookup instead of waiting out the whole
         // deadline: the resolver runs in the caller's task context, so Ctrl+C
@@ -450,7 +450,7 @@ fn resolve_once(name: &str, server: DnsServer, query_buf: &mut [u8], qtype: u16)
         }
         // SAFETY: `timer_ticks_get` is a kernel C service that reads the tick
         // counter; it takes no pointers and is callable from task context.
-        let now = unsafe { ffi_kernel::timer_ticks_get() };
+        let now = ffi_kernel::timer_ticks_get();
         if now >= next_wake {
             if let Some(ans) = stack::with_iface_sockets(|_iface, socks| {
                 try_recv_dns_reply(socks, server, id, qtype)

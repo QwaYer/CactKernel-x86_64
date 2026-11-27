@@ -82,7 +82,7 @@ pub(crate) fn note_frame(frame: &[u8], slot: usize) {
     let table = unsafe { &mut *core::ptr::addr_of_mut!(ARP_TABLE) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from this context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
     record(table, now, ip_host, mac);
 }
 
@@ -167,7 +167,7 @@ pub extern "C" fn rust_net_arp_count() -> i32 {
     let table = unsafe { &*core::ptr::addr_of!(ARP_TABLE) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from this context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
     let mut n = 0i32;
     for e in table.iter() {
         if e.used && now.wrapping_sub(e.last_tick) < ENTRY_LIFETIME_TICKS {
@@ -195,7 +195,7 @@ pub unsafe extern "C" fn rust_net_arp_get(idx: u32, out: *mut CactArpEntry) -> i
     let table = unsafe { &*core::ptr::addr_of!(ARP_TABLE) };
     // SAFETY: `timer_ticks_get` is a kernel service that reads the tick counter;
     // it takes no arguments and is callable from this context.
-    let now = unsafe { ffi_kernel::timer_ticks_get() };
+    let now = ffi_kernel::timer_ticks_get();
     let mut seen = 0u32;
     for e in table.iter() {
         let age_ticks = now.wrapping_sub(e.last_tick);

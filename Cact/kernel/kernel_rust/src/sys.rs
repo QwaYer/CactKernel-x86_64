@@ -41,4 +41,10 @@ extern "C" {
     pub fn vmm_v2p(ptr: *const u8) -> u64;
     pub fn vmm_pin_range(pd: *mut u64, va: u64, size: u64, out_phys: *mut u64) -> i64;
     pub fn vmm_unpin_frames(phys: *const u64, count: u64);
+
+    // ---- kernel services used by the network stack ----------------------
+    pub fn timer_ticks_get() -> u32;
+    pub fn ktime_get_usec() -> u64;
+    pub fn ktime_busy_wait_us(us: u64);
+    pub fn tcp_recv(sock: i32, buf: *mut u8, max_len: u16) -> i32;
 }
