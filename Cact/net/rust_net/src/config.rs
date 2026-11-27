@@ -12,6 +12,9 @@
 //! rather than a placeholder that `sysinfo`/`ip` would show as if the user had set
 //! it.
 
+use kernel_rust::cell::KCell;
+use kernel_rust::ptr;
+
 use crate::runtime::NET_NIC_MAX;
 
 /// The four IPv4 values of one interface, so a reader/writer needs a single
@@ -31,7 +34,7 @@ const EMPTY_CFG: NetCfg = NetCfg {
     dns: 0,
 };
 
-static mut NET_CFG: [NetCfg; NET_NIC_MAX] = [EMPTY_CFG; NET_NIC_MAX];
+static NET_CFG: KCell<[NetCfg; NET_NIC_MAX]> = KCell::new([EMPTY_CFG; NET_NIC_MAX]);
 
 /// The six IPv6 values of one interface.  Addresses are the sixteen big-endian
 /// octets `core::net::Ipv6Addr::from` expects, so a reader hands them straight
@@ -63,18 +66,14 @@ const EMPTY_CFG6: NetCfg6 = NetCfg6 {
     link_local: [0; 16],
 };
 
-static mut NET_CFG6: [NetCfg6; NET_NIC_MAX] = [EMPTY_CFG6; NET_NIC_MAX];
+static NET_CFG6: KCell<[NetCfg6; NET_NIC_MAX]> = KCell::new([EMPTY_CFG6; NET_NIC_MAX]);
 
 #[inline]
 fn slot_cfg(slot: usize) -> NetCfg {
     if slot >= NET_NIC_MAX {
         return EMPTY_CFG;
     }
-    // SAFETY: `NET_CFG` is written only by `set_ipv4_config_slot`, which stores a
-    // whole aligned `NetCfg` (four aligned 32-bit words), so this load cannot
-    // tear — whatever is read is a complete configuration userspace set; `slot` is
-    // bounds-checked above.
-    unsafe { NET_CFG[slot] }
+    NET_CFG.with(|t| t[slot])
 }
 
 #[inline]
@@ -82,12 +81,7 @@ fn slot_cfg6(slot: usize) -> NetCfg6 {
     if slot >= NET_NIC_MAX {
         return EMPTY_CFG6;
     }
-    // SAFETY: `NET_CFG6` is written only by `set_ipv6_config_slot` (whole struct)
-    // and by `set_ipv6_link_local_slot` (a sixteen-byte array copy that happens
-    // before any reader can observe a half-written value: the stack sets it while
-    // holding the interface lock, on the driver bring-up path).  `slot` is
-    // bounds-checked above.
-    unsafe { NET_CFG6[slot] }
+    NET_CFG6.with(|t| t[slot])
 }
 
 #[inline]
@@ -138,19 +132,15 @@ pub fn set_ipv4_config_slot(slot: usize, ip_h: u32, mask_h: u32, gw_h: u32, dns_
     if slot >= NET_NIC_MAX {
         return -1;
     }
-    // SAFETY: `NET_CFG` has no other writer (the getters above only read it) and the
-    // borrow ends before the `stack` call below, so this whole-struct store is the
-    // only access in flight here.
-    let cfg = unsafe { &mut *core::ptr::addr_of_mut!(NET_CFG) };
-    cfg[slot] = NetCfg {
-        ip: ip_h,
-        mask: mask_h,
-        gateway: gw_h,
-        dns: dns_h,
-    };
-    // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and cleared
-    // by `stack_teardown`; a byte load reads either 0 or 1.
-    if unsafe { crate::stack::STACK_READY } {
+    NET_CFG.with(|cfg| {
+        cfg[slot] = NetCfg {
+            ip: ip_h,
+            mask: mask_h,
+            gateway: gw_h,
+            dns: dns_h,
+        };
+    });
+    if crate::stack::stack_ready() {
         crate::stack::resync_slot_addrs(slot);
     }
     0
@@ -163,43 +153,26 @@ pub fn rust_net_set_ipv4_config(ip_h: u32, mask_h: u32, gw_h: u32, dns_h: u32) -
 /// Snapshot of the primary interface's IPv4 link configuration (host byte order).
 /// All output pointers may be NULL.
 ///
-/// # Safety
-///
-/// Each of `ip_h`, `mask_h`, `gw_h` and `dns_h` may be null (it is then skipped),
-/// but every non-null one must point to a writable, properly aligned `u32` that
-/// stays live for the duration of the call.
-pub unsafe fn rust_net_get_ipv4_config(
+/// Each of `ip_h`, `mask_h`, `gw_h` and `dns_h` may be null (it is then
+/// skipped); a non-null one must point to a writable, properly aligned `u32`.
+pub fn rust_net_get_ipv4_config(
     ip_h: *mut u32,
     mask_h: *mut u32,
     gw_h: *mut u32,
     dns_h: *mut u32,
 ) -> i32 {
     let cfg = slot_cfg(0);
-    // SAFETY: the caller contract (see # Safety) makes each non-null pointer a
-    // writable, aligned `u32` for the call; the store is guarded by its own
-    // `is_null` test, so no null is ever written through.
-    unsafe {
-        if !ip_h.is_null() {
-            *ip_h = cfg.ip;
-        }
+    if !ip_h.is_null() {
+        ptr::write(ip_h, cfg.ip);
     }
-    // SAFETY: as above for `mask_h`.
-    unsafe {
-        if !mask_h.is_null() {
-            *mask_h = cfg.mask;
-        }
+    if !mask_h.is_null() {
+        ptr::write(mask_h, cfg.mask);
     }
-    // SAFETY: as above for `gw_h`.
-    unsafe {
-        if !gw_h.is_null() {
-            *gw_h = cfg.gateway;
-        }
+    if !gw_h.is_null() {
+        ptr::write(gw_h, cfg.gateway);
     }
-    // SAFETY: as above for `dns_h`.
-    unsafe {
-        if !dns_h.is_null() {
-            *dns_h = cfg.dns;
-        }
+    if !dns_h.is_null() {
+        ptr::write(dns_h, cfg.dns);
     }
     0
 }
@@ -316,13 +289,7 @@ pub fn set_ipv6_link_local_slot(slot: usize, ll: [u8; 16]) {
     if slot >= NET_NIC_MAX {
         return;
     }
-    // SAFETY: written only on the driver bring-up path, before the slot's
-    // interface is resynced, so no route/socket reader can observe it mid-write;
-    // the borrow ends immediately.
-    unsafe {
-        let cfg = &mut *core::ptr::addr_of_mut!(NET_CFG6);
-        cfg[slot].link_local = ll;
-    }
+    NET_CFG6.with(|cfg| cfg[slot].link_local = ll);
 }
 
 /// Store interface `slot`'s IPv6 configuration and push it into the slot's
@@ -346,20 +313,15 @@ pub fn set_ipv6_config_slot(
     if addr[0] == 0xff {
         return -1;
     }
-    {
-        // SAFETY: `NET_CFG6` has no other writer here (the getters only read it)
-        // and the borrow ends before the `resync` call below.
-        let cfg = unsafe { &mut *core::ptr::addr_of_mut!(NET_CFG6) };
+    NET_CFG6.with(|cfg| {
         cfg[slot].addr = addr;
         // A cleared address has no meaningful prefix; keep it 0 so a stale
         // prefix can never make an empty slot look configured.
         cfg[slot].prefix = if addr == [0u8; 16] { 0 } else { prefix.min(128) };
         cfg[slot].gateway = gw;
         cfg[slot].dns = dns;
-    }
-    // SAFETY: `STACK_READY` is a `static mut bool` set by `stack_init` and
-    // cleared by `stack_teardown`; a byte load reads either 0 or 1.
-    if unsafe { crate::stack::STACK_READY } {
+    });
+    if crate::stack::stack_ready() {
         crate::stack::resync_slot_addrs(slot);
     }
     0

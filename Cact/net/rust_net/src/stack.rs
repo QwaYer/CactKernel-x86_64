@@ -168,6 +168,15 @@ impl Drop for RxGuard {
 /// Set after `stack_init` publishes the boot slot.
 pub static mut STACK_READY: bool = false;
 
+/// True once the stack is up (and false after teardown).  Safe accessor over the
+/// kernel-lifetime `STACK_READY` flag, for crates/modules that must not write
+/// `unsafe`.
+pub fn stack_ready() -> bool {
+    // SAFETY: `STACK_READY` is a kernel-lifetime `static mut bool`; a byte load
+    // cannot tear and reads either 0 or 1.
+    unsafe { STACK_READY }
+}
+
 /// Slot a NIC driver's `poll()` is running for, so `netif_rx` (which lives in the
 /// driver and carries no slot) can land the frame on the right interface.  Set
 /// immediately around each driver `poll()` call in `stack_poll` and read from the
