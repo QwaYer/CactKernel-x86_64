@@ -202,13 +202,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
             // hard error.
             let deadline = now_ticks().saturating_add(UDP_READ_WAIT_TICKS);
             loop {
-                // SAFETY: `idx` comes from this node's `Ksock` and is a valid
-                // raw slot index, and `data` points to at least `size` writable
-                // bytes; the null source pointer selects the "no source output"
-                // overload.
-                let n = unsafe {
-                    raw::raw_sock_recv6(idx, data.cast::<u8>(), size as u16, core::ptr::null_mut())
-                };
+                let n = raw::raw_sock_recv6(idx, data.cast::<u8>(), size as u16, core::ptr::null_mut());
                 if n > 0 {
                     return n;
                 }

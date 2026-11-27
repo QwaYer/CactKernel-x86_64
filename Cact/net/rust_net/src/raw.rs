@@ -12,6 +12,8 @@
 //! interface (like UDP), by `bind()` to a local address or by the destination
 //! of the first send.
 
+use kernel_rust::ptr;
+
 use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::raw;
 use smoltcp::wire::{IpProtocol, IpVersion};
@@ -54,29 +56,21 @@ static mut RAW_TX_PAY: [[u8; RAW_TX_BUF]; RAW_SOCK_MAX] = [[0; RAW_TX_BUF]; RAW_
 
 /// Reserve a raw socket slot.  Returns its index, or -1 (stack down / no room).
 pub fn raw_sock_alloc() -> i32 {
-    // SAFETY: `STACK_READY` is a `static mut bool` written by `stack_init`/
-    // `stack_teardown`; a byte load cannot tear, and reading it as false fails
-    // the call closed.
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         return -1;
     }
     stack::with_stack_lock(|| {
         for i in 0..RAW_SOCK_MAX {
-            // SAFETY: `i` is in bounds, so the read is in bounds and uncontented
-            // under the stack lock this closure holds.
-            if unsafe { RAW_SOCKS[i].used } != 0 {
+            if ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[i].used != 0 {
                 continue;
             }
-            // SAFETY: `i` is in bounds and the stack lock is held.
-            unsafe {
-                RAW_SOCKS[i] = RawSock {
-                    used: 1,
-                    slot: -1,
-                    rx_ready: 0,
-                    local6: [0u8; 16],
-                };
-                RAW_HANDLE[i] = None;
-            }
+            ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[i] = RawSock {
+                used: 1,
+                slot: -1,
+                rx_ready: 0,
+                local6: [0u8; 16],
+            };
+            ptr::as_mut(core::ptr::addr_of_mut!(RAW_HANDLE))[i] = None;
             return i as i32;
         }
         -1
@@ -92,18 +86,15 @@ pub fn raw_sock_free(idx: i32) {
     // Take the handle before clearing it, so the smoltcp socket can be removed
     // from the interface it lived on.
     let (slot, handle) = stack::with_stack_lock(|| {
-        // SAFETY: `i` is in bounds and the stack lock is held.
-        let s = unsafe { RAW_SOCKS[i].slot };
-        // SAFETY: as above.
-        let h = unsafe { RAW_HANDLE[i] };
-        // SAFETY: as above.
-        unsafe {
-            RAW_HANDLE[i] = None;
-            RAW_SOCKS[i].used = 0;
-            RAW_SOCKS[i].slot = -1;
-            RAW_SOCKS[i].rx_ready = 0;
-            RAW_SOCKS[i].local6 = [0u8; 16];
-        }
+        let s = ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[i].slot;
+        let h = ptr::as_ref(core::ptr::addr_of!(RAW_HANDLE))[i];
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_HANDLE))[i] = None;
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[i] = RawSock {
+            used: 0,
+            slot: -1,
+            rx_ready: 0,
+            local6: [0u8; 16],
+        };
         (s, h)
     });
     if slot >= 0 {
@@ -120,42 +111,28 @@ pub(crate) fn raw_sock_slot_of(idx: usize) -> i32 {
     if idx >= RAW_SOCK_MAX {
         return -1;
     }
-    // SAFETY: `RAW_SOCKS` is guarded by `STACK_LOCK`, which `with_stack_lock`
-    // holds; `idx` is bounds-checked above.
-    stack::with_stack_lock(|| unsafe { RAW_SOCKS[idx].slot })
+    stack::with_stack_lock(|| ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[idx].slot)
 }
 
 /// Place raw socket `idx` on interface `slot`, building its smoltcp socket
 /// there.  Idempotent.  Returns true when it ends up placed on `slot`.
 fn ensure_raw_placed(idx: usize, slot: usize) -> bool {
     stack::with_slot_socks(slot, |socks| {
-        // SAFETY: `with_slot_socks` holds `STACK_LOCK`, which guards
-        // `RAW_SOCKS`/`RAW_HANDLE`, and `idx` is in range.
-        let cur = unsafe { RAW_SOCKS[idx].slot };
+        let cur = ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[idx].slot;
         if cur >= 0 {
             return cur == slot as i32;
         }
-        // SAFETY: `RAW_RX_META[idx]` is a kernel-lifetime packet-metadata static
-        // owned by this socket, handed to smoltcp only through this one socket,
-        // under the stack lock.
-        let rx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(RAW_RX_META))[idx])[..] };
-        // SAFETY: as above, for `RAW_RX_PAY`.
-        let rx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(RAW_RX_PAY))[idx])[..] };
+        let rx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(RAW_RX_META))[idx].as_mut_ptr(), 4);
+        let rx_pay = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(RAW_RX_PAY))[idx].as_mut_ptr(), RAW_RX_BUF);
         let rx = raw::PacketBuffer::new(rx_meta, rx_pay);
-        // SAFETY: as above, for `RAW_TX_META`.
-        let tx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(RAW_TX_META))[idx])[..] };
-        // SAFETY: as above, for `RAW_TX_PAY`.
-        let tx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(RAW_TX_PAY))[idx])[..] };
+        let tx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(RAW_TX_META))[idx].as_mut_ptr(), 4);
+        let tx_pay = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(RAW_TX_PAY))[idx].as_mut_ptr(), RAW_TX_BUF);
         let tx = raw::PacketBuffer::new(tx_meta, tx_pay);
         // Only ICMPv6 is exposed (that is what SLAAC/NDP speak).
         let sock = raw::Socket::new(IpVersion::Ipv6, IpProtocol::Icmpv6, rx, tx);
         let h = socks.add(sock);
-        // SAFETY: written under the stack lock, as every access to these tables
-        // is; `idx` is in bounds.
-        unsafe {
-            RAW_HANDLE[idx] = Some(h);
-            RAW_SOCKS[idx].slot = slot as i32;
-        }
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_HANDLE))[idx] = Some(h);
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[idx].slot = slot as i32;
         true
     })
     .unwrap_or(false)
@@ -169,12 +146,10 @@ pub(crate) fn raw_sock_bind6(idx: usize, addr: [u8; 16]) -> i32 {
         return -1;
     }
     let r = stack::with_stack_lock(|| {
-        // SAFETY: `idx` is in bounds and the stack lock is held.
-        if unsafe { RAW_SOCKS[idx].used } == 0 {
+        if ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[idx].used == 0 {
             return -1;
         }
-        // SAFETY: as above.
-        unsafe { RAW_SOCKS[idx].local6 = addr };
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[idx].local6 = addr;
         0
     });
     if r != 0 {
@@ -199,8 +174,7 @@ pub fn raw_sock_ready(idx: i32) -> i32 {
         return 0;
     }
     let r = stack::with_slot_socks(slot as usize, |socks| {
-        // SAFETY: `i` is in bounds; the handle is read under the stack lock.
-        let Some(h) = (unsafe { RAW_HANDLE[i] }) else {
+        let Some(h) = ptr::as_ref(core::ptr::addr_of!(RAW_HANDLE))[i] else {
             return 0;
         };
         let s = socks.get_mut::<raw::Socket>(h);
@@ -217,18 +191,15 @@ pub fn raw_sock_ready(idx: i32) -> i32 {
 /// `stack_poll` under `STACK_LOCK`.
 pub fn sync_raw_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
     for idx in 0..RAW_SOCK_MAX {
-        // SAFETY: called under `STACK_LOCK`, the same lock every other user of
-        // these tables takes; `idx` is bounded by `RAW_SOCK_MAX`.
-        if unsafe { RAW_SOCKS[idx].used } == 0 || unsafe { RAW_SOCKS[idx].slot } != slot as i32 {
+        let row = ptr::as_ref(core::ptr::addr_of!(RAW_SOCKS))[idx];
+        if row.used == 0 || row.slot != slot as i32 {
             continue;
         }
-        // SAFETY: as above, for the handle table.
-        let Some(h) = (unsafe { RAW_HANDLE[idx] }) else {
+        let Some(h) = ptr::as_ref(core::ptr::addr_of!(RAW_HANDLE))[idx] else {
             continue;
         };
         let s = socks.get_mut::<raw::Socket>(h);
-        // SAFETY: as above, for the readiness flag.
-        unsafe { RAW_SOCKS[idx].rx_ready = if s.can_recv() { 1 } else { 0 } };
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[idx].rx_ready = if s.can_recv() { 1 } else { 0 };
     }
 }
 
@@ -237,10 +208,9 @@ pub fn sync_raw_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
 /// The caller must be tearing the stack down while holding `STACK_LOCK` with
 /// `STACK_READY` cleared, so no other user of these statics can be running.
 pub(crate) fn reset_raw_smoltcp_state() {
-    // SAFETY: the caller contract excludes every other user for the duration.
-    unsafe { RAW_HANDLE = [None; RAW_SOCK_MAX] };
-    // SAFETY: as above.
-    unsafe { RAW_SOCKS = [RawSock { used: 0, slot: -1, rx_ready: 0, local6: [0u8; 16] }; RAW_SOCK_MAX] };
+    *ptr::as_mut(core::ptr::addr_of_mut!(RAW_HANDLE)) = [None; RAW_SOCK_MAX];
+    *ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS)) =
+        [RawSock { used: 0, slot: -1, rx_ready: 0, local6: [0u8; 16] }; RAW_SOCK_MAX];
 }
 
 /// Choose the source address for a raw IPv6 packet to `dst`: the link-local for
@@ -291,11 +261,9 @@ fn icmpv6_checksum(src: [u8; 16], dst: [u8; 16], msg: &[u8]) -> u16 {
 /// counterpart of `udp_sock_recv`.  Returns the message length, 0 when nothing
 /// is queued, or -1 on a hard error.
 ///
-/// # Safety
-///
 /// `buf` may be null (then -1), else `max_len` writable bytes; `src_addr_out`
 /// may be null, else 16 writable bytes.
-pub unsafe fn raw_sock_recv6(
+pub fn raw_sock_recv6(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
@@ -310,8 +278,7 @@ pub unsafe fn raw_sock_recv6(
         return 0;
     }
     let r = stack::with_slot_socks(slot as usize, |socks| {
-        // SAFETY: `i` is in bounds; the handle is read under the stack lock.
-        let Some(h) = (unsafe { RAW_HANDLE[i] }) else {
+        let Some(h) = ptr::as_ref(core::ptr::addr_of!(RAW_HANDLE))[i] else {
             return -1;
         };
         let s = socks.get_mut::<raw::Socket>(h);
@@ -326,17 +293,11 @@ pub unsafe fn raw_sock_recv6(
         let src = &pkt[8..24];
         let payload = &pkt[40..];
         let to_copy = core::cmp::min(payload.len(), max_len as usize);
-        // SAFETY: the caller contract makes `buf` a `max_len`-byte buffer and
-        // `to_copy` is clamped to it; `payload` is the received message.
-        unsafe { core::ptr::copy_nonoverlapping(payload.as_ptr(), buf, to_copy) };
+        ptr::copy_nonoverlapping(payload.as_ptr(), buf, to_copy);
         if !src_addr_out.is_null() {
-            // SAFETY: the caller contract makes `src_addr_out`, when non-null, a
-            // 16-byte writable buffer; the null check excluded null.
-            unsafe { core::ptr::copy_nonoverlapping(src.as_ptr(), src_addr_out, 16) };
+            ptr::copy_nonoverlapping(src.as_ptr(), src_addr_out, 16);
         }
-        // SAFETY: the readiness flag is written under the stack lock this
-        // closure holds.
-        unsafe { RAW_SOCKS[i].rx_ready = if s.can_recv() { 1 } else { 0 } };
+        ptr::as_mut(core::ptr::addr_of_mut!(RAW_SOCKS))[i].rx_ready = if s.can_recv() { 1 } else { 0 };
         to_copy as i32
     });
     r.unwrap_or(-1)
@@ -346,11 +307,9 @@ pub unsafe fn raw_sock_recv6(
 /// IPv6 header and the ICMPv6 checksum.  Returns the message length on success,
 /// 0 when the TX buffer is momentarily full, or -1.
 ///
-/// # Safety
-///
 /// `dst` must point to 16 readable bytes; `data` must point to `len` readable
 /// bytes.
-pub unsafe fn raw_sock_send6(
+pub fn raw_sock_send6(
     idx: i32,
     dst: *const u8,
     data: *const u8,
@@ -361,8 +320,7 @@ pub unsafe fn raw_sock_send6(
     }
     let i = idx as usize;
     let mut d6 = [0u8; 16];
-    // SAFETY: the caller contract makes `dst` a 16-byte readable buffer.
-    unsafe { core::ptr::copy_nonoverlapping(dst, d6.as_mut_ptr(), 16) };
+    ptr::copy_nonoverlapping(dst, d6.as_mut_ptr(), 16);
     let slot = match raw_sock_slot_of(i) {
         s if s >= 0 => s as usize,
         _ => {
@@ -379,8 +337,7 @@ pub unsafe fn raw_sock_send6(
         return -1;
     }
     let r = stack::with_slot_socks(slot, |socks| {
-        // SAFETY: `i` is in bounds; the handle is read under the stack lock.
-        let Some(h) = (unsafe { RAW_HANDLE[i] }) else {
+        let Some(h) = ptr::as_ref(core::ptr::addr_of!(RAW_HANDLE))[i] else {
             return -1;
         };
         let s = socks.get_mut::<raw::Socket>(h);
@@ -401,8 +358,7 @@ pub unsafe fn raw_sock_send6(
         buf[7] = 255; // hop limit (ND requires 255)
         buf[8..24].copy_from_slice(&src);
         buf[24..40].copy_from_slice(&d6);
-        // SAFETY: the caller contract makes `data` a `len`-byte readable buffer.
-        let msg = unsafe { core::slice::from_raw_parts(data, msg_len) };
+        let msg = ptr::slice(data, msg_len);
         buf[40..40 + msg_len].copy_from_slice(msg);
         // Compute the ICMPv6 checksum over the pseudo-header and store it at
         // the ICMPv6 checksum field (offset 2 of the message).
