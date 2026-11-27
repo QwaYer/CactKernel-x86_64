@@ -10,6 +10,8 @@
 //! stays on that interface (like Linux's per-route socket binding); one socket
 //! does not float between interfaces.
 
+use kernel_rust::ptr;
+
 use smoltcp::iface::{SocketHandle, SocketSet};
 use smoltcp::socket::udp;
 use smoltcp::wire::{IpAddress, IpListenEndpoint};
@@ -62,9 +64,7 @@ pub(crate) fn udp_slot_of(idx: usize) -> i32 {
     if idx >= UDP_SOCK_MAX {
         return -1;
     }
-    // SAFETY: `UDP_SLOT` is a kernel-lifetime `static mut` guarded by `STACK_LOCK`,
-    // which `with_stack_lock` holds; `idx` is bounds-checked above.
-    stack::with_stack_lock(|| unsafe { UDP_SLOT[idx] })
+    stack::with_stack_lock(|| ptr::as_ref(core::ptr::addr_of!(UDP_SLOT))[idx])
 }
 
 /// Interface slot that should carry UDP socket `idx`'s traffic to `dst_ip`.
@@ -78,9 +78,12 @@ fn pick_slot(idx: usize, dst_ip: u32) -> usize {
 /// destination is routed (v4 `route_slot` / v6 `route_slot_v6`).  The pinned v6
 /// bind address is checked first because a socket is created for one family.
 fn pick_slot_addr(idx: usize, dst: SockAddr) -> usize {
-    // SAFETY: `udp_socks`/`UDP_LOCAL6` are guarded by `STACK_LOCK`, held by
-    // `with_stack_lock`; `idx` is in range (callers bounds-check it).
-    let (b4, b6) = stack::with_stack_lock(|| unsafe { (udp_socks[idx].local_ip, UDP_LOCAL6[idx]) });
+    let (b4, b6) = stack::with_stack_lock(|| {
+        (
+            ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].local_ip,
+            ptr::as_ref(core::ptr::addr_of!(UDP_LOCAL6))[idx],
+        )
+    });
     if b6 != [0u8; 16] {
         if let Some(slot) = crate::config::slot_owning_ipv6(b6) {
             return slot;
@@ -104,53 +107,35 @@ fn ensure_placed(idx: usize, slot: usize) -> bool {
     let r = stack::with_slot_socks(slot, |socks| {
         // SAFETY: `with_slot_socks` holds `STACK_LOCK`, which guards `UDP_SLOT`/
         // `UDP_HANDLE`, and `idx` is in range.
-        let cur = unsafe { UDP_SLOT[idx] };
+        let cur = ptr::as_ref(core::ptr::addr_of!(UDP_SLOT))[idx];
         if cur >= 0 {
             return cur == slot as i32;
         }
-        // SAFETY: `UDP_RX_META[idx]` is a kernel-lifetime packet-metadata static
-        // owned by this socket, handed to smoltcp only through this one socket,
-        // under the stack lock.
-        let rx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_RX_META))[idx])[..] };
-        // SAFETY: as above, for `UDP_RX_PAY`.
-        let rx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_RX_PAY))[idx])[..] };
+        let rx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(UDP_RX_META))[idx].as_mut_ptr(), 4);
+        let rx_pay = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(UDP_RX_PAY))[idx].as_mut_ptr(), 2048);
         let rx = udp::PacketBuffer::new(rx_meta, rx_pay);
-        // SAFETY: as above, for `UDP_TX_META`.
-        let tx_meta = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_TX_META))[idx])[..] };
-        // SAFETY: as above, for `UDP_TX_PAY`.
-        let tx_pay = unsafe { &mut (&mut (*core::ptr::addr_of_mut!(UDP_TX_PAY))[idx])[..] };
+        let tx_meta = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(UDP_TX_META))[idx].as_mut_ptr(), 4);
+        let tx_pay = ptr::slice_mut(ptr::as_mut(core::ptr::addr_of_mut!(UDP_TX_PAY))[idx].as_mut_ptr(), 2048);
         let tx = udp::PacketBuffer::new(tx_meta, tx_pay);
         let u = udp::Socket::new(rx, tx);
         let h = socks.add(u);
-        // SAFETY: written under the stack lock, as every access to these tables is.
-        unsafe { UDP_HANDLE[idx] = Some(h) };
-        // SAFETY: as above.
-        unsafe { UDP_SLOT[idx] = slot as i32 };
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_HANDLE))[idx] = Some(h);
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_SLOT))[idx] = slot as i32;
         true
     });
     r.unwrap_or(false)
 }
 
-/// Pick a local port not already held by another UDP socket.
-/// # Safety
-///
-/// The caller must be the only user of the UDP tables — running under the stack
-/// lock, or in `stack_teardown` with `STACK_READY` cleared — because this reads
-/// and advances the shared `NEXT_EPHEMERAL` counter and scans `udp_socks`.
-unsafe fn pick_ephemeral() -> u16 {
+/// Pick a local port not already held by another UDP socket.  The caller must be
+/// the only user of the UDP tables (under the stack lock, or in `stack_teardown`
+/// with `STACK_READY` cleared).
+fn pick_ephemeral() -> u16 {
     for _ in 0..(65535 - 49152 + 1) {
-        // SAFETY: the caller contract (see # Safety) excludes any concurrent
-        // access to the UDP statics, and `NEXT_EPHEMERAL` is a plain `u16`, so
-        // this read cannot race.
-        let p = unsafe { NEXT_EPHEMERAL };
+        let p = ptr::read(core::ptr::addr_of!(NEXT_EPHEMERAL));
         let next = if p == u16::MAX { 49152 } else { p + 1 };
-        // SAFETY: the advance happens under the caller's exclusive access.
-        unsafe { NEXT_EPHEMERAL = next };
+        ptr::write(core::ptr::addr_of_mut!(NEXT_EPHEMERAL), next);
         let mut taken = false;
-        // SAFETY: `udp_socks` is the kernel-lifetime slot array and the caller
-        // contract makes this borrow exclusive; the scan walks only the
-        // fixed-length inline array.
-        for s in (unsafe { &mut *core::ptr::addr_of_mut!(udp_socks) }).iter_mut() {
+        for s in ptr::as_mut(core::ptr::addr_of_mut!(udp_socks)).iter_mut() {
             if s.used != 0 && s.local_port == p {
                 taken = true;
                 break;
@@ -163,28 +148,16 @@ unsafe fn pick_ephemeral() -> u16 {
     0
 }
 
-/// # Safety
-///
 /// The caller must be tearing the stack down (`stack_teardown`) while holding
-/// `STACK_LOCK`, with `STACK_READY` already cleared, so no other CPU or task can
-/// be using the UDP slots or their smoltcp sockets.
+/// `STACK_LOCK`, with `STACK_READY` already cleared.
 pub(crate) fn reset_udp_smoltcp_state() {
-    // SAFETY: the caller contract (see # Safety) excludes every other user of
-    // these statics for the duration of the call, so the writes below are the
-    // only ones in flight.
-    unsafe { UDP_HANDLE = [None; UDP_SOCK_MAX] };
-    // SAFETY: as above.
-    unsafe { UDP_SLOT = [-1; UDP_SOCK_MAX] };
-    // SAFETY: as above.
-    unsafe { NEXT_EPHEMERAL = 49152 };
-    // SAFETY: as above.
-    unsafe { UDP_PEER = [(0, 0); UDP_SOCK_MAX] };
-    // SAFETY: as above.
-    unsafe { UDP_PEER6 = [([0u8; 16], 0); UDP_SOCK_MAX] };
-    // SAFETY: as above.
-    unsafe { UDP_LOCAL6 = [[0u8; 16]; UDP_SOCK_MAX] };
-    // SAFETY: as above; the borrow ends when this function returns.
-    let udp = unsafe { &mut *core::ptr::addr_of_mut!(udp_socks) };
+    *ptr::as_mut(core::ptr::addr_of_mut!(UDP_HANDLE)) = [None; UDP_SOCK_MAX];
+    *ptr::as_mut(core::ptr::addr_of_mut!(UDP_SLOT)) = [-1; UDP_SOCK_MAX];
+    ptr::write(core::ptr::addr_of_mut!(NEXT_EPHEMERAL), 49152);
+    *ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER)) = [(0, 0); UDP_SOCK_MAX];
+    *ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER6)) = [([0u8; 16], 0); UDP_SOCK_MAX];
+    *ptr::as_mut(core::ptr::addr_of_mut!(UDP_LOCAL6)) = [[0u8; 16]; UDP_SOCK_MAX];
+    let udp = ptr::as_mut(core::ptr::addr_of_mut!(udp_socks));
     {
         for s in udp.iter_mut() {
             *s = UdpSock {
@@ -206,12 +179,10 @@ fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
     // bounds-checks its slot index first), so `UDP_HANDLE[idx]` is in bounds; all
     // accesses run under the stack lock, so no other task can be mutating the
     // slot at the same time.
-    let Some(h) = (unsafe { UDP_HANDLE[idx] }) else {
+    let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[idx] else {
         return;
     };
-    // SAFETY: as `UDP_HANDLE[idx]` above — `idx` is in bounds and the slot is
-    // only mutated under the stack lock this call holds.
-    let port = unsafe { udp_socks[idx].local_port };
+    let port = ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].local_port;
     if port == 0 {
         return;
     }
@@ -222,8 +193,10 @@ fn ensure_udp_bound(idx: usize, socks: &mut SocketSet<'static>) {
     // A bind() may name a local address as well as a port (0 = INADDR_ANY).  The
     // v6 address is checked first: a socket is created for one family, so only
     // one of the two is ever set.
-    // SAFETY: as above, for the slot's local-address fields.
-    let (local4, local6) = unsafe { (udp_socks[idx].local_ip, UDP_LOCAL6[idx]) };
+    let (local4, local6) = (
+        ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].local_ip,
+        ptr::as_ref(core::ptr::addr_of!(UDP_LOCAL6))[idx],
+    );
     let addr = if local6 != [0u8; 16] {
         Some(IpAddress::Ipv6(core::net::Ipv6Addr::from(local6)))
     } else if local4 != 0 {
@@ -242,21 +215,18 @@ pub fn sync_udp_pcbs_from_smoltcp(slot: usize, socks: &mut SocketSet<'static>) {
         // SAFETY: called under `STACK_LOCK`, the same lock every other user of
         // `udp_socks`/`UDP_SLOT`/`UDP_HANDLE` takes, and `idx` is bounded by
         // `UDP_SOCK_MAX`, so these reads are in bounds and uncontented.
-        if unsafe { udp_socks[idx].used } == 0 {
+        if ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].used == 0 {
             continue;
         }
-        // SAFETY: as above, for the slot table.
-        if unsafe { UDP_SLOT[idx] } != slot as i32 {
+        if ptr::as_ref(core::ptr::addr_of!(UDP_SLOT))[idx] != slot as i32 {
             continue;
         }
         ensure_udp_bound(idx, socks);
-        // SAFETY: as above, for the handle table.
-        let Some(h) = (unsafe { UDP_HANDLE[idx] }) else {
+        let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[idx] else {
             continue;
         };
         let s = socks.get_mut::<udp::Socket>(h);
-        // SAFETY: as above, for the slot's readiness flag.
-        unsafe { udp_socks[idx].rx_ready = if s.can_recv() { 1 } else { 0 } };
+        ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[idx].rx_ready = if s.can_recv() { 1 } else { 0 };
     }
 }
 
@@ -264,37 +234,29 @@ pub fn udp_sock_alloc() -> i32 {
     // SAFETY: `STACK_READY` is a `static mut bool` written by `stack_init`/
     // `stack_teardown`; a byte load cannot tear, and reading it as false makes
     // this call fail closed.
-    if !unsafe { stack::STACK_READY } {
+    if !stack::stack_ready() {
         return -1;
     }
     // The smoltcp socket is not built here: the interface is not known until the
     // socket is bound/connected/sent on.  Reserve the C slot and the metadata.
     stack::with_stack_lock(|| {
         for i in 0..UDP_SOCK_MAX {
-            // SAFETY: `i` is in bounds, so this slot read is in bounds and
-            // uncontented under the stack lock.
-            if unsafe { udp_socks[i].used } != 0 {
+            if ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].used != 0 {
                 continue;
             }
-            // SAFETY: `i` is in bounds and the stack lock is held.
-            unsafe {
-                let slot = &mut udp_socks[i];
+            {
+                let slot = &mut ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[i];
                 slot.used = 1;
                 slot.local_port = 0;
                 slot.local_ip = 0;
                 slot.rx_ready = 0;
                 slot.rx_len = 0;
             }
-            // SAFETY: as above, for the metadata tables.
-            unsafe { UDP_HANDLE[i] = None };
-            // SAFETY: as above.
-            unsafe { UDP_SLOT[i] = -1 };
-            // SAFETY: as above.
-            unsafe { UDP_PEER[i] = (0, 0) };
-            // SAFETY: as above.
-            unsafe { UDP_PEER6[i] = ([0u8; 16], 0) };
-            // SAFETY: as above.
-            unsafe { UDP_LOCAL6[i] = [0u8; 16] };
+            ptr::as_mut(core::ptr::addr_of_mut!(UDP_HANDLE))[i] = None;
+            ptr::as_mut(core::ptr::addr_of_mut!(UDP_SLOT))[i] = -1;
+            ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER))[i] = (0, 0);
+            ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER6))[i] = ([0u8; 16], 0);
+            ptr::as_mut(core::ptr::addr_of_mut!(UDP_LOCAL6))[i] = [0u8; 16];
             return i as i32;
         }
         -1
@@ -308,7 +270,12 @@ pub fn udp_sock_free(idx: i32) {
     let i = idx as usize;
     // SAFETY: `i` is bounds-checked above; the reads are guarded by `STACK_LOCK`
     // (`with_stack_lock`), as every access to these tables is.
-    let (slot, handle) = stack::with_stack_lock(|| unsafe { (UDP_SLOT[i], UDP_HANDLE[i]) });
+    let (slot, handle) = stack::with_stack_lock(|| {
+        (
+            ptr::as_ref(core::ptr::addr_of!(UDP_SLOT))[i],
+            ptr::read(core::ptr::addr_of!(UDP_HANDLE))[i],
+        )
+    });
     if let Some(h) = handle {
         if slot >= 0 {
             let _ = stack::with_slot_socks(slot as usize, |socks| {
@@ -316,16 +283,13 @@ pub fn udp_sock_free(idx: i32) {
             });
         }
     }
-    // SAFETY: `i` is bounds-checked above and the stack lock is held; a slot is
-    // only ever freed by the task that owns its file description, so there is no
-    // concurrent mutation of this row.
-    stack::with_stack_lock(|| unsafe {
-        UDP_HANDLE[i] = None;
-        UDP_SLOT[i] = -1;
-        UDP_PEER[i] = (0, 0);
-        UDP_PEER6[i] = ([0u8; 16], 0);
-        UDP_LOCAL6[i] = [0u8; 16];
-        udp_socks[i].used = 0;
+    stack::with_stack_lock(|| {
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_HANDLE))[i] = None;
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_SLOT))[i] = -1;
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER))[i] = (0, 0);
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER6))[i] = ([0u8; 16], 0);
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_LOCAL6))[i] = [0u8; 16];
+        ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[i].used = 0;
     });
 }
 
@@ -337,11 +301,11 @@ pub(crate) fn udp_sock_local(idx: i32, family: u16) -> (SockAddr, u16) {
     }
     // SAFETY: `idx` is bounds-checked above; the reads are guarded by
     // `STACK_LOCK`, as every access to these tables is.
-    let (port, l4, l6) = stack::with_stack_lock(|| unsafe {
+    let (port, l4, l6) = stack::with_stack_lock(|| {
         (
-            udp_socks[idx as usize].local_port,
-            udp_socks[idx as usize].local_ip,
-            UDP_LOCAL6[idx as usize],
+            ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx as usize].local_port,
+            ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx as usize].local_ip,
+            ptr::as_ref(core::ptr::addr_of!(UDP_LOCAL6))[idx as usize],
         )
     });
     let addr = if l6 != [0u8; 16] {
@@ -364,26 +328,18 @@ pub(crate) fn udp_sock_bind6(idx: usize, port: u16, addr: [u8; 16], reuse: bool)
         return -1;
     }
     let r = stack::with_stack_lock(|| {
-        // SAFETY: `STACK_LOCK` is held for the whole closure, so the scan and the
-        // store are serialized against every other UDP path; `idx` is
-        // bounds-checked above.
-        unsafe {
-            if port != 0 && !reuse {
-                for j in 0..UDP_SOCK_MAX {
-                    if j != idx
-                        && udp_socks[j].used != 0
-                        && udp_socks[j].local_port == port
-                    {
-                        return EADDRINUSE;
-                    }
+        if port != 0 && !reuse {
+            for j in 0..UDP_SOCK_MAX {
+                let sj = ptr::as_ref(core::ptr::addr_of!(udp_socks))[j];
+                if j != idx && sj.used != 0 && sj.local_port == port {
+                    return EADDRINUSE;
                 }
             }
-            udp_socks[idx].local_port = port;
-            // A v6 socket carries no v4 bind address.
-            udp_socks[idx].local_ip = 0;
-            UDP_LOCAL6[idx] = addr;
-            0
         }
+        ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[idx].local_port = port;
+        ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[idx].local_ip = 0;
+        ptr::as_mut(core::ptr::addr_of_mut!(UDP_LOCAL6))[idx] = addr;
+        0
     });
     r
 }
@@ -398,46 +354,38 @@ pub fn udp_sock_connect(idx: i32, dst_ip: u32, dst_port: u16) -> i32 {
     }
     let i = idx as usize;
     // SAFETY: `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
-    if stack::with_stack_lock(|| unsafe { udp_socks[i].used }) == 0 {
+    if stack::with_stack_lock(|| ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].used) == 0 {
         return -1;
     }
     let slot = pick_slot(i, dst_ip);
     if !ensure_placed(i, slot) {
         return -1;
     }
-    // SAFETY: `i` is bounds-checked above; the write is guarded by `STACK_LOCK`.
-    stack::with_stack_lock(|| unsafe { UDP_PEER[i] = (dst_ip, dst_port) });
+    stack::with_stack_lock(|| ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER))[i] = (dst_ip, dst_port));
     0
 }
 
 /// `connect()` on a v6 datagram socket; mirrors [`udp_sock_connect`] with a
-/// sixteen-octet peer (big-endian octets of the address).
-///
-/// # Safety
-///
-/// `addr` must point to 16 readable bytes that stay live for the call.
-pub unsafe fn udp_sock_connect6(idx: i32, addr: *const u8, dst_port: u16) -> i32 {
+/// sixteen-octet peer (big-endian octets of the address).  `addr` must point to
+/// 16 readable bytes that stay live for the call.
+pub fn udp_sock_connect6(idx: i32, addr: *const u8, dst_port: u16) -> i32 {
     if idx < 0 || idx as usize >= UDP_SOCK_MAX || addr.is_null() || dst_port == 0 {
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
-    // readable buffer and `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
     if a6 == [0u8; 16] {
         return -1;
     }
     let i = idx as usize;
-    // SAFETY: `i` is bounds-checked above; the read is guarded by `STACK_LOCK`.
-    if stack::with_stack_lock(|| unsafe { udp_socks[i].used }) == 0 {
+    if stack::with_stack_lock(|| ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].used) == 0 {
         return -1;
     }
     let slot = pick_slot_addr(i, SockAddr::V6(a6));
     if !ensure_placed(i, slot) {
         return -1;
     }
-    // SAFETY: `i` is bounds-checked above; the write is guarded by `STACK_LOCK`.
-    stack::with_stack_lock(|| unsafe { UDP_PEER6[i] = (a6, dst_port) });
+    stack::with_stack_lock(|| ptr::as_mut(core::ptr::addr_of_mut!(UDP_PEER6))[i] = (a6, dst_port));
     0
 }
 
@@ -448,7 +396,7 @@ pub(crate) fn udp_sock_peer(idx: i32) -> (u32, u16) {
     }
     // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER` read is in
     // bounds; the element is a plain `(u32, u16)` so the read cannot tear.
-    unsafe { UDP_PEER[idx as usize] }
+    ptr::as_ref(core::ptr::addr_of!(UDP_PEER))[idx as usize]
 }
 
 /// IPv6 peer recorded by [`udp_sock_connect6`], or `None` when unconnected.
@@ -458,7 +406,7 @@ pub(crate) fn udp_sock_peer6(idx: i32) -> Option<([u8; 16], u16)> {
     }
     // SAFETY: `idx` is bounds-checked above, so the `UDP_PEER6` read is in
     // bounds; the element is a plain `([u8;16], u16)` so the read cannot tear.
-    let (a, p) = unsafe { UDP_PEER6[idx as usize] };
+    let (a, p) = ptr::as_ref(core::ptr::addr_of!(UDP_PEER6))[idx as usize];
     if a == [0u8; 16] || p == 0 {
         None
     } else {
@@ -482,12 +430,10 @@ pub(crate) fn udp_can_send(idx: usize) -> bool {
         // in bounds; the handle is an `Option<SocketHandle>` (Copy), so the read
         // cannot tear, and the socket is resolved through this closure's own
         // `SocketSet` under the stack lock.
-        unsafe {
-            let Some(h) = UDP_HANDLE[idx] else {
-                return false;
-            };
-            socks.get_mut::<udp::Socket>(h).can_send()
-        }
+        let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[idx] else {
+            return false;
+        };
+        socks.get_mut::<udp::Socket>(h).can_send()
     });
     r.unwrap_or(false)
 }
@@ -496,11 +442,9 @@ pub fn udp_sock_find_by_port(port: u16) -> *mut UdpSock {
     // SAFETY: the scan walks only the fixed-length inline array `udp_socks`, so
     // it stays in bounds; the returned pointer refers to a kernel-lifetime
     // static that the caller only uses until the slot is freed.
-    unsafe {
-        for s in (*core::ptr::addr_of_mut!(udp_socks)).iter_mut() {
-            if s.used != 0 && s.local_port == port {
-                return s as *mut UdpSock;
-            }
+    for s in ptr::as_mut(core::ptr::addr_of_mut!(udp_socks)).iter_mut() {
+        if s.used != 0 && s.local_port == port {
+            return s as *mut UdpSock;
         }
     }
     core::ptr::null_mut()
@@ -518,13 +462,11 @@ pub(crate) const EAGAIN: i32 = -11;
 /// Returns `-1` on a hard error, `EAGAIN` when no datagram is waiting, or the
 /// number of bytes copied (which may be 0 for a legal zero-length datagram).
 ///
-/// # Safety
-///
 /// `buf` may be null (the call then returns -1), but if non-null it must point
 /// to `max_len` writable bytes that stay live for the call.  `src_ip_out` and
 /// `src_port_out` may be null (that part of the result is dropped) but, if
 /// non-null, must point to a writable, aligned `u32`/`u16` respectively.
-pub(crate) unsafe fn udp_recv_buf(
+pub(crate) fn udp_recv_buf(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
@@ -546,9 +488,7 @@ pub(crate) unsafe fn udp_recv_buf(
         // bounds-checked above.
         {
             ensure_udp_bound(i, socks);
-            // SAFETY: `UDP_HANDLE[i]` is read under the stack lock this closure
-            // holds, and `i` is in bounds.
-            let Some(h) = (unsafe { UDP_HANDLE[i] }) else {
+            let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[i] else {
                 return -1;
             };
             let s = socks.get_mut::<udp::Socket>(h);
@@ -556,34 +496,26 @@ pub(crate) unsafe fn udp_recv_buf(
                 return EAGAIN;
             };
             let to_copy = core::cmp::min(data.len(), max_len as usize);
-            // SAFETY: the caller contract (see # Safety) makes `buf` a
-            // `max_len`-byte buffer, and `to_copy` is clamped to `max_len`, so the
-            // copy stays inside it; `data` is the received payload.
-            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy) };
+            ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy);
             let ep = meta.endpoint;
             if !src_ip_out.is_null() {
                 // Only IPv4 datagrams exist at this stage; a v6 source has no
                 // 32-bit output slot (the C mirror is v4-only) and is left 0.
                 if let IpAddress::Ipv4(a) = ep.addr {
                     let o = a.octets();
-                    // SAFETY: the caller contract makes `src_ip_out`, when
-                    // non-null, a writable, aligned `u32`; the null check above
-                    // excluded null.
-                    unsafe {
-                        *src_ip_out = u32::from(o[0]) << 24
+                    ptr::write(
+                        src_ip_out,
+                        u32::from(o[0]) << 24
                             | u32::from(o[1]) << 16
                             | u32::from(o[2]) << 8
-                            | u32::from(o[3]);
-                    }
+                            | u32::from(o[3]),
+                    );
                 }
             }
             if !src_port_out.is_null() {
-                // SAFETY: as above, for `src_port_out`.
-                unsafe { *src_port_out = ep.port };
+                ptr::write(src_port_out, ep.port);
             }
-            // SAFETY: the slot's readiness flag is only written under the stack
-            // lock this closure holds.
-            unsafe { udp_socks[i].rx_ready = if s.can_recv() { 1 } else { 0 } };
+            ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[i].rx_ready = if s.can_recv() { 1 } else { 0 };
             to_copy as i32
         }
     });
@@ -595,18 +527,15 @@ pub(crate) unsafe fn udp_recv_buf(
 /// loop depends on it); the crate-internal path uses [`udp_recv_buf`] to tell
 /// that apart from a zero-length datagram.
 ///
-/// # Safety
-///
 /// As [`udp_recv_buf`].
-pub unsafe fn udp_sock_recv(
+pub fn udp_sock_recv(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
     src_ip_out: *mut u32,
     src_port_out: *mut u16,
 ) -> i32 {
-    // SAFETY: the caller contract is forwarded verbatim to `udp_recv_buf`.
-    let r = unsafe { udp_recv_buf(idx, buf, max_len, src_ip_out, src_port_out) };
+    let r = udp_recv_buf(idx, buf, max_len, src_ip_out, src_port_out);
     if r == EAGAIN {
         0
     } else {
@@ -637,29 +566,22 @@ fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, l
         // `udp_socks`/`UDP_HANDLE` accesses and `pick_ephemeral` are serialized
         // against every other UDP path, and `i` is bounds-checked above.
         {
-            // SAFETY: `i` is in bounds and the closure holds the stack lock, so
-            // this slot read is in bounds and uncontented.
-            if unsafe { udp_socks[i].used } == 0 {
+            if ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].used == 0 {
                 return -1;
             }
             // smoltcp refuses to transmit from a socket whose local port is still 0
             // (SendError::Unaddressable), so an unbound socket gets an ephemeral
             // port here — at first send, not earlier: an explicit bind() must win,
             // and sync_udp_pcbs_from_smoltcp runs long before the app can bind().
-            // SAFETY: as above, for the slot's local-port field.
-            if unsafe { udp_socks[i].local_port } == 0 {
-                // SAFETY: `pick_ephemeral` needs its caller to be the only user of
-                // the UDP tables, which is this closure under the stack lock.
-                let p = unsafe { pick_ephemeral() };
+            if ptr::as_ref(core::ptr::addr_of!(udp_socks))[i].local_port == 0 {
+                let p = pick_ephemeral();
                 if p == 0 {
                     return -1;
                 }
-                // SAFETY: as above, for the slot's local-port field.
-                unsafe { udp_socks[i].local_port = p };
+                ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[i].local_port = p;
             }
             ensure_udp_bound(i, socks);
-            // SAFETY: as above, for the handle table.
-            let Some(h) = (unsafe { UDP_HANDLE[i] }) else {
+            let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[i] else {
                 return -1;
             };
             let s = socks.get_mut::<udp::Socket>(h);
@@ -672,9 +594,7 @@ fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, l
                     s.set_hop_limit(Some(255));
                 }
             }
-            // SAFETY: the caller contract (see # Safety) makes `data` a `len`-byte
-            // readable buffer, which is what `from_raw_parts` asserts.
-            let slice = unsafe { core::slice::from_raw_parts(data, len as usize) };
+            let slice = ptr::slice(data, len as usize);
             // A datagram bigger than the socket's payload capacity can never be
             // queued, so that is a hard error rather than "retry later".
             if len as usize > s.payload_send_capacity() {
@@ -723,28 +643,22 @@ fn udp_sock_send_addr(idx: i32, dst: SockAddr, dst_port: u16, data: *const u8, l
 
 /// Send one datagram to an IPv4 destination (the `CACT_SOCKCTL_SENDTO` path).
 ///
-/// # Safety
-///
 /// As `udp_sock_send_addr`: `data` must point to `len` readable bytes, or be null.
-pub unsafe fn udp_sock_send(
+pub fn udp_sock_send(
     idx: i32,
     dst_ip: u32,
     dst_port: u16,
     data: *const u8,
     len: u16,
 ) -> i32 {
-    // SAFETY: the caller contract (see # Safety) is forwarded verbatim to
-    // `udp_sock_send_addr`.
     udp_sock_send_addr(idx, SockAddr::V4(dst_ip), dst_port, data, len)
 }
 
 /// Send one datagram to an IPv6 destination.
 ///
-/// # Safety
-///
 /// `addr` must point to 16 readable bytes; `data` must point to `len` readable
 /// bytes, or be null.
-pub unsafe fn udp_sock_send6(
+pub fn udp_sock_send6(
     idx: i32,
     addr: *const u8,
     dst_port: u16,
@@ -755,10 +669,7 @@ pub unsafe fn udp_sock_send6(
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
-    // readable buffer and `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
-    // SAFETY: `data`/`len` are forwarded under this function's own contract.
+    ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
     udp_sock_send_addr(idx, SockAddr::V6(a6), dst_port, data, len)
 }
 
@@ -766,12 +677,10 @@ pub unsafe fn udp_sock_send6(
 /// the source as sixteen octets.  Returns the byte count, 0 when nothing is
 /// queued, or -1 on a hard error.
 ///
-/// # Safety
-///
 /// `buf` may be null (then -1), otherwise it must point to `max_len` writable
 /// bytes.  `src_addr_out` may be null, otherwise it must point to 16 writable
 /// bytes.  `src_port_out` may be null, otherwise a writable, aligned `u16`.
-pub unsafe fn udp_sock_recv6(
+pub fn udp_sock_recv6(
     idx: i32,
     buf: *mut u8,
     max_len: u16,
@@ -790,9 +699,7 @@ pub unsafe fn udp_sock_recv6(
     let r = stack::with_slot_socks(slot as usize, |socks| {
         {
             ensure_udp_bound(i, socks);
-            // SAFETY: `UDP_HANDLE[i]` is read under the stack lock this closure
-            // holds, and `i` is in bounds.
-            let Some(h) = (unsafe { UDP_HANDLE[i] }) else {
+            let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[i] else {
                 return -1;
             };
             let s = socks.get_mut::<udp::Socket>(h);
@@ -800,9 +707,7 @@ pub unsafe fn udp_sock_recv6(
                 return 0;
             };
             let to_copy = core::cmp::min(data.len(), max_len as usize);
-            // SAFETY: the caller contract makes `buf` a `max_len`-byte buffer and
-            // `to_copy` is clamped to it; `data` is the received payload.
-            unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy) };
+            ptr::copy_nonoverlapping(data.as_ptr(), buf, to_copy);
             if !src_addr_out.is_null() {
                 let octets = match meta.endpoint.addr {
                     IpAddress::Ipv6(a) => a.octets(),
@@ -810,18 +715,12 @@ pub unsafe fn udp_sock_recv6(
                     // all-zero rather than fabricate one.
                     IpAddress::Ipv4(_) => [0u8; 16],
                 };
-                // SAFETY: the caller contract makes `src_addr_out`, when non-null,
-                // a 16-byte writable buffer; the null check above excluded null.
-                unsafe { core::ptr::copy_nonoverlapping(octets.as_ptr(), src_addr_out, 16) };
+                ptr::copy_nonoverlapping(octets.as_ptr(), src_addr_out, 16);
             }
             if !src_port_out.is_null() {
-                // SAFETY: the caller contract makes `src_port_out`, when non-null,
-                // a writable, aligned `u16`.
-                unsafe { *src_port_out = meta.endpoint.port };
+                ptr::write(src_port_out, meta.endpoint.port);
             }
-            // SAFETY: the slot's readiness flag is only written under the stack
-            // lock this closure holds.
-            unsafe { udp_socks[i].rx_ready = if s.can_recv() { 1 } else { 0 } };
+            ptr::as_mut(core::ptr::addr_of_mut!(udp_socks))[i].rx_ready = if s.can_recv() { 1 } else { 0 };
             to_copy as i32
         }
     });
@@ -844,11 +743,10 @@ pub(crate) fn udp_poll_status(idx: usize) -> (bool, bool) {
         // SAFETY: `idx < UDP_SOCK_MAX` is checked above, so this slot read is in
         // bounds; it is plain Copy data whose read cannot tear, and the socket is
         // reached through this closure's own `SocketSet` under `STACK_LOCK`.
-        if unsafe { udp_socks[idx].used } == 0 {
+        if ptr::as_ref(core::ptr::addr_of!(udp_socks))[idx].used == 0 {
             return (false, true);
         }
-        // SAFETY: as above, for the handle table.
-        let Some(h) = (unsafe { UDP_HANDLE[idx] }) else {
+        let Some(h) = ptr::read(core::ptr::addr_of!(UDP_HANDLE))[idx] else {
             return (false, true);
         };
         (socks.get_mut::<udp::Socket>(h).can_recv(), false)

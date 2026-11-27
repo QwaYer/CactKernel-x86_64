@@ -163,9 +163,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 // overload.  `udp_recv_buf` reports "nothing queued" as a
                 // negative sentinel, so a zero-length datagram (a legal read of
                 // 0 bytes) is no longer confused with an empty queue.
-                let n = unsafe {
-                    udp::udp_recv_buf(idx, data, size as u16, core::ptr::null_mut(), core::ptr::null_mut())
-                };
+                let n = udp::udp_recv_buf(idx, data, size as u16, core::ptr::null_mut(), core::ptr::null_mut());
                 // Any non-negative value is a dequeued datagram (possibly 0
                 // bytes long); report it immediately.
                 if n >= 0 {
@@ -312,8 +310,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                     // SAFETY: `idx` is a valid smoltcp UDP slot and `buf` points
                     // to at least `size` readable bytes; `a6`/`port` are the peer
                     // returned by `udp_sock_peer6`.
-                    let n =
-                        unsafe { udp::udp_sock_send6(idx, a6.as_ptr(), port, buf.cast::<u8>(), size as u16) };
+                    let n = udp::udp_sock_send6(idx, a6.as_ptr(), port, buf.cast::<u8>(), size as u16);
                     if n != 0 {
                         return n;
                     }
@@ -339,7 +336,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                 // SAFETY: `idx` is a valid smoltcp UDP slot index for the
                 // operation and `buf` points to at least `size` readable bytes;
                 // `ip`/`port` are the peer returned by `udp_sock_peer`.
-                let n = unsafe { udp::udp_sock_send(idx, ip, port, buf.cast::<u8>(), size as u16) };
+                let n = udp::udp_sock_send(idx, ip, port, buf.cast::<u8>(), size as u16);
                 if n != 0 {
                     return n;
                 }
