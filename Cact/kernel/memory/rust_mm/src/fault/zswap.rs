@@ -95,9 +95,9 @@ pub extern "C" fn zswap_is_enabled_ffi() -> i32 {
 /// Load pool entry `handle` into the frame at physical `phys`, keeping the
 /// entry allocated.  Returns true on success.
 fn pool_load_keep(p: *mut c_void, handle: u32, frame: *mut u8) -> bool {
-    // SAFETY: `p` is the live pool, `frame` a writable 4 KiB frame, and the
-    // handle came from this pool.
-    unsafe { zpool_load(p, handle, frame) == 0 }
+    // `p` is the live pool, `frame` a writable 4 KiB frame, and the handle came
+    // from this pool.
+    zpool_load(p, handle, frame) == 0
 }
 
 /// Compress the frame at physical `phys` into the pool.  Returns the pool
@@ -117,8 +117,8 @@ pub fn zswap_store(phys: u64) -> Option<u32> {
     }
     let page = crate::vmm::paging::p2v(phys) as *mut u8;
     let mut handle: u32 = 0;
-    // SAFETY: `p` is the live pool and `page` the direct-map alias of the frame.
-    let rc = unsafe { zpool_store(p, page as *const u8, &mut handle) };
+    // `p` is the live pool and `page` the direct-map alias of the frame.
+    let rc = zpool_store(p, page as *const u8, &mut handle);
     if rc == 0 {
         G_STORES.fetch_add(1, Ordering::Relaxed);
         Some(handle)
@@ -152,8 +152,8 @@ pub fn free_handle(handle: u32) {
     if p.is_null() {
         return;
     }
-    // SAFETY: `p` is the live pool and `handle` names a live entry.
-    unsafe { zpool_free(p, handle) };
+    // `p` is the live pool and `handle` names a live entry.
+    zpool_free(p, handle);
 }
 
 /// Decompress pool entry `handle` into the frame at physical `phys` and release
@@ -219,8 +219,8 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
                     // they were — nothing has been freed yet.
                     return false;
                 }
-                // SAFETY: `p` is the live pool and `handle` is a live entry.
-                unsafe { zpool_free(p, handle) };
+                // `p` is the live pool and `handle` is a live entry.
+                zpool_free(p, handle);
 
                 let new_pte = swap_pte::encode_device(slot)
                     | (pte & ((PAGE_RW | PAGE_USER) as u64));
@@ -301,8 +301,8 @@ pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) ->
     // SAFETY: pool creation/growth is serialised by `G_INIT_LOCK`.
     let pool = unsafe { *KStatic::get_mut(G_POOL.as_ptr()) };
     let rc = if pool.is_null() {
-        // SAFETY: `zpool_create` builds a fresh pool or returns null.
-        let new_pool = unsafe { zpool_create(capacity, pages64 * PAGE_SIZE as u64, level) };
+        // `zpool_create` builds a fresh pool or returns null.
+        let new_pool = zpool_create(capacity, pages64 * PAGE_SIZE as u64, level);
         if new_pool.is_null() {
             -ENOMEM
         } else {
@@ -315,16 +315,16 @@ pub extern "C" fn zswap_enable(max_pool_pct: u32, level: i32, writeback: i32) ->
         // indices, so existing pooled pages keep theirs), and the level can
         // change on the fly.  A *lower* limit is refused — shrinking would have
         // to invalidate handles that live in page tables.
-        // SAFETY: `pool` is the live pool, serialised by `G_INIT_LOCK`.
-        unsafe { zpool_set_level(pool, level) };
+        // `pool` is the live pool, serialised by `G_INIT_LOCK`.
+        zpool_set_level(pool, level);
         let mut st = ZpoolStats::default();
-        // SAFETY: `pool` is live and `st` a local.
-        let have_stats = unsafe { zpool_get_stats(pool, &mut st) } == 0;
+        // `pool` is live and `st` a local.
+        let have_stats = zpool_get_stats(pool, &mut st) == 0;
         if !have_stats || capacity < st.capacity_pages {
             -EINVAL
         } else {
-            // SAFETY: `pool` is live; growing keeps `st.capacity_pages` handles valid.
-            let g = unsafe { zpool_grow(pool, capacity, pages64 * PAGE_SIZE as u64) };
+            // `pool` is live; growing keeps `st.capacity_pages` handles valid.
+            let g = zpool_grow(pool, capacity, pages64 * PAGE_SIZE as u64);
             if g == 0 { 0 } else { -ENOMEM }
         }
     };
@@ -373,8 +373,8 @@ pub unsafe extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
     };
     if !p.is_null() {
         let mut pool_st = ZpoolStats::default();
-        // SAFETY: `p` is the live pool and `pool_st` a live local.
-        if unsafe { zpool_get_stats(p, &mut pool_st) } == 0 {
+        // `p` is the live pool and `pool_st` a live local.
+        if zpool_get_stats(p, &mut pool_st) == 0 {
             st.capacity_pages = pool_st.capacity_pages;
             st.pool_pages = pool_st.live_pages;
             st.budget_bytes = pool_st.budget_bytes;

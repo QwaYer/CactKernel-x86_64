@@ -87,12 +87,10 @@ fn zstd_decompress(src: *const u8, len: usize, dst: *mut u8) -> usize {
 /// Allocate a pool with `capacity_pages` slots and a `budget_bytes` payload
 /// budget; every page is compressed at `level`.  Returns null on any failure.
 ///
-/// # Safety
-///
 /// The returned pointer must be treated as opaque and only passed back to the
 /// `zpool_*` entry points; the caller must call [`zpool_destroy`] exactly once.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_create(
+pub extern "C" fn zpool_create(
     capacity_pages: u32,
     budget_bytes: u64,
     level: i32,
@@ -122,34 +120,33 @@ pub unsafe extern "C" fn zpool_create(
     }
 
     // A null blob marks a free slot, so the table starts zeroed.
-    // SAFETY: `slots` is a fresh `cap`-entry block, so this writes it in bounds.
-    unsafe { core::ptr::write_bytes(slots, 0, cap) };
+    // `slots` is a fresh `cap`-entry block, so this writes it in bounds.
+    kernel_rust::ptr::write_bytes(slots, 0, cap);
 
-    // SAFETY: `links` is a fresh `cap`-entry u32 block, so the slice is in bounds.
-    let links_slice = unsafe { core::slice::from_raw_parts_mut(links, cap) };
+    // `links` is a fresh `cap`-entry u32 block, so the slice is in bounds.
+    let links_slice = kernel_rust::ptr::slice_mut(links, cap);
     let mut alloc = SlotAlloc::new();
     alloc.init(links_slice, budget_bytes);
 
-    // SAFETY: `pool_mem` is a fresh, still-uninitialised `Zpool` block and the
-    // value written is self-contained (no aliasing to other live objects).
-    unsafe {
-        core::ptr::write(
-            pool_mem,
-            Zpool {
-                lock: IrqSpinlock::new(),
-                alloc,
-                links,
-                slots,
-                level,
-                pages_stored: 0,
-                pages_loaded: 0,
-                stored_bytes: 0,
-            },
-        )
-    };
-    // SAFETY: `pool_mem` now holds a live `Zpool`, so the address of its lock
-    // field is valid; `addr_of_mut!` forms that pointer without a reference.
-    let lock_ptr = unsafe { core::ptr::addr_of_mut!((*pool_mem).lock) };
+    // `pool_mem` is a fresh, still-uninitialised `Zpool` block and the value
+    // written is self-contained (no aliasing to other live objects).
+    kernel_rust::ptr::write(
+        pool_mem,
+        Zpool {
+            lock: IrqSpinlock::new(),
+            alloc,
+            links,
+            slots,
+            level,
+            pages_stored: 0,
+            pages_loaded: 0,
+            stored_bytes: 0,
+        },
+    );
+    // `pool_mem` now holds a live `Zpool`, so the address of its lock field is
+    // valid; `addr_of_mut!` forms that pointer without a reference.
+    let pool = kernel_rust::ptr::as_mut(pool_mem);
+    let lock_ptr = core::ptr::addr_of_mut!(pool.lock);
     crate::ffi::irq_spinlock_init(lock_ptr);
 
     pool_mem as *mut c_void
@@ -157,21 +154,19 @@ pub unsafe extern "C" fn zpool_create(
 
 /// Free a pool and every blob it still holds.
 ///
-/// # Safety
-///
 /// `p` must be a pointer from [`zpool_create`] that has not been destroyed, and
 /// no other user (zram device, zswap) may still hold it.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_destroy(p: *mut c_void) {
+pub extern "C" fn zpool_destroy(p: *mut c_void) {
     if p.is_null() {
         return;
     }
-    // SAFETY: `p` is a live pool (non-null, and the caller owns its lifetime).
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null, and the caller owns its lifetime).
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
     let cap = pool.alloc.capacity() as usize;
 
-    // SAFETY: `pool.slots` points at `cap` slots, allocated in `zpool_create`.
-    let slots = unsafe { core::slice::from_raw_parts_mut(pool.slots, cap) };
+    // `pool.slots` points at `cap` slots, allocated in `zpool_create`.
+    let slots = kernel_rust::ptr::slice_mut(pool.slots, cap);
     for s in slots.iter_mut() {
         if !s.blob.is_null() {
             // a non-null `blob` is a live heap block from `zpool_store`.
@@ -195,16 +190,14 @@ pub unsafe extern "C" fn zpool_destroy(p: *mut c_void) {
 /// takes a bigger percentage).  Shrinking is not supported — it would have to
 /// invalidate handles that live in page tables.
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer that has not been destroyed.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budget: u64) -> i32 {
+pub extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budget: u64) -> i32 {
     if p.is_null() || new_capacity == 0 {
         return -1;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and the caller owns it.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and the caller owns it.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
     let old_cap = pool.alloc.capacity();
 
     if new_capacity <= old_cap {
@@ -228,19 +221,19 @@ pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budge
         kfree(new_links as *mut u8);
         return -1;
     }
-    // SAFETY: `new_slots` is a fresh `cap`-entry block, so this zeroes it in
-    // bounds; a null blob marks a free slot.
-    unsafe { core::ptr::write_bytes(new_slots, 0, cap) };
+    // `new_slots` is a fresh `cap`-entry block, so this zeroes it in bounds; a
+    // null blob marks a free slot.
+    kernel_rust::ptr::write_bytes(new_slots, 0, cap);
 
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
     // Carry the live slots over at the same indices, then recompute the links
     // from the blob table (the source of truth for what is in use).
-    // SAFETY: the old table holds `old_cap` slots and the new one has room.
-    unsafe { core::ptr::copy_nonoverlapping(pool.slots, new_slots, old_cap as usize) };
-    // SAFETY: `new_links` is a fresh `cap`-entry u32 block.
-    let links_slice = unsafe { core::slice::from_raw_parts_mut(new_links, cap) };
-    // SAFETY: `new_slots` holds `cap` slots and is not aliased by the link slice.
-    let slots_slice = unsafe { core::slice::from_raw_parts(new_slots, cap) };
+    // The old table holds `old_cap` slots and the new one has room.
+    kernel_rust::ptr::copy_nonoverlapping(pool.slots, new_slots, old_cap as usize);
+    // `new_links` is a fresh `cap`-entry u32 block.
+    let links_slice = kernel_rust::ptr::slice_mut(new_links, cap);
+    // `new_slots` holds `cap` slots and is not aliased by the link slice.
+    let slots_slice = kernel_rust::ptr::slice(new_slots, cap);
     let head = super::zpool_alloc::rebuild_free_list(links_slice, |i| {
         slots_slice[i as usize].blob.is_null()
     });
@@ -264,16 +257,14 @@ pub unsafe extern "C" fn zpool_grow(p: *mut c_void, new_capacity: u32, new_budge
 /// a zstd frame is self-describing, so decompression does not need the level it
 /// was written with.
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
+pub extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
     if p.is_null() {
         return -1;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and the caller owns it.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and the caller owns it.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
     pool.level = level;
     lock_release(core::ptr::addr_of_mut!(pool.lock));
@@ -283,18 +274,16 @@ pub unsafe extern "C" fn zpool_set_level(p: *mut c_void, level: i32) -> i32 {
 /// Compress `page` into a new slot.  Returns 0 and writes the handle, or -1
 /// when the pool is full, out of memory, or has no free budget.
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer; `page` must point at a readable 4 KiB page;
 /// `out_handle` must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle: *mut u32) -> i32 {
+pub extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle: *mut u32) -> i32 {
     if p.is_null() || page.is_null() || out_handle.is_null() {
         return -1;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and no other reference to it
-    // is held for this call, per the C ABI contract.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and no other reference to it is held
+    // for this call, per the C ABI contract.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
 
     // Compress into a scratch first: the compressed length decides both the
     // blob size and whether we fall back to storing the page raw.
@@ -334,9 +323,9 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
         kfree(scratch);
         return -1;
     }
-    // SAFETY: `blob` is a fresh `payload`-byte block and `src` is readable for
-    // `payload` bytes (the scratch frame, or the caller's page).
-    unsafe { core::ptr::copy_nonoverlapping(src, blob, payload) };
+    // `blob` is a fresh `payload`-byte block and `src` is readable for `payload`
+    // bytes (the scratch frame, or the caller's page).
+    kernel_rust::ptr::copy_nonoverlapping(src, blob, payload);
     // `scratch` is a live heap block from kmalloc above.
     kfree(scratch);
 
@@ -344,8 +333,8 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
     // slow part and must not hold the pool spinlock.
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
     let cap = pool.alloc.capacity() as usize;
-    // SAFETY: `pool.links` points at `cap` u32s (allocated in `zpool_create`).
-    let links = unsafe { core::slice::from_raw_parts_mut(pool.links, cap) };
+    // `pool.links` points at `cap` u32s (allocated in `zpool_create`).
+    let links = kernel_rust::ptr::slice_mut(pool.links, cap);
     let handle = match pool.alloc.alloc(links, payload as u64) {
         Ok(h) => h,
         Err(_) => {
@@ -356,8 +345,8 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
             return -1;
         }
     };
-    // SAFETY: `pool.slots` points at `cap` slots (allocated in `zpool_create`).
-    let slots = unsafe { core::slice::from_raw_parts_mut(pool.slots, cap) };
+    // `pool.slots` points at `cap` slots (allocated in `zpool_create`).
+    let slots = kernel_rust::ptr::slice_mut(pool.slots, cap);
     slots[handle as usize] = Slot {
         blob,
         len: payload as u32,
@@ -366,25 +355,23 @@ pub unsafe extern "C" fn zpool_store(p: *mut c_void, page: *const u8, out_handle
     pool.stored_bytes += payload as u64;
     lock_release(core::ptr::addr_of_mut!(pool.lock));
 
-    // SAFETY: `out_handle` is a valid writable u32 (checked non-null).
-    unsafe { *out_handle = handle };
+    // `out_handle` is a valid writable u32 (checked non-null).
+    kernel_rust::ptr::write(out_handle, handle);
     0
 }
 
 /// Decompress the page behind `handle` into `page`.  Returns 0 or -1.  The slot
 /// stays allocated; the caller must release it with [`zpool_free`].
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer; `page` must point at a writable 4 KiB page.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) -> i32 {
+pub extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) -> i32 {
     if p.is_null() || page.is_null() {
         return -1;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and no other reference to it
-    // is held for this call, per the C ABI contract.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and no other reference to it is held
+    // for this call, per the C ABI contract.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
     let cap = pool.alloc.capacity();
     if handle >= cap {
         return -1;
@@ -397,8 +384,8 @@ pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) 
         return -1;
     }
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
-    // SAFETY: `pool.slots` points at `cap` slots (allocated in `zpool_create`).
-    let slots = unsafe { core::slice::from_raw_parts_mut(pool.slots, cap as usize) };
+    // `pool.slots` points at `cap` slots (allocated in `zpool_create`).
+    let slots = kernel_rust::ptr::slice_mut(pool.slots, cap as usize);
     let len = slots[handle as usize].len as usize;
     let src = slots[handle as usize].blob;
     if src.is_null() || len == 0 || len > PAGE {
@@ -407,14 +394,14 @@ pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) 
         kfree(tmp);
         return -1;
     }
-    // SAFETY: `src` is a live `len`-byte blob and `tmp` is a `PAGE`-byte block.
-    unsafe { core::ptr::copy_nonoverlapping(src, tmp, len) };
+    // `src` is a live `len`-byte blob and `tmp` is a `PAGE`-byte block.
+    kernel_rust::ptr::copy_nonoverlapping(src, tmp, len);
     pool.pages_loaded += 1;
     lock_release(core::ptr::addr_of_mut!(pool.lock));
 
     let ok = if len == PAGE {
-        // SAFETY: `tmp` holds a raw page and `page` is the destination page.
-        unsafe { core::ptr::copy_nonoverlapping(tmp, page, PAGE) };
+        // `tmp` holds a raw page and `page` is the destination page.
+        kernel_rust::ptr::copy_nonoverlapping(tmp, page, PAGE);
         true
     } else {
         zstd_decompress(tmp, len, page) == PAGE
@@ -429,25 +416,23 @@ pub unsafe extern "C" fn zpool_load(p: *mut c_void, handle: u32, page: *mut u8) 
 /// out-of-range or already-free handle, so a double free cannot corrupt the
 /// free list.
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
+pub extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
     if p.is_null() {
         return;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and no other reference to it
-    // is held for this call, per the C ABI contract.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and no other reference to it is held
+    // for this call, per the C ABI contract.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
     let cap = pool.alloc.capacity();
     if handle >= cap {
         return;
     }
 
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
-    // SAFETY: `pool.slots` points at `cap` slots (allocated in `zpool_create`).
-    let slots = unsafe { core::slice::from_raw_parts_mut(pool.slots, cap as usize) };
+    // `pool.slots` points at `cap` slots (allocated in `zpool_create`).
+    let slots = kernel_rust::ptr::slice_mut(pool.slots, cap as usize);
     let blob = slots[handle as usize].blob;
     let len = slots[handle as usize].len as u64;
     if blob.is_null() {
@@ -457,8 +442,8 @@ pub unsafe extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
     }
     slots[handle as usize].blob = core::ptr::null_mut();
     slots[handle as usize].len = 0;
-    // SAFETY: `pool.links` points at `cap` u32s (allocated in `zpool_create`).
-    let links = unsafe { core::slice::from_raw_parts_mut(pool.links, cap as usize) };
+    // `pool.links` points at `cap` u32s (allocated in `zpool_create`).
+    let links = kernel_rust::ptr::slice_mut(pool.links, cap as usize);
     pool.alloc.free(links, handle, len);
     pool.stored_bytes = pool.stored_bytes.saturating_sub(len);
     lock_release(core::ptr::addr_of_mut!(pool.lock));
@@ -470,17 +455,15 @@ pub unsafe extern "C" fn zpool_free(p: *mut c_void, handle: u32) {
 
 /// Fill `out` with a snapshot of the pool's accounting.  Returns 0 or -1.
 ///
-/// # Safety
-///
 /// `p` must be a live pool pointer; `out` must be writable.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn zpool_get_stats(p: *mut c_void, out: *mut ZpoolStats) -> i32 {
+pub extern "C" fn zpool_get_stats(p: *mut c_void, out: *mut ZpoolStats) -> i32 {
     if p.is_null() || out.is_null() {
         return -1;
     }
-    // SAFETY: `p` is a live pool (non-null checked) and no other reference to it
-    // is held for this call, per the C ABI contract.
-    let pool = unsafe { &mut *(p as *mut Zpool) };
+    // `p` is a live pool (non-null checked) and no other reference to it is held
+    // for this call, per the C ABI contract.
+    let pool = kernel_rust::ptr::as_mut(p as *mut Zpool);
 
     lock_acquire(core::ptr::addr_of_mut!(pool.lock));
     let live = pool.alloc.live();
@@ -495,7 +478,7 @@ pub unsafe extern "C" fn zpool_get_stats(p: *mut c_void, out: *mut ZpoolStats) -
     };
     lock_release(core::ptr::addr_of_mut!(pool.lock));
 
-    // SAFETY: `out` is a valid writable `ZpoolStats` (checked non-null).
-    unsafe { *out = stats };
+    // `out` is a valid writable `ZpoolStats` (checked non-null).
+    kernel_rust::ptr::write(out, stats);
     0
 }

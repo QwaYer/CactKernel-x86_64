@@ -173,9 +173,9 @@ pub extern "C" fn vmm_handle_cow(pd: *mut u64, virtual_addr: u64) -> i32 {
     unsafe { *pte = (v2p(new_phys) & !0xFFF) | flags };
 
     // Release our reference to the shared frame.
-    // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
+    // The frame is live and PMM-managed; this call releases exactly one reference to it.
     // The PTE names a physical address, which `free_page` wants as a VA.
-    unsafe { free_page(p2v(old_phys) as *mut u8) };
+    free_page(p2v(old_phys) as *mut u8);
 
     flush_tlb(virtual_addr & !0xFFF);
     0
@@ -311,9 +311,9 @@ pub unsafe extern "C" fn vmm_unpin_frames(phys: *const u64, count: u64) {
         // SAFETY: each entry is a frame pinned by `vmm_pin_range`.
         let p = unsafe { *phys.add(i as usize) };
         if p != 0 {
-            // SAFETY: `p` is a live PMM-managed frame; this releases exactly the
+            // `p` is a live PMM-managed frame; this releases exactly the
             // reference the matching pin took.
-            unsafe { free_page(p2v(p) as *mut u8) };
+            free_page(p2v(p) as *mut u8);
         }
         i += 1;
     }

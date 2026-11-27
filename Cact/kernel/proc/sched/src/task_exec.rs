@@ -89,8 +89,8 @@ pub unsafe extern "C" fn task_exec(
         let page = cact_mm::kalloc();
         if page.is_null() {
             for page in &new_ustack_pages[..i] {
-                // SAFETY: each entry is a page allocated by `kalloc` above.
-                unsafe { cact_mm::free_page((*page) as *mut u8) };
+                // each entry is a page allocated by `kalloc` above.
+                cact_mm::free_page((*page) as *mut u8);
             }
             return -1;
         }
@@ -113,8 +113,8 @@ pub unsafe extern "C" fn task_exec(
     let new_pd = vmm_create_address_space();
     if new_pd.is_null() {
         for page in new_ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
@@ -161,8 +161,8 @@ pub unsafe extern "C" fn task_exec(
             // SAFETY: `new_pd` is a live address space owned here.
             cact_mm::vmm_free_address_space(new_pd);
             for page in new_ustack_pages {
-                // SAFETY: each entry is a page allocated by `kalloc` above.
-                unsafe { cact_mm::free_page((page) as *mut u8) };
+                // each entry is a page allocated by `kalloc` above.
+                cact_mm::free_page((page) as *mut u8);
             }
             return -1;
         }
@@ -195,8 +195,8 @@ pub unsafe extern "C" fn task_exec(
         // SAFETY: `new_pd` is a live address space owned here.
         cact_mm::vmm_free_address_space(new_pd);
         for page in new_ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         return -1;
     }

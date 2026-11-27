@@ -388,9 +388,9 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             // SAFETY: publishing the freshly copied frame's physical address into the
             // live PTE.
             unsafe { *pte = (v2p(phys) & !0xFFF) | flags; }
-            // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
+            // The frame is live and PMM-managed; this call releases exactly one reference to it.
             // The PTE names a physical address, which `free_page` wants as a VA.
-            unsafe { free_page(p2v(old_phys) as *mut u8) };
+            free_page(p2v(old_phys) as *mut u8);
             flush_tlb(page_va);
 
             // SAFETY: `G_STATS.cow_copies` — unprotected diagnostic counter; see above.

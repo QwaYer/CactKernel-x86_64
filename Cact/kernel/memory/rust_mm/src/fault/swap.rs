@@ -397,8 +397,7 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
                 // PTE: whoever wins the compare-exchange releases the slot, so a
                 // racing fault and this pass free it exactly once.
                 if read_slot(slot, v2p(frame)) != 0 {
-                    // SAFETY: `frame` is a live PMM frame.
-                    unsafe { free_page(frame) };
+                    free_page(frame);
                     return -1;
                 }
                 let new_pte = (v2p(frame) & !0xFFF)
@@ -416,8 +415,7 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
                 } else {
                     // A racing fault restored this page first: drop our frame and
                     // let it own the slot.
-                    // SAFETY: `frame` is a live PMM frame.
-                    unsafe { free_page(frame) };
+                    free_page(frame);
                 }
                 flush_tlb(va);
             }
@@ -464,14 +462,14 @@ pub fn eviction_in_progress() -> bool {
 /// `pd` must be null or a valid page directory whose user PTEs the caller is
 /// allowed to mutate; the caller must not race another page-table walker.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
+pub extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
     // Refuse a nested/concurrent eviction: see `EVICT_BUSY`.
     if EVICT_BUSY.fetch_add(1, Ordering::AcqRel) != 0 {
         EVICT_BUSY.fetch_sub(1, Ordering::AcqRel);
         return -1;
     }
-    // SAFETY: forwarded to the caller's contract.
-    let rc = unsafe { swap_evict_page_inner(pd) };
+    // Forwarded to the caller's contract.
+    let rc = swap_evict_page_inner(pd);
     EVICT_BUSY.fetch_sub(1, Ordering::AcqRel);
     rc
 }
@@ -480,7 +478,7 @@ pub unsafe extern "C" fn swap_evict_page(pd: *mut u64) -> i32 {
 ///
 /// `pd` must be null or a valid page directory whose user PTEs the caller is
 /// allowed to mutate; the caller must not race another page-table walker.
-unsafe fn swap_evict_page_inner(pd: *mut u64) -> i32 {
+fn swap_evict_page_inner(pd: *mut u64) -> i32 {
     // Evicting is possible with a swap device, with the zswap pool, or with both.
     if pd.is_null() || (!swap_is_enabled() && !zswap::zswap_is_enabled()) {
         return -1;
@@ -585,11 +583,11 @@ unsafe fn swap_evict_page_inner(pd: *mut u64) -> i32 {
 
                     flush_tlb(va as u64);
 
-                    // SAFETY: the frame is live and PMM-managed; this call
-                    // releases exactly one reference to it.  The scan read the
-                    // frame's physical address out of the PTE, so it goes through
-                    // `p2v` to reach the allocator's VA contract.
-                    unsafe { free_page(p2v(phys) as *mut u8) };
+                    // The frame is live and PMM-managed; this call releases
+                    // exactly one reference to it.  The scan read the frame's
+                    // physical address out of the PTE, so it goes through `p2v`
+                    // to reach the allocator's VA contract.
+                    free_page(p2v(phys) as *mut u8);
 
                     let next = va + PAGE_SIZE;
                     // SAFETY: saving the clock hand after a successful eviction;
@@ -646,9 +644,9 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
 
     let mut phys = kalloc();
     if phys.is_null() {
-        // SAFETY: `pd` is a valid page directory (checked at entry); eviction only
+        // `pd` is a valid page directory (checked at entry); eviction only
         // touches that directory's own user PTEs.
-        if unsafe { swap_evict_page(pd) } != 0 {
+        if swap_evict_page(pd) != 0 {
             return -1;
         }
         phys = kalloc();
@@ -667,8 +665,8 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
         read_slot(slot, v2p(phys)) == 0
     };
     if !read_ok {
-        // SAFETY: the frame is live and PMM-managed; this releases exactly one reference to it.
-        unsafe { free_page(phys) };
+        // The frame is live and PMM-managed; this releases exactly one reference to it.
+        free_page(phys);
         return -1;
     }
 
@@ -690,8 +688,7 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
     } else {
         // Another context (a second fault on this page, or a swapoff migration)
         // restored it first: drop our frame — the mapping is present now.
-        // SAFETY: the frame is live and PMM-managed.
-        unsafe { free_page(phys) };
+        free_page(phys);
     }
     flush_tlb(page_va);
     0

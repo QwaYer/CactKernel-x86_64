@@ -336,8 +336,8 @@ pub(crate) fn free_user_stack_pages(p: &mut ProcMeta) {
     for i in 0..USER_STACK_PAGES as usize {
         let pn = ustack_phys_by_idx(p, i);
         if !pn.is_null() {
-            // SAFETY: the frame is live and PMM-managed; this call releases exactly one reference to it.
-            unsafe { cact_mm::free_page(pn as *mut u8) };
+            // the frame is live and PMM-managed; this call releases exactly one reference to it.
+            cact_mm::free_page(pn as *mut u8);
         }
     }
     p.ustack_phys = ptr::null_mut();

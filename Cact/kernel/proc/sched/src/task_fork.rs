@@ -87,8 +87,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         let page = cact_mm::kalloc();
         if page.is_null() {
             for page in &ustack_pages[..i] {
-                // SAFETY: each entry is a page allocated by `kalloc` above.
-                unsafe { cact_mm::free_page((*page) as *mut u8) };
+                // each entry is a page allocated by `kalloc` above.
+                cact_mm::free_page((*page) as *mut u8);
             }
             // SAFETY: `kstack` is a live kernel stack owned here.
             unsafe { kstack_free(kstack as *mut c_void) };
@@ -168,8 +168,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     let child_shared = unsafe { proc_shared_alloc(child_pd) };
     if child_shared.is_null() {
         for page in ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
@@ -203,8 +203,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     let child_fds = cact_mm::kmalloc(core::mem::size_of::<ffi::TaskFdTable>()) as *mut ffi::TaskFdTable;
     if child_fds.is_null() {
         for page in ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };
@@ -245,8 +245,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         cact_mm::kfree((child_fds as *mut c_void) as *mut u8);
         child_p.fds = ptr::null_mut();
         for page in ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };

@@ -139,8 +139,8 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
         let page = cact_mm::kalloc();
         if page.is_null() {
             for page in &ustack_pages[..i] {
-                // SAFETY: each entry is a page allocated by `kalloc` above.
-                unsafe { cact_mm::free_page((*page) as *mut u8) };
+                // each entry is a page allocated by `kalloc` above.
+                cact_mm::free_page((*page) as *mut u8);
             }
             // SAFETY: `kstack` is a live kernel stack owned here.
             unsafe { kstack_free(kstack as *mut c_void) };
@@ -155,8 +155,8 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
 
     if !task_zero_init(t, p) {
         for page in ustack_pages {
-            // SAFETY: each entry is a page allocated by `kalloc` above.
-            unsafe { cact_mm::free_page((page) as *mut u8) };
+            // each entry is a page allocated by `kalloc` above.
+            cact_mm::free_page((page) as *mut u8);
         }
         // SAFETY: `kstack` is a live kernel stack owned here.
         unsafe { kstack_free(kstack as *mut c_void) };

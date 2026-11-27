@@ -10,8 +10,9 @@
 
 use crate::ffi::*;
 use crate::pmm_math::{self, addr_to_page, page_to_addr};
-use crate::safe::{KStatic, lock_acquire, lock_release, kprint_str, klog_msg};
+use crate::safe::{lock_acquire, lock_release, kprint_str, klog_msg};
 use crate::vmm::paging::{p2v, v2p};
+use kernel_rust::cell::KCell;
 
 // The pure math module and the FFI ABI must agree on the page size; if they
 // ever drift, this fails the build instead of corrupting the bitmap.
@@ -19,56 +20,52 @@ const _: () = assert!(PAGE_SIZE == pmm_math::PAGE_SIZE);
 
 /// Base of the free-frame bitmap, one bit per 4 KiB frame.  Set once by
 /// [`pmm_alloc_tables`] during single-threaded boot; read-only afterwards.
-static MEMORY_BITMAP: KStatic<*mut u8> = KStatic::new(core::ptr::null_mut());
+static MEMORY_BITMAP: KCell<*mut u8> = KCell::new(core::ptr::null_mut());
 
 /// Base of the per-frame reference counts (fork/COW), same policy as the bitmap.
-static PAGE_REFCOUNTS: KStatic<*mut u16> = KStatic::new(core::ptr::null_mut());
+static PAGE_REFCOUNTS: KCell<*mut u16> = KCell::new(core::ptr::null_mut());
 
 /// Number of 4 KiB frames the two arrays above describe — the highest physical
 /// address the boot map reports, rounded up.  Fixed once boot has sized them.
-static MANAGED_FRAMES: KStatic<u64> = KStatic::new(0);
+static MANAGED_FRAMES: KCell<u64> = KCell::new(0);
 
 /// Size of the bitmap in bytes (`ceil(MANAGED_FRAMES / 8)`), cached so the
 /// free-frame scan does not recompute it.
-static BITMAP_BYTES: KStatic<u64> = KStatic::new(0);
+static BITMAP_BYTES: KCell<u64> = KCell::new(0);
 
-static FIRST_AVAILABLE_PAGE: KStatic<u64> = KStatic::new(0);
+static FIRST_AVAILABLE_PAGE: KCell<u64> = KCell::new(0);
 
 /// Runtime physical RAM/MMIO boundary: the page-aligned top of usable RAM
 /// *below* the 32-bit PCI hole, discovered from the Multiboot2 map in
 /// `init_memory_manager`.  Defaults to `PCI_HOLE_START` until then and on
 /// machines with no usable map.  Physical addresses in `[RAM_END, 4 GiB)` are
 /// device MMIO (mapped uncached); RAM above 4 GiB is managed normally.
-static RAM_END: KStatic<u64> = KStatic::new(PCI_HOLE_START as u64);
+static RAM_END: KCell<u64> = KCell::new(PCI_HOLE_START as u64);
 
 /// Highest physical address the boot map calls available (below or above
 /// 4 GiB).  The direct map has to cover it; 0 when the map yielded nothing.
-static MAX_RAM_ADDR: KStatic<u64> = KStatic::new(0);
+static MAX_RAM_ADDR: KCell<u64> = KCell::new(0);
 
 /// Base VA of the kernel's fixed MMIO windows (ACPI temp map, PCIe ECAM).
 /// Placed at or above `PCI_HOLE_START` (the kernel half, `>= USER_STACK_TOP`)
 /// so a window VA can never collide with a user mapping.  Computed in
 /// `init_memory_manager`.
-static MMIO_WINDOW_BASE: KStatic<u64> = KStatic::new(PCI_HOLE_START as u64);
+static MMIO_WINDOW_BASE: KCell<u64> = KCell::new(PCI_HOLE_START as u64);
 
 /// Physical address at which device MMIO begins (device BARs live here).
 pub(crate) fn ram_end() -> u64 {
-    // SAFETY: `RAM_END` is written once during single-threaded boot and only
-    // read afterwards, so this plain read cannot race a writer.
-    unsafe { *KStatic::get_mut(RAM_END.as_ptr()) }
+    RAM_END.get()
 }
 
 /// Highest available physical address; 0 before `init_memory_manager`, or when
 /// the boot map was empty.
 pub(crate) fn max_ram_addr() -> u64 {
-    // SAFETY: as `ram_end` — written once at boot, read-only afterwards.
-    unsafe { *KStatic::get_mut(MAX_RAM_ADDR.as_ptr()) }
+    MAX_RAM_ADDR.get()
 }
 
 /// Lowest VA of the fixed kernel MMIO windows.
 pub(crate) fn mmio_window_base() -> u64 {
-    // SAFETY: as `ram_end` — written once at boot, read-only afterwards.
-    unsafe { *KStatic::get_mut(MMIO_WINDOW_BASE.as_ptr()) }
+    MMIO_WINDOW_BASE.get()
 }
 
 /// C entry point: ACPI/PCIe need the window base VA after PMM init.
@@ -80,7 +77,7 @@ pub extern "C" fn cact_mmio_window_base() -> u32 {
 /// Number of frames the PMM was ever handed by the boot map (every available
 /// frame, low and high).  Fixed after `init_memory_manager`; reported as the
 /// machine's usable RAM (see `pmm_total_frames`).
-static TOTAL_USABLE_FRAMES: KStatic<u32> = KStatic::new(0);
+static TOTAL_USABLE_FRAMES: KCell<u32> = KCell::new(0);
 
 /// End of the physical range the PMM never hands out, and base of the kernel
 /// heap window that follows it.  Starts at the compile-time low reservation
@@ -90,12 +87,10 @@ static TOTAL_USABLE_FRAMES: KStatic<u32> = KStatic::new(0);
 /// kernel, and they are handed to userspace *in place* (the firmrepo archive
 /// via /dev/firmrepo), so `kalloc` and `kmalloc` must both stay off that RAM.
 /// Written once during single-threaded boot, read-only afterwards.
-static BOOT_RESERVED_END: KStatic<u32> = KStatic::new(RESERVED_END);
+static BOOT_RESERVED_END: KCell<u32> = KCell::new(RESERVED_END);
 
 pub(crate) fn reserved_end() -> u32 {
-    // SAFETY: written once in `pmm_reserve_boot_images` before the scheduler
-    // starts, plain read afterwards.
-    unsafe { *KStatic::get_mut(BOOT_RESERVED_END.as_ptr()) }
+    BOOT_RESERVED_END.get()
 }
 
 /// Base of the kernel heap window: right after the boot reservation.
@@ -128,15 +123,13 @@ pub extern "C" fn pmm_reserve_boot_images(end: u32) -> u32 {
         None => RESERVED_END,
     };
     let value = if aligned > RESERVED_END { aligned } else { RESERVED_END };
-    // SAFETY: written once, single-threaded, before `init_memory_manager` reads
-    // it and long before any `kalloc`/`kmalloc` caller can run.
-    *unsafe { KStatic::get_mut(BOOT_RESERVED_END.as_ptr()) } = value;
+    BOOT_RESERVED_END.set(value);
     value
 }
 
-pub(crate) static PAGE_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
+pub(crate) static PAGE_LOCK: KCell<IrqSpinlock> = KCell::new(IrqSpinlock::new());
 
-static MMAP_TABLE: KStatic<Mb2MmapTable> = KStatic::new(Mb2MmapTable {
+static MMAP_TABLE: KCell<Mb2MmapTable> = KCell::new(Mb2MmapTable {
     entries: [Mb2MmapFlat { base: 0, len: 0, ty: 0 }; MB2_MMAP_MAX_ENTRIES],
     count: 0,
 });
@@ -144,58 +137,54 @@ static MMAP_TABLE: KStatic<Mb2MmapTable> = KStatic::new(Mb2MmapTable {
 /// Free-frame bitmap base.  Set once at boot.
 #[inline(always)]
 fn bitmap_ptr() -> *mut u8 {
-    // SAFETY: `MEMORY_BITMAP` is set once by `pmm_alloc_tables` during
-    // single-threaded boot and only read afterwards.
-    unsafe { *KStatic::get_mut(MEMORY_BITMAP.as_ptr()) }
+    MEMORY_BITMAP.get()
 }
 
 /// Per-frame refcount array base.  Set once at boot.
 #[inline(always)]
 fn refcount_ptr() -> *mut u16 {
-    // SAFETY: `PAGE_REFCOUNTS` is set once by `pmm_alloc_tables` during
-    // single-threaded boot and only read afterwards.
-    unsafe { *KStatic::get_mut(PAGE_REFCOUNTS.as_ptr()) }
+    PAGE_REFCOUNTS.get()
 }
 
 /// Number of frames the frame arrays describe (fixed after boot).
 #[inline(always)]
 fn managed_frames() -> u64 {
-    // SAFETY: `MANAGED_FRAMES` is set once at boot and only read afterwards.
-    unsafe { *KStatic::get_mut(MANAGED_FRAMES.as_ptr()) }
+    MANAGED_FRAMES.get()
 }
 
 /// Size of the free-frame bitmap in bytes (fixed after boot).
 #[inline(always)]
 fn bitmap_bytes() -> u64 {
-    // SAFETY: `BITMAP_BYTES` is set once at boot and only read afterwards.
-    unsafe { *KStatic::get_mut(BITMAP_BYTES.as_ptr()) }
+    BITMAP_BYTES.get()
 }
 
 #[inline(always)]
 fn bitmap_set(idx: u64) {
     let byte = pmm_math::bitmap_byte(idx);
     let mask = pmm_math::bitmap_mask(idx);
-    // SAFETY: `idx` lies inside the bitmap (`managed_frames()` bounds it at
-    // every call site) and `bitmap_ptr()` is set once at boot.  `bitmap_set`
-    // runs either during single-threaded boot (`init_memory_manager`) or with
-    // `PAGE_LOCK` held (`kalloc`/`free_page`), so the access is exclusive.
-    unsafe { *bitmap_ptr().add(byte) |= mask };
+    // `idx` lies inside the bitmap (`managed_frames()` bounds it at every call
+    // site) and `bitmap_ptr()` is set once at boot.  `bitmap_set` runs either
+    // during single-threaded boot (`init_memory_manager`) or with `PAGE_LOCK`
+    // held (`kalloc`/`free_page`), so the access is exclusive.
+    *kernel_rust::ptr::as_mut(bitmap_ptr().wrapping_add(byte)) |= mask;
 }
 
 #[inline(always)]
 fn bitmap_clear(idx: u64) {
     let byte = pmm_math::bitmap_byte(idx);
     let mask = pmm_math::bitmap_mask(idx);
-    // SAFETY: `idx` lies inside the bitmap; callers are `init_memory_manager`
-    // (boot, single-threaded) or `free_page` (holds `PAGE_LOCK`).
-    unsafe { *bitmap_ptr().add(byte) &= !mask };
+    // `idx` lies inside the bitmap; callers are `init_memory_manager` (boot,
+    // single-threaded) or `free_page` (holds `PAGE_LOCK`).
+    *kernel_rust::ptr::as_mut(bitmap_ptr().wrapping_add(byte)) &= !mask;
 }
 
 #[inline(always)]
 fn bitmap_test(idx: u64) -> bool {
-    // SAFETY: `idx` lies inside the bitmap; only `kalloc` calls this, and it
-    // holds `PAGE_LOCK` across the whole first-fit scan.
-    (unsafe { *bitmap_ptr().add(pmm_math::bitmap_byte(idx)) } & pmm_math::bitmap_mask(idx)) != 0
+    // `idx` lies inside the bitmap; only `kalloc` calls this, and it holds
+    // `PAGE_LOCK` across the whole first-fit scan.
+    (kernel_rust::ptr::read(bitmap_ptr().wrapping_add(pmm_math::bitmap_byte(idx)))
+        & pmm_math::bitmap_mask(idx))
+        != 0
 }
 
 /// Low user VA window the reservation must keep so the ELF image and its `brk`
@@ -246,9 +235,7 @@ fn pmm_alloc_tables(ram_hi: u64) {
     } else {
         floor_max
     };
-    // SAFETY: written once during single-threaded boot, before
-    // `init_memory_manager` reads it and long before any allocator caller.
-    unsafe { *KStatic::get_mut(BOOT_RESERVED_END.as_ptr()) = floor as u32 };
+    BOOT_RESERVED_END.set(floor as u32);
 
     let mut frames = addr_to_page(ram_hi.max(reserved_end() as u64));
     let bitmap_at = reserved_end() as u64;
@@ -270,26 +257,20 @@ fn pmm_alloc_tables(ram_hi: u64) {
         frames = need;
     }
 
-    // SAFETY: each is written once, single-threaded, before
-    // `init_memory_manager` reads them and long before any allocator caller.
-    unsafe { *KStatic::get_mut(BOOT_RESERVED_END.as_ptr()) = new_reserved as u32 };
-    // SAFETY: as above — the frame count is fixed before any allocator caller.
-    unsafe { *KStatic::get_mut(MANAGED_FRAMES.as_ptr()) = frames };
-    // SAFETY: as above — the bitmap size is fixed before any allocator caller.
-    unsafe { *KStatic::get_mut(BITMAP_BYTES.as_ptr()) = bitmap_size };
-    // SAFETY: as above — the bitmap base is fixed before any allocator caller.
-    unsafe { *KStatic::get_mut(MEMORY_BITMAP.as_ptr()) = p2v(bitmap_at) as *mut u8 };
-    // SAFETY: as above — the refcount base is fixed before any allocator caller.
-    unsafe { *KStatic::get_mut(PAGE_REFCOUNTS.as_ptr()) = p2v(refcounts_at) as *mut u16 };
+    // Each is written once, single-threaded, before `init_memory_manager`
+    // reads them and long before any allocator caller.
+    BOOT_RESERVED_END.set(new_reserved as u32);
+    MANAGED_FRAMES.set(frames);
+    BITMAP_BYTES.set(bitmap_size);
+    MEMORY_BITMAP.set(p2v(bitmap_at) as *mut u8);
+    PAGE_REFCOUNTS.set(p2v(refcounts_at) as *mut u16);
 }
 
-/// # Safety
-///
 /// `mmap` must be null or point to a valid `Mb2MmapTable` (the bootloader's
 /// static MMAP table) that stays valid for the call, and this must be invoked
 /// once, single-threaded, during boot.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
+pub extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
     if mmap.is_null() {
         klog_msg(LOG_WARN, c"pmm mmap pointer is null; using fallback".as_ptr() as *const u8);
         // The fallback assumes RAM up to the PCI hole, so size the arrays for it
@@ -297,24 +278,25 @@ pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
         pmm_alloc_tables(PCI_HOLE_START as u64);
         return;
     }
-    // SAFETY: pointer is valid C-side static storage.
-    let src = unsafe { &*mmap };
+    // `mmap` is valid C-side static storage.
+    let src = kernel_rust::ptr::as_ref(mmap);
     let count = (src.count as usize).min(MB2_MMAP_MAX_ENTRIES);
-    // SAFETY: `MMAP_TABLE` is written only here, from the C boot code before the
-    // scheduler starts; the kernel is still single-threaded.
-    let dst = unsafe { KStatic::get_mut(MMAP_TABLE.as_ptr()) };
-    dst.count = count as u32;
     let mut ram_hi = reserved_end() as u64;
-    for i in 0..count {
-        let e = src.entries[i];
-        dst.entries[i] = e;
-        if e.ty == MB2_MMAP_TYPE_AVAILABLE && e.len > 0 {
-            let end = e.base.saturating_add(e.len);
-            if end > ram_hi {
-                ram_hi = end;
+    // `MMAP_TABLE` is written only here, from the C boot code before the
+    // scheduler starts; the kernel is still single-threaded.
+    MMAP_TABLE.with(|dst| {
+        dst.count = count as u32;
+        for i in 0..count {
+            let e = src.entries[i];
+            dst.entries[i] = e;
+            if e.ty == MB2_MMAP_TYPE_AVAILABLE && e.len > 0 {
+                let end = e.base.saturating_add(e.len);
+                if end > ram_hi {
+                    ram_hi = end;
+                }
             }
         }
-    }
+    });
     pmm_alloc_tables(ram_hi);
 }
 
@@ -322,20 +304,17 @@ pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
 pub extern "C" fn init_memory_manager() {
     irq_spinlock_init(PAGE_LOCK.as_ptr());
     {
-        // SAFETY: the bitmap was carved out during single-threaded boot and is
-        // filled here, before `kalloc` can run.
-        let bm = unsafe {
-            core::slice::from_raw_parts_mut(bitmap_ptr(), bitmap_bytes() as usize)
-        };
+        // The bitmap was carved out during single-threaded boot and is filled
+        // here, before `kalloc` can run.
+        let bm = kernel_rust::ptr::slice_mut(bitmap_ptr(), bitmap_bytes() as usize);
         for b in bm.iter_mut() {
             *b = 0xFF;
         }
     }
 
-    // SAFETY: `MMAP_TABLE` was filled by `pmm_init_from_mmap` during boot and is
-    // only read here, still single-threaded.
-    let mmap = unsafe { KStatic::get_mut(MMAP_TABLE.as_ptr()) };
-    let have_mmap = mmap.count > 0;
+    // `MMAP_TABLE` was filled by `pmm_init_from_mmap` during boot and is only
+    // read here, still single-threaded.
+    let have_mmap = MMAP_TABLE.with(|mmap| mmap.count) > 0;
     let frames = managed_frames();
 
     // Frames the boot map offers to the PMM (later the low reservation and the
@@ -346,29 +325,31 @@ pub extern "C" fn init_memory_manager() {
     let mut high_ram_end: u64 = 0;
 
     if have_mmap {
-        for &e in &mmap.entries[..mmap.count as usize] {
-            if e.ty != MB2_MMAP_TYPE_AVAILABLE { continue; }
-            if e.len == 0 { continue; }
+        MMAP_TABLE.with(|mmap| {
+            for &e in &mmap.entries[..mmap.count as usize] {
+                if e.ty != MB2_MMAP_TYPE_AVAILABLE { continue; }
+                if e.len == 0 { continue; }
 
-            let region_end = e.base.saturating_add(e.len);
-            if e.base < LOW_MEM_END {
-                // The top of *low* RAM is where the 32-bit device hole begins.
-                let clip_end = region_end.min(LOW_MEM_END);
-                if clip_end > low_ram_end { low_ram_end = clip_end; }
-            } else if region_end > high_ram_end {
-                high_ram_end = region_end;
-            }
+                let region_end = e.base.saturating_add(e.len);
+                if e.base < LOW_MEM_END {
+                    // The top of *low* RAM is where the 32-bit device hole begins.
+                    let clip_end = region_end.min(LOW_MEM_END);
+                    if clip_end > low_ram_end { low_ram_end = clip_end; }
+                } else if region_end > high_ram_end {
+                    high_ram_end = region_end;
+                }
 
-            let (first_page, last_page) = pmm_math::aligned_page_range(e.base, region_end);
-            if first_page >= last_page { continue; }
+                let (first_page, last_page) = pmm_math::aligned_page_range(e.base, region_end);
+                if first_page >= last_page { continue; }
 
-            for pg in first_page..last_page {
-                if pg < frames {
-                    bitmap_clear(pg);
-                    usable_frames += 1;
+                for pg in first_page..last_page {
+                    if pg < frames {
+                        bitmap_clear(pg);
+                        usable_frames += 1;
+                    }
                 }
             }
-        }
+        });
     } else {
         klog_msg(LOG_WARN, c"pmm has no mmap; assuming RAM above reserved area".as_ptr() as *const u8);
         let first_free = addr_to_page(reserved_end() as u64);
@@ -393,15 +374,12 @@ pub extern "C" fn init_memory_manager() {
     // neighbours.
     let window_base = pmm_math::mmio_window_base(ram_end, PCI_HOLE_START as u64);
     let ram_hi = low_ram_end.max(high_ram_end);
-    // SAFETY: each is written once during single-threaded boot, before paging is
-    // enabled and before any ACPI/PCIe user of the window runs.
-    unsafe { *KStatic::get_mut(RAM_END.as_ptr()) = ram_end };
-    // SAFETY: as above — the window base is fixed before any user runs.
-    unsafe { *KStatic::get_mut(MMIO_WINDOW_BASE.as_ptr()) = window_base };
-    // SAFETY: as above — the direct-map extent is fixed before paging is enabled.
-    unsafe { *KStatic::get_mut(MAX_RAM_ADDR.as_ptr()) = ram_hi };
-    // SAFETY: as above — the installed-frame count is fixed before any reader.
-    unsafe { *KStatic::get_mut(TOTAL_USABLE_FRAMES.as_ptr()) = usable_frames };
+    // Each is written once during single-threaded boot, before paging is enabled
+    // and before any ACPI/PCIe user of the window runs.
+    RAM_END.set(ram_end);
+    MMIO_WINDOW_BASE.set(window_base);
+    MAX_RAM_ADDR.set(ram_hi);
+    TOTAL_USABLE_FRAMES.set(usable_frames);
 
     let reserved_pages = addr_to_page(reserved_end() as u64);
     for pg in 0..reserved_pages {
@@ -419,9 +397,9 @@ pub extern "C" fn init_memory_manager() {
     }
 
     // Initialise the first-fit search hint: first frame past the heap window.
-    // SAFETY: `FIRST_AVAILABLE_PAGE` is the first-fit hint; initialising it
-    // during single-threaded boot cannot race `kalloc`/`free_page`.
-    *unsafe { KStatic::get_mut(FIRST_AVAILABLE_PAGE.as_ptr()) } = heap_end_page;
+    // `FIRST_AVAILABLE_PAGE` is the first-fit hint; initialising it during
+    // single-threaded boot cannot race `kalloc`/`free_page`.
+    FIRST_AVAILABLE_PAGE.set(heap_end_page);
 }
 
 /// Allocate one 4 KiB frame.
@@ -441,18 +419,18 @@ pub extern "C" fn kalloc() -> *mut u8 {
     let limit = managed_frames();
     loop {
         lock_acquire(PAGE_LOCK.as_ptr());
-        // SAFETY: `FIRST_AVAILABLE_PAGE` is read while holding `PAGE_LOCK`, which
+        // `FIRST_AVAILABLE_PAGE` is read while holding `PAGE_LOCK`, which
         // serialises it against `free_page` and the other `kalloc` CPU.
-        let hint = *unsafe { KStatic::get_mut(FIRST_AVAILABLE_PAGE.as_ptr()) };
+        let hint = FIRST_AVAILABLE_PAGE.get();
         let mut i = hint;
         while i < limit {
             if !bitmap_test(i) {
                 bitmap_set(i);
-                // SAFETY: `PAGE_REFCOUNTS[i]` initialised under `PAGE_LOCK`,
-                // held here for the whole allocation.
-                unsafe { *refcount_ptr().add(i as usize) = 1 };
-                // SAFETY: `FIRST_AVAILABLE_PAGE` write while holding `PAGE_LOCK`.
-                *unsafe { KStatic::get_mut(FIRST_AVAILABLE_PAGE.as_ptr()) } = i + 1;
+                // `PAGE_REFCOUNTS[i]` initialised under `PAGE_LOCK`, held here
+                // for the whole allocation.
+                kernel_rust::ptr::write(refcount_ptr().wrapping_add(i as usize), 1);
+                // `FIRST_AVAILABLE_PAGE` write while holding `PAGE_LOCK`.
+                FIRST_AVAILABLE_PAGE.set(i + 1);
                 lock_release(PAGE_LOCK.as_ptr());
                 // The bitmap indexes *physical* frames; the frame itself is
                 // reached through the direct map.
@@ -491,10 +469,10 @@ pub extern "C" fn kalloc() -> *mut u8 {
             || crate::fault::zswap::zswap_is_enabled()
         {
             let pd = crate::safe::current_task_page_dir();
-            // SAFETY: `pd` is the live page directory of the running task (or
-            // `CR3` when it has none — see `current_task_page_dir`), and eviction
-            // only walks/mutates that directory's own user PTEs.
-            if !pd.is_null() && unsafe { crate::fault::swap::swap_evict_page(pd) } == 0 {
+            // `pd` is the live page directory of the running task (or `CR3`
+            // when it has none — see `current_task_page_dir`), and eviction only
+            // walks/mutates that directory's own user PTEs.
+            if !pd.is_null() && crate::fault::swap::swap_evict_page(pd) == 0 {
                 true
             } else {
                 crate::fault::oom::oom_kill() == 0
@@ -540,9 +518,12 @@ pub(crate) fn kalloc_contig(nframes: u32) -> *mut u8 {
             if run_len == need {
                 for k in 0..need {
                     bitmap_set(run_start + k);
-                    // SAFETY: `run_start + k` lies inside the managed range
-                    // (`< limit`), the same invariant `kalloc` sets refcounts under.
-                    unsafe { *refcount_ptr().add((run_start + k) as usize) = 1 };
+                    // `run_start + k` lies inside the managed range (`< limit`),
+                    // the same invariant `kalloc` sets refcounts under.
+                    kernel_rust::ptr::write(
+                        refcount_ptr().wrapping_add((run_start + k) as usize),
+                        1,
+                    );
                 }
                 lock_release(PAGE_LOCK.as_ptr());
                 return p2v(page_to_addr(run_start)) as *mut u8;
@@ -554,15 +535,13 @@ pub(crate) fn kalloc_contig(nframes: u32) -> *mut u8 {
     core::ptr::null_mut()
 }
 
-/// # Safety
-///
 /// `ptr` must be null or a page-aligned **virtual** address of a frame previously
 /// returned by the page allocator (whatever `kalloc` handed out — a direct-map
 /// VA — or a kernel-image VA of a PMM-managed page, or a C caller honouring the
 /// same contract) that has not already been freed.  The bitmap and the refcounts
 /// are indexed by physical address, so the translation happens here.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn free_page(ptr: *mut u8) {
+pub extern "C" fn free_page(ptr: *mut u8) {
     if ptr.is_null() { return; }
 
     let addr = v2p(ptr);
@@ -583,24 +562,24 @@ pub unsafe extern "C" fn free_page(ptr: *mut u8) {
 
     lock_acquire(PAGE_LOCK.as_ptr());
 
-    // SAFETY: `PAGE_REFCOUNTS[page_idx]` read under `PAGE_LOCK`, held here for
-    // the whole function.
-    let rc = unsafe { *refcount_ptr().add(page_idx as usize) };
+    // `PAGE_REFCOUNTS[page_idx]` read under `PAGE_LOCK`, held here for the whole
+    // function.
+    let rc = kernel_rust::ptr::read(refcount_ptr().wrapping_add(page_idx as usize));
     if rc > 1 {
-        // SAFETY: same slot, still under `PAGE_LOCK`.
-        unsafe { *refcount_ptr().add(page_idx as usize) = rc - 1 };
+        // Same slot, still under `PAGE_LOCK`.
+        kernel_rust::ptr::write(refcount_ptr().wrapping_add(page_idx as usize), rc - 1);
         lock_release(PAGE_LOCK.as_ptr());
         return;
     }
-    // SAFETY: same slot, still under `PAGE_LOCK`.
-    unsafe { *refcount_ptr().add(page_idx as usize) = 0 };
+    // Same slot, still under `PAGE_LOCK`.
+    kernel_rust::ptr::write(refcount_ptr().wrapping_add(page_idx as usize), 0);
     bitmap_clear(page_idx);
 
     // Update first-fit hint if this page is earlier than the current hint.
-    // SAFETY: `FIRST_AVAILABLE_PAGE` lowered to `page_idx` under `PAGE_LOCK`.
-    let first = unsafe { KStatic::get_mut(FIRST_AVAILABLE_PAGE.as_ptr()) };
-    if page_idx < *first {
-        *first = page_idx;
+    // `FIRST_AVAILABLE_PAGE` lowered to `page_idx` under `PAGE_LOCK`.
+    let first = FIRST_AVAILABLE_PAGE.get();
+    if page_idx < first {
+        FIRST_AVAILABLE_PAGE.set(page_idx);
     }
 
     lock_release(PAGE_LOCK.as_ptr());
@@ -618,10 +597,13 @@ pub fn page_ref_inc(ptr: *const u8) {
     if idx >= managed_frames() { return; }
 
     lock_acquire(PAGE_LOCK.as_ptr());
-    // SAFETY: `PAGE_REFCOUNTS[idx]` read under `PAGE_LOCK`, taken above.
-    let rc = unsafe { *refcount_ptr().add(idx as usize) };
-    // SAFETY: same slot, still under `PAGE_LOCK`.
-    unsafe { *refcount_ptr().add(idx as usize) = rc.saturating_add(1) };
+    // `PAGE_REFCOUNTS[idx]` read under `PAGE_LOCK`, taken above.
+    let rc = kernel_rust::ptr::read(refcount_ptr().wrapping_add(idx as usize));
+    // Same slot, still under `PAGE_LOCK`.
+    kernel_rust::ptr::write(
+        refcount_ptr().wrapping_add(idx as usize),
+        rc.saturating_add(1),
+    );
     lock_release(PAGE_LOCK.as_ptr());
 }
 
@@ -637,9 +619,9 @@ pub fn page_ref_get(ptr: *const u8) -> u16 {
     let idx = addr_to_page(addr);
     if idx >= managed_frames() { return 0; }
     lock_acquire(PAGE_LOCK.as_ptr());
-    // SAFETY: `PAGE_REFCOUNTS[idx]` read under `PAGE_LOCK`, which is held until
-    // after the load, so the value cannot be changed in between.
-    let rc = unsafe { *refcount_ptr().add(idx as usize) };
+    // `PAGE_REFCOUNTS[idx]` read under `PAGE_LOCK`, which is held until after
+    // the load, so the value cannot be changed in between.
+    let rc = kernel_rust::ptr::read(refcount_ptr().wrapping_add(idx as usize));
     lock_release(PAGE_LOCK.as_ptr());
     rc
 }
@@ -656,9 +638,9 @@ pub(crate) fn page_ref_get_locked(ptr: *const u8) -> u16 {
     if addr < reserved_end() as u64 { return 0; }
     let idx = addr_to_page(addr);
     if idx >= managed_frames() { return 0; }
-    // SAFETY: `PAGE_REFCOUNTS[idx]` read without taking `PAGE_LOCK`; that is this
+    // `PAGE_REFCOUNTS[idx]` read without taking `PAGE_LOCK`; that is this
     // function's documented contract — every caller already holds `PAGE_LOCK`.
-    unsafe { *refcount_ptr().add(idx as usize) }
+    kernel_rust::ptr::read(refcount_ptr().wrapping_add(idx as usize))
 }
 
 /// Installed RAM the PMM recognised at boot, in 4 KiB frames (fixed after
@@ -666,9 +648,7 @@ pub(crate) fn page_ref_get_locked(ptr: *const u8) -> u16 {
 /// window; callers subtract what they want to exclude.
 #[unsafe(no_mangle)]
 pub extern "C" fn pmm_total_frames() -> u32 {
-    // SAFETY: `TOTAL_USABLE_FRAMES` is written once during single-threaded boot
-    // and only read afterwards, so this borrow cannot race a writer.
-    unsafe { *KStatic::get_mut(TOTAL_USABLE_FRAMES.as_ptr()) }
+    TOTAL_USABLE_FRAMES.get()
 }
 
 /// Frames currently on the free list (bit clear in the PMM bitmap), in 4 KiB
@@ -677,10 +657,10 @@ pub extern "C" fn pmm_total_frames() -> u32 {
 pub extern "C" fn pmm_free_frames() -> u32 {
     let mut free: u32 = 0;
     lock_acquire(PAGE_LOCK.as_ptr());
-    // SAFETY: the bitmap region (`bitmap_ptr()`/`bitmap_bytes()`) was carved out
-    // at boot; read while holding `PAGE_LOCK`, which serialises it against every
+    // The bitmap region (`bitmap_ptr()`/`bitmap_bytes()`) was carved out at
+    // boot; read while holding `PAGE_LOCK`, which serialises it against every
     // bitmap writer (`init_memory_manager`, `kalloc`, `free_page`).
-    let bm = unsafe { core::slice::from_raw_parts(bitmap_ptr(), bitmap_bytes() as usize) };
+    let bm = kernel_rust::ptr::slice(bitmap_ptr(), bitmap_bytes() as usize);
     for b in bm.iter() {
         // A set bit means "in use"; the rest of the byte is free.
         free += 8 - b.count_ones();
