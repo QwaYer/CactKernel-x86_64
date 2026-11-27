@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 CactOS Project
 
-//! The kernel's `#[global_allocator]`, bridging Rust's `alloc` crate to the
-//! intrusive heap in [`heap`](crate::alloc::heap).
+//! The kernel's `#[global_allocator]`.
 //!
-//! It lives here, next to the `kmalloc`/`kfree` it wraps — a crate graph may
-//! define exactly one global allocator, and keeping it beside the heap leaves
-//! the link crate `cact_kernel` free of `unsafe`.
+//! A crate graph may define exactly one global allocator, and it is an `unsafe`
+//! lang-item, so it belongs here — in the graph's one `unsafe` crate — rather
+//! than beside the heap it wraps in `cact_mm`, which then stays free of
+//! `unsafe`.  It bridges Rust's `alloc` crate to `cact_mm`'s heap over the C
+//! ABI: `kmalloc_aligned`/`krealloc_aligned`/`kfree` are `#[no_mangle]` exports
+//! of `cact_mm`.
 
 use core::alloc::{GlobalAlloc, Layout};
 
-use crate::alloc::heap::{kfree, kmalloc_aligned, krealloc_aligned};
+use crate::sys;
 
 /// The kernel's global allocator: `cact_mm`'s heap, with alignment support.
 struct CactAllocator;
@@ -23,11 +25,10 @@ unsafe impl GlobalAlloc for CactAllocator {
     ///
     /// See [`GlobalAlloc::alloc`]: `layout` must have a non-zero size.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        // The `GlobalAlloc` contract makes `layout.size()` non-zero and
-        // `layout.align()` a power of two, which is what `kmalloc_aligned`
-        // requires; the returned block belongs to the caller.  The call itself
-        // is safe (allocation has no preconditions).
-        kmalloc_aligned(layout.size(), layout.align())
+        // SAFETY: `kmalloc_aligned` has no preconditions beyond the non-zero
+        // size and power-of-two alignment the `GlobalAlloc` contract guarantees;
+        // the returned block belongs to the caller.
+        unsafe { sys::kmalloc_aligned(layout.size(), layout.align()) }
     }
 
     /// # Safety
@@ -37,7 +38,7 @@ unsafe impl GlobalAlloc for CactAllocator {
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
         // SAFETY: the caller upholds `GlobalAlloc::dealloc`'s contract, so `ptr`
         // is a live block from `kmalloc_aligned` that `kfree` may release.
-        unsafe { kfree(ptr) };
+        unsafe { sys::kfree(ptr) };
     }
 
     /// # Safety
@@ -48,14 +49,15 @@ unsafe impl GlobalAlloc for CactAllocator {
         // SAFETY: the caller upholds `GlobalAlloc::realloc`'s contract, so `ptr`
         // is a live block from this allocator; `realloc` keeps it in place when it
         // fits and otherwise allocates a fresh `new_size` block and copies.
-        unsafe { krealloc_aligned(ptr, new_size, layout.align()) }
+        unsafe { sys::krealloc_aligned(ptr, new_size, layout.align()) }
     }
 
     /// # Safety
     ///
     /// See [`GlobalAlloc::alloc_zeroed`]: `layout` must have a non-zero size.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
-        let ptr = kmalloc_aligned(layout.size(), layout.align());
+        // SAFETY: as in `alloc`; the returned block is the caller's.
+        let ptr = unsafe { sys::kmalloc_aligned(layout.size(), layout.align()) };
         if !ptr.is_null() {
             // SAFETY: `ptr` is a fresh block of at least `layout.size()` bytes, so
             // zeroing exactly that many is in bounds; the block holds no typed

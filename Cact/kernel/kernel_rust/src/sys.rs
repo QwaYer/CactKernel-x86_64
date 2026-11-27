@@ -40,6 +40,10 @@ extern "C" {
     pub fn kalloc() -> *mut u8;
     pub fn kfree(ptr: *mut u8);
     pub fn free_page(ptr: *mut u8);
+    /// `cact_mm`'s heap entry points, reached over the C ABI by the
+    /// `#[global_allocator]` (see [`crate::galloc`]).
+    pub fn kmalloc_aligned(size: usize, align: usize) -> *mut u8;
+    pub fn krealloc_aligned(ptr: *mut u8, new_size: usize, align: usize) -> *mut u8;
     pub fn vmm_v2p(ptr: *const u8) -> u64;
     pub fn vmm_pin_range(pd: *mut u64, va: u64, size: u64, out_phys: *mut u64) -> i64;
     pub fn vmm_unpin_frames(phys: *const u64, count: u64);

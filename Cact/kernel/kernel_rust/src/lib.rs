@@ -33,9 +33,9 @@
 #![deny(invalid_reference_casting)]
 #![deny(clippy::multiple_unsafe_ops_per_block)]
 
-// `mem::box_free` reclaims a `Box<T>` handed over as a raw pointer, so the heap
-// types come from `alloc` (the kernel's single `#[global_allocator]` lives in
-// `cact_mm`, next to that heap).
+// `mem::box_free` reclaims a `Box<T>` handed over as a raw pointer, and this
+// crate carries the graph's single `#[global_allocator]` (see `galloc`), so the
+// heap types come from `alloc`.
 extern crate alloc;
 
 mod sys;
@@ -47,6 +47,7 @@ pub mod devfs;
 pub mod eventfd;
 pub mod frame;
 pub mod fs;
+pub mod galloc;
 pub mod mem;
 pub mod net;
 pub mod ptr;
