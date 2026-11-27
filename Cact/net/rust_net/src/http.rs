@@ -847,11 +847,7 @@ fn do_fetch(
 
     let connected = match target {
         FetchTarget::V4(ip) => tcp::tcp_connect(sock, ip, parsed.port),
-        FetchTarget::V6(a6) => {
-            // SAFETY: `a6` is a local 16-byte array, so the pointer handed to
-            // `tcp_connect6` is readable for the call.
-            unsafe { tcp::tcp_connect6(sock, a6.as_ptr(), parsed.port) }
-        }
+        FetchTarget::V6(a6) => tcp::tcp_connect6(sock, a6.as_ptr(), parsed.port),
     };
     if connected != 0 {
         let _ = tcp::tcp_close(sock);

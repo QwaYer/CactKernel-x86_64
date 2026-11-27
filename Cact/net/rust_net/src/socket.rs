@@ -120,7 +120,7 @@ extern "C" fn socket_read_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mut
                 // SAFETY: `idx` came from this node's `Ksock` and is a valid
                 // smoltcp TCP slot index for the duration of the operation, and
                 // `data` points to at least `size` writable bytes.
-                let n = unsafe { tcp::tcp_recv(idx, data, size as u16) };
+                let n = tcp::tcp_recv(idx, data, size as u16);
                 if n != 0 {
                     return n;
                 }
@@ -272,7 +272,7 @@ extern "C" fn socket_write_op(node: *mut VfsNode, _off: u64, size: u32, buf: *mu
                 // SAFETY: `idx` came from this node's `Ksock` and is a valid
                 // smoltcp TCP slot index for the operation, and `buf` points to
                 // at least `size` readable bytes.
-                let n = unsafe { tcp::tcp_send(idx, buf.cast::<u8>(), size as u16) };
+                let n = tcp::tcp_send(idx, buf.cast::<u8>(), size as u16);
                 if n != 0 {
                     return n;
                 }
