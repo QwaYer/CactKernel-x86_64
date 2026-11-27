@@ -11,6 +11,8 @@
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::ptr;
+
 use super::atomic::mode_atomic;
 use super::crtc::{mode_cursor, mode_cursor2, mode_get_crtc, mode_page_flip, mode_set_crtc};
 use super::framebuffer::{mode_addfb, mode_addfb2, mode_dirtyfb, mode_getfb2, mode_rmfb};
@@ -217,8 +219,7 @@ fn put_ids(user: u64, ids: &[u32], want: u32) -> c_int {
 
 /* ── GETRESOURCES ───────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_resources(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_resources(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -246,48 +247,48 @@ pub extern "C" fn mode_get_resources(file: *mut DrmFile, arg: *mut c_void) -> c_
         return -22;
     }
 
-    // SAFETY: caller's file.
-    let dev = unsafe { (*file).dev };
+    // caller's file.
+    let dev = ptr::as_ref(file).dev;
     let mut crtcs: Vec<u32> = Vec::new();
     let mut conns: Vec<u32> = Vec::new();
     let mut encs: Vec<u32> = Vec::new();
     let mut fbs: Vec<u32> = Vec::new();
 
-    // SAFETY: `dev` is the caller's live device; this borrow of its CRTC pool is
+    // `dev` is the caller's live device; this borrow of its CRTC pool is
     // consumed by the walk.
-    let dev_crtcs = unsafe { &(*dev).crtcs };
+    let dev_crtcs = &ptr::as_ref(dev).crtcs;
     for &p in dev_crtcs.iter() {
         let c = p as *mut super::mode_object::Crtc;
         if !c.is_null() {
-            // SAFETY: `c` is a live CRTC (non-null, checked above); this reads its id.
-            crtcs.push(unsafe { (*c).id });
+            // `c` is a live CRTC (non-null, checked above); this reads its id.
+            crtcs.push(ptr::as_ref(c).id);
         }
     }
-    // SAFETY: as above — the connector pool.
-    let dev_conns = unsafe { &(*dev).connectors };
+    // as above — the connector pool.
+    let dev_conns = &ptr::as_ref(dev).connectors;
     for &p in dev_conns.iter() {
         let c = p as *mut Connector;
         if !c.is_null() {
-            // SAFETY: `c` is a live connector (non-null, checked above).
-            conns.push(unsafe { (*c).id });
+            // `c` is a live connector (non-null, checked above).
+            conns.push(ptr::as_ref(c).id);
         }
     }
-    // SAFETY: as above — the encoder pool.
-    let dev_encs = unsafe { &(*dev).encoders };
+    // as above — the encoder pool.
+    let dev_encs = &ptr::as_ref(dev).encoders;
     for &p in dev_encs.iter() {
         let e = p as *mut Encoder;
         if !e.is_null() {
-            // SAFETY: `e` is a live encoder (non-null, checked above).
-            encs.push(unsafe { (*e).id });
+            // `e` is a live encoder (non-null, checked above).
+            encs.push(ptr::as_ref(e).id);
         }
     }
-    // SAFETY: as above — the framebuffer pool.
-    let dev_fbs = unsafe { &(*dev).fbs };
+    // as above — the framebuffer pool.
+    let dev_fbs = &ptr::as_ref(dev).fbs;
     for &p in dev_fbs.iter() {
         let f = p as *mut super::framebuffer::Framebuffer;
         if !f.is_null() {
-            // SAFETY: `f` is a live framebuffer (non-null, checked above).
-            fbs.push(unsafe { (*f).id });
+            // `f` is a live framebuffer (non-null, checked above).
+            fbs.push(ptr::as_ref(f).id);
         }
     }
 
@@ -323,8 +324,7 @@ pub extern "C" fn mode_get_resources(file: *mut DrmFile, arg: *mut c_void) -> c_
 
 /* ── GETCONNECTOR ───────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -356,9 +356,9 @@ pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let c = drm_connector_find(dev, req.connector_id) as *mut Connector;
     if c.is_null() {
         return -22;
@@ -368,31 +368,31 @@ pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_
      * and two 256-entry property arrays on the kernel stack, overflowed it and
      * corrupted the syscall frame.  Modes are still converted one at a time. */
     let mut encs: Vec<u32> = Vec::new();
-    // SAFETY: `c` is the live connector; this reads its encoder.
-    let c_enc = unsafe { (*c).encoder };
+    // `c` is the live connector; this reads its encoder.
+    let c_enc = ptr::as_ref(c).encoder;
     if !c_enc.is_null() {
-        // SAFETY: `c_enc` is a live encoder (non-null, checked above); this reads its
+        // `c_enc` is a live encoder (non-null, checked above); this reads its
         // id.
-        encs.push(unsafe { (*(c_enc as *mut Encoder)).id });
+        encs.push(ptr::as_ref(c_enc as *mut Encoder).id);
     } else {
         /* No fixed encoder binding: report all of them so userspace can pick one and
          * hand it back through SETCRTC. */
-        // SAFETY: `dev` is the live device; this borrow of its encoder pool is
+        // `dev` is the live device; this borrow of its encoder pool is
         // consumed by the walk.
-        let dev_encs = unsafe { &(*dev).encoders };
+        let dev_encs = &ptr::as_ref(dev).encoders;
         for &p in dev_encs.iter() {
             let enc = p as *mut Encoder;
             if !enc.is_null() {
-                // SAFETY: `enc` is a live encoder (non-null, checked above).
-                encs.push(unsafe { (*enc).id });
+                // `enc` is a live encoder (non-null, checked above).
+                encs.push(ptr::as_ref(enc).id);
             }
         }
     }
 
     {
-        // SAFETY: `c` is the live connector; this borrow is consumed by the reads
+        // `c` is the live connector; this borrow is consumed by the reads
         // below.
-        let c = unsafe { &*c };
+        let c = ptr::as_ref(c);
 
         // `drm_prop_collect` only reads the device's own property tables, so it is
         // an ordinary safe call.
@@ -477,9 +477,9 @@ pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_
         req.encoder_id = if c.encoder.is_null() {
             0
         } else {
-            // SAFETY: `c.encoder` is a live encoder (non-null, checked above); this
+            // `c.encoder` is a live encoder (non-null, checked above); this
             // reads its id.
-            unsafe { (*(c.encoder as *mut Encoder)).id }
+            ptr::as_ref(c.encoder as *mut Encoder).id
         };
         req.connector_type = c.connector_type;
         req.connector_type_id = c.connector_type_id;
@@ -504,8 +504,7 @@ pub extern "C" fn mode_get_connector(file: *mut DrmFile, arg: *mut c_void) -> c_
 
 /* ── GETENCODER ─────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_encoder(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_encoder(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -526,22 +525,22 @@ pub extern "C" fn mode_get_encoder(file: *mut DrmFile, arg: *mut c_void) -> c_in
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let e = drm_encoder_find(dev, req.encoder_id) as *mut Encoder;
     if e.is_null() {
         return -22;
     }
-    // SAFETY: `e` is the live encoder looked up above; this borrow is consumed by the
+    // `e` is the live encoder looked up above; this borrow is consumed by the
     // field reads below.
-    let e = unsafe { &*e };
+    let e = ptr::as_ref(e);
     req.encoder_type = e.encoder_type;
     req.crtc_id = if e.crtc.is_null() {
         0
     } else {
-        // SAFETY: `e.crtc` is a live CRTC (non-null, checked above); this reads its id.
-        unsafe { (*(e.crtc as *mut super::mode_object::Crtc)).id }
+        // `e.crtc` is a live CRTC (non-null, checked above); this reads its id.
+        ptr::as_ref(e.crtc as *mut super::mode_object::Crtc).id
     };
     req.possible_crtcs = e.possible_crtcs;
     req.possible_clones = e.possible_clones;
@@ -550,8 +549,7 @@ pub extern "C" fn mode_get_encoder(file: *mut DrmFile, arg: *mut c_void) -> c_in
 
 /* ── GETPLANERESOURCES ──────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_plane_resources(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_plane_resources(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -569,17 +567,17 @@ pub extern "C" fn mode_get_plane_resources(file: *mut DrmFile, arg: *mut c_void)
         return -22;
     }
 
-    // SAFETY: caller's file.
-    let dev = unsafe { (*file).dev };
+    // caller's file.
+    let dev = ptr::as_ref(file).dev;
     let mut ids: Vec<u32> = Vec::new();
-    // SAFETY: `dev` is the caller's live device; this borrow of its plane pool is
+    // `dev` is the caller's live device; this borrow of its plane pool is
     // consumed by the walk.
-    let planes = unsafe { &(*dev).planes };
+    let planes = &ptr::as_ref(dev).planes;
     for &p in planes.iter() {
         let pl = p as *mut Plane;
         if !pl.is_null() {
-            // SAFETY: `pl` is a live plane (non-null, checked above); this reads its id.
-            ids.push(unsafe { (*pl).id });
+            // `pl` is a live plane (non-null, checked above); this reads its id.
+            ids.push(ptr::as_ref(pl).id);
         }
     }
 
@@ -597,8 +595,7 @@ pub extern "C" fn mode_get_plane_resources(file: *mut DrmFile, arg: *mut c_void)
 
 /* ── GETPLANE ───────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -621,16 +618,16 @@ pub extern "C" fn mode_get_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let p = drm_plane_find(dev, req.plane_id) as *mut Plane;
     if p.is_null() {
         return -22;
     }
-    // SAFETY: `p` is the live plane looked up above; this borrow is consumed by the
+    // `p` is the live plane looked up above; this borrow is consumed by the
     // reads below.
-    let p = unsafe { &*p };
+    let p = ptr::as_ref(p);
     if put_ids(req.format_type_ptr, &p.formats, req.count_format_types) != 0 {
         return -22;
     }
@@ -650,8 +647,7 @@ pub extern "C" fn mode_get_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
 /// `drm_mode_ioctl()` — dispatch inside the KMS band.  Returns -ENOSYS for
 /// anything the KMS layer does not own, which is what lets the core fall
 /// through to the driver's private range.
-#[no_mangle]
-pub extern "C" fn drm_mode_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void) -> c_int {
+pub fn drm_mode_ioctl(file: *mut DrmFile, nr: u32, arg: *mut c_void) -> c_int {
     match nr {
         NR_GETRESOURCES => mode_get_resources(file, arg),
         NR_GETCONNECTOR => mode_get_connector(file, arg),

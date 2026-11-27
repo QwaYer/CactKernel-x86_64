@@ -20,6 +20,7 @@
 #![allow(unsafe_code)]
 
 mod crypto;
+mod drm;
 mod net;
 mod sync;
 mod wireless;

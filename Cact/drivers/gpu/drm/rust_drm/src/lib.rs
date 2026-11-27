@@ -64,8 +64,8 @@ mod ffi;
 mod file;
 mod gem;
 mod ioctl;
-mod mode;
-mod structs;
+pub mod mode;
+pub mod structs;
 mod syncobj;
 /// The syncobj state model, in a module of its own so the host-side unit tests
 /// (`Kernel-Unit-Tests-for-Cact`) can include it: pure rules, no FFI.
@@ -76,9 +76,9 @@ mod vfs;
 /// (`Cact/drivers/gpu/kms/src`) and are pulled into this crate with `#[path]`
 /// rather than built as a second crate: both halves share `DrmDevice`/
 /// `DrmFile`, and two Rust staticlibs would duplicate those symbols at link
-/// time.
+/// time.  Public so `kernel_abi` can thunk the C-facing KMS entry points.
 #[path = "../../../kms/src/mod.rs"]
-mod kms;
+pub mod kms;
 
 // The kernel Rust graph's single `#[panic_handler]` lives in `cact_mm`, which
 // this crate depends on, so one is not defined here.

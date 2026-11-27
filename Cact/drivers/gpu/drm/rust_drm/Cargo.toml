@@ -8,6 +8,9 @@ edition = "2021"
 
 [dependencies]
 cact_mm = { path = "../../../../kernel/memory/rust_mm" }
+# The graph's one `unsafe` crate: the KMS half reaches the kernel's spinlocks,
+# user-copy helpers and raw-pointer plumbing through here.
+kernel_rust = { path = "../../../../kernel/kernel_rust" }
 
 [lib]
 crate-type = ["lib"]

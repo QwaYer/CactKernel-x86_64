@@ -115,6 +115,7 @@ name = "cact_drm"
 version = "0.1.0"
 dependencies = [
  "cact_mm",
+ "kernel_rust",
 ]
 
 [[package]]
@@ -472,6 +473,7 @@ version = "0.1.0"
 dependencies = [
  "cact80211",
  "cact_crypto",
+ "cact_drm",
  "cact_hv",
  "cact_net",
  "cact_sync",

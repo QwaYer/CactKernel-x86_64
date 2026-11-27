@@ -10,6 +10,8 @@
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::{ptr, user};
+
 use super::framebuffer::{drm_fb_find, Framebuffer};
 use super::mode_object::{
     drm_connector_attach_encoder, drm_connector_find, drm_crtc_find, drm_encoder_attach_crtc,
@@ -73,11 +75,6 @@ const DRM_EVENT_FLIP_COMPLETE: u32 = 0x02;
  * rather than unbounded. */
 const MAX_SET_CONNECTORS: usize = 64;
 
-extern "C" {
-    fn validate_user_ptr(ptr: *const c_void, size: u32) -> c_int;
-    fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-}
-
 fn empty_mode() -> ModeInfo {
     ModeInfo {
         clock: 0,
@@ -131,8 +128,7 @@ fn empty_set() -> ModeSet {
 
 /* ── GETCRTC ────────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_get_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -157,15 +153,15 @@ pub extern "C" fn mode_get_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return -22;
     }
 
-    // SAFETY: caller's file; the CRTC is looked up in its device.
-    let c = unsafe { drm_crtc_find((*file).dev, req.crtc_id) } as *mut Crtc;
+    // caller's file; the CRTC is looked up in its device.
+    let c = drm_crtc_find(ptr::as_ref(file).dev, req.crtc_id) as *mut Crtc;
     if c.is_null() {
         return -22;
     }
 
-    // SAFETY: `c` is the live CRTC looked up above; this borrow is consumed by the
+    // `c` is the live CRTC looked up above; this borrow is consumed by the
     // field reads below.
-    let c = unsafe { &*c };
+    let c = ptr::as_ref(c);
     let mut mi = empty_mode();
     drm_mode_to_modeinfo(&c.mode, &mut mi);
 
@@ -174,9 +170,9 @@ pub extern "C" fn mode_get_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     req.fb_id = if c.fb.is_null() {
         0
     } else {
-        // SAFETY: `c.fb` is a live framebuffer (non-null, checked above); this reads
+        // `c.fb` is a live framebuffer (non-null, checked above); this reads
         // its id.
-        unsafe { (*(c.fb as *mut Framebuffer)).id }
+        ptr::as_ref(c.fb as *mut Framebuffer).id
     };
     req.x = c.x as u32;
     req.y = c.y as u32;
@@ -194,8 +190,7 @@ pub extern "C" fn mode_get_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 
 /* ── SETCRTC ────────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -220,9 +215,9 @@ pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let crtc = drm_crtc_find(dev, req.crtc_id) as *mut Crtc;
     if crtc.is_null() {
         return -22;
@@ -233,25 +228,25 @@ pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if req.fb_id == 0 {
         let mut set = empty_set();
         set.crtc = crtc as *mut c_void;
-        // SAFETY: `crtc` is the live CRTC; this reads its current mode.
-        set.mode = unsafe { (*crtc).mode };
+        // `crtc` is the live CRTC; this reads its current mode.
+        set.mode = ptr::as_ref(crtc).mode;
         let rc = drm_driver_set_config(dev, &mut set);
         if rc != 0 {
             return rc;
         }
-        // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-        let old_fb = unsafe { (*crtc).fb };
+        // `crtc` is the live CRTC; this reads its framebuffer.
+        let old_fb = ptr::as_ref(crtc).fb;
         if !old_fb.is_null() {
-            // SAFETY: `old_fb` is a live framebuffer; this reads its GEM object.
-            let obj = unsafe { (*(old_fb as *mut Framebuffer)).obj };
+            // `old_fb` is a live framebuffer; this reads its GEM object.
+            let obj = ptr::as_ref(old_fb as *mut Framebuffer).obj;
             drm_gem_unref(obj);
         }
-        // SAFETY: as above — clearing the framebuffer.
-        unsafe { (*crtc).fb = core::ptr::null_mut() };
-        // SAFETY: as above — marking the CRTC disabled.
-        unsafe { (*crtc).enabled = 0 };
-        // SAFETY: as above — clearing its connector.
-        unsafe { (*crtc).connector = core::ptr::null_mut() };
+        // as above — clearing the framebuffer.
+        ptr::as_mut(crtc).fb = core::ptr::null_mut();
+        // as above — marking the CRTC disabled.
+        ptr::as_mut(crtc).enabled = 0;
+        // as above — clearing its connector.
+        ptr::as_mut(crtc).connector = core::ptr::null_mut();
         return 0;
     }
 
@@ -281,19 +276,19 @@ pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         let mut ids: Vec<u32> = alloc::vec![0u32; n];
         let user = req.set_connectors_ptr as u32 as usize as *const c_void;
         let bytes = (n * 4) as u32;
-        // SAFETY: `user` is the client's pointer; this range-checks it.
-        if unsafe { validate_user_ptr(user, bytes) } == 0 {
+        // `user` is the client's pointer; this range-checks it.
+        if !user::validate_user_ptr(user, bytes) {
             return -22;
         }
-        // SAFETY: the range check above passed, so `user` is a readable userspace
+        // the range check above passed, so `user` is a readable userspace
         // range and `ids` is a writable buffer of the same size.
-        if unsafe { copy_from_user(ids.as_mut_ptr() as *mut c_void, user, bytes) } != 0 {
+        if !user::copy_from_user(ids.as_mut_ptr() as *mut c_void, user, bytes) {
             return -22;
         }
 
-        // SAFETY: `dev` is the live device; this borrow of its encoder pool is
+        // `dev` is the live device; this borrow of its encoder pool is
         // consumed by the scan below.
-        let encoders = unsafe { &(*dev).encoders };
+        let encoders = &ptr::as_ref(dev).encoders;
         for &id in ids.iter() {
             let c = drm_connector_find(dev, id) as *mut Connector;
             if c.is_null() {
@@ -301,28 +296,28 @@ pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
             }
             conns.push(c as *mut c_void);
 
-            // SAFETY: `c` is the live connector (non-null, checked above); this reads
+            // `c` is the live connector (non-null, checked above); this reads
             // its encoder.
-            let cur_enc = unsafe { (*c).encoder };
+            let cur_enc = ptr::as_ref(c).encoder;
             if cur_enc.is_null() {
                 /* Pick any encoder that can drive this CRTC. */
-                // SAFETY: `crtc` is the live CRTC; this reads its index.
-                let bit = 1u32 << unsafe { (*crtc).index };
+                // `crtc` is the live CRTC; this reads its index.
+                let bit = 1u32 << ptr::as_ref(crtc).index;
                 for &e in encoders.iter() {
                     let enc = e as *mut Encoder;
                     if enc.is_null() {
                         continue;
                     }
-                    // SAFETY: `enc` is a live encoder (non-null, checked above); this
+                    // `enc` is a live encoder (non-null, checked above); this
                     // reads its CRTC mask.
-                    if unsafe { (*enc).possible_crtcs } & bit != 0 {
+                    if ptr::as_ref(enc).possible_crtcs & bit != 0 {
                         drm_connector_attach_encoder(c, e);
                         break;
                     }
                 }
             }
-            // SAFETY: `c` is the live connector; this re-reads its encoder.
-            let cur_enc = unsafe { (*c).encoder };
+            // `c` is the live connector; this re-reads its encoder.
+            let cur_enc = ptr::as_ref(c).encoder;
             if !cur_enc.is_null() {
                 drm_encoder_attach_crtc(cur_enc as *mut Encoder, crtc as *mut c_void);
             }
@@ -341,44 +336,43 @@ pub extern "C" fn mode_set_crtc(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return rc;
     }
 
-    // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-    let old_fb = unsafe { (*crtc).fb };
+    // `crtc` is the live CRTC; this reads its framebuffer.
+    let old_fb = ptr::as_ref(crtc).fb;
     if !old_fb.is_null() && old_fb != fb as *mut c_void {
-        // SAFETY: `old_fb` is a live framebuffer; this reads its GEM object.
-        let obj = unsafe { (*(old_fb as *mut Framebuffer)).obj };
+        // `old_fb` is a live framebuffer; this reads its GEM object.
+        let obj = ptr::as_ref(old_fb as *mut Framebuffer).obj;
         drm_gem_unref(obj);
     }
-    // SAFETY: `crtc` is the live CRTC; these publish the new state.
-    unsafe { (*crtc).fb = fb as *mut c_void };
-    // SAFETY: as above — the new mode.
-    unsafe { (*crtc).mode = set.mode };
-    // SAFETY: as above — the new position.
-    unsafe { (*crtc).x = set.x };
-    // SAFETY: as above — the new position.
-    unsafe { (*crtc).y = set.y };
-    // SAFETY: as above — marking the CRTC enabled.
-    unsafe { (*crtc).enabled = 1 };
-    // SAFETY: as above — the first connector drives it.
-    unsafe { (*crtc).connector = conns[0] };
+    // `crtc` is the live CRTC; these publish the new state.
+    ptr::as_mut(crtc).fb = fb as *mut c_void;
+    // as above — the new mode.
+    ptr::as_mut(crtc).mode = set.mode;
+    // as above — the new position.
+    ptr::as_mut(crtc).x = set.x;
+    // as above — the new position.
+    ptr::as_mut(crtc).y = set.y;
+    // as above — marking the CRTC enabled.
+    ptr::as_mut(crtc).enabled = 1;
+    // as above — the first connector drives it.
+    ptr::as_mut(crtc).connector = conns[0];
 
-    // SAFETY: `fb` is the live framebuffer; this reads its GEM object to take a
+    // `fb` is the live framebuffer; this reads its GEM object to take a
     // reference.
-    let obj = unsafe { (*fb).obj };
+    let obj = ptr::as_ref(fb).obj;
     drm_gem_ref(obj);
     drm_crtc_vblank_bump(crtc);
-    // SAFETY: `crtc` is the live CRTC; this reads its vblank-enabled flag.
-    let vblank_enabled = unsafe { (*crtc).vblank_enabled };
+    // `crtc` is the live CRTC; this reads its vblank-enabled flag.
+    let vblank_enabled = ptr::as_ref(crtc).vblank_enabled;
     if vblank_enabled == 0 && drm_driver_enable_vblank(dev, crtc) == 0 {
-        // SAFETY: as above — recording that vblank is now enabled.
-        unsafe { (*crtc).vblank_enabled = 1 };
+        // as above — recording that vblank is now enabled.
+        ptr::as_mut(crtc).vblank_enabled = 1;
     }
     0
 }
 
 /* ── PAGE_FLIP ──────────────────────────────────────────────────────────── */
 
-#[no_mangle]
-pub extern "C" fn mode_page_flip(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_page_flip(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -399,13 +393,13 @@ pub extern "C" fn mode_page_flip(file: *mut DrmFile, arg: *mut c_void) -> c_int 
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let crtc = drm_crtc_find(dev, req.crtc_id) as *mut Crtc;
-    // SAFETY: `crtc` is either null (checked first) or the live CRTC; this reads its
+    // `crtc` is either null (checked first) or the live CRTC; this reads its
     // enabled flag.
-    if crtc.is_null() || unsafe { (*crtc).enabled } == 0 {
+    if crtc.is_null() || ptr::as_ref(crtc).enabled == 0 {
         return -22;
     }
 
@@ -416,19 +410,19 @@ pub extern "C" fn mode_page_flip(file: *mut DrmFile, arg: *mut c_void) -> c_int 
 
     /* Install the new scanout before calling the driver, so a driver that cannot
      * flip asynchronously can simply return 0 and be correct. */
-    // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-    let old_fb = unsafe { (*crtc).fb };
+    // `crtc` is the live CRTC; this reads its framebuffer.
+    let old_fb = ptr::as_ref(crtc).fb;
     if old_fb != fb as *mut c_void {
         if !old_fb.is_null() {
-            // SAFETY: `old_fb` is a live framebuffer; this reads its GEM object.
-            let obj = unsafe { (*(old_fb as *mut Framebuffer)).obj };
+            // `old_fb` is a live framebuffer; this reads its GEM object.
+            let obj = ptr::as_ref(old_fb as *mut Framebuffer).obj;
             drm_gem_unref(obj);
         }
-        // SAFETY: as above — installing the new framebuffer.
-        unsafe { (*crtc).fb = fb as *mut c_void };
-        // SAFETY: `fb` is the live framebuffer; this reads its GEM object to take a
+        // as above — installing the new framebuffer.
+        ptr::as_mut(crtc).fb = fb as *mut c_void;
+        // `fb` is the live framebuffer; this reads its GEM object to take a
         // reference.
-        let obj = unsafe { (*fb).obj };
+        let obj = ptr::as_ref(fb).obj;
         drm_gem_ref(obj);
     }
 
@@ -446,9 +440,9 @@ pub extern "C" fn mode_page_flip(file: *mut DrmFile, arg: *mut c_void) -> c_int 
     drm_crtc_vblank_bump(crtc);
 
     if req.flags & DRM_MODE_PAGE_FLIP_EVENT != 0 {
-        // SAFETY: `crtc` is the live CRTC; this reads its vblank sequence, as the
+        // `crtc` is the live CRTC; this reads its vblank sequence, as the
         // event should report.
-        let seq = unsafe { (*crtc).vblank_count };
+        let seq = ptr::as_ref(crtc).vblank_count;
         drm_file_queue_event(dev, crtc, DRM_EVENT_FLIP_COMPLETE, req.user_data, seq);
     }
     0
@@ -500,7 +494,7 @@ const DRM_MODE_CURSOR_FLAGS: u32 = 0x03;
 // uapi structs this is the shared body of; folding it into a struct would only
 // move the same fields one level down, so the count is accepted deliberately.
 #[allow(clippy::too_many_arguments)]
-unsafe fn cursor_apply(
+fn cursor_apply(
     file: *mut DrmFile,
     dev: *mut DrmDevice,
     flags: u32,
@@ -533,12 +527,12 @@ unsafe fn cursor_apply(
         if handle != 0 && obj.is_null() {
             return -22;
         }
-        // SAFETY: `dev` is the caller's live device; this copies its ops pointer.
-        let ops = unsafe { (*dev).ops };
+        // `dev` is the caller's live device; this copies its ops pointer.
+        let ops = ptr::as_ref(dev).ops;
         if !ops.is_null() {
-            // SAFETY: `ops` is the driver's live ops table; this copies the
+            // `ops` is the driver's live ops table; this copies the
             // `cursor_set` fn pointer only.
-            let f = unsafe { (*ops).cursor_set };
+            let f = ptr::as_ref(ops).cursor_set;
             if let Some(f) = f {
                 let rc = f(crtc as *mut c_void, obj, w, h, hot_x, hot_y);
                 if rc != 0 {
@@ -551,36 +545,32 @@ unsafe fn cursor_apply(
          * client's handle drops *its* reference, so without this one the object
          * could be freed while the device still displays it (and the driver is
          * still handed `cursor.obj`).  Drop the image being replaced first. */
-        // SAFETY: `crtc` is the live CRTC; this reads the image it is replacing.
-        let old = unsafe { (*crtc).cursor.obj };
+        // `crtc` is the live CRTC; this reads the image it is replacing.
+        let old = ptr::as_ref(crtc).cursor.obj;
         if !old.is_null() {
             drm_gem_unref(old);
         }
         if !obj.is_null() {
             drm_gem_ref(obj);
         }
-        // SAFETY: `crtc` is the live CRTC just resolved from the device's pool; these
+        // `crtc` is the live CRTC just resolved from the device's pool; these
         // store the new cursor image state.
-        unsafe { (*crtc).cursor.handle = handle };
-        // SAFETY: as above — the object.
-        unsafe { (*crtc).cursor.obj = obj };
-        // SAFETY: as above — the width.
-        unsafe { (*crtc).cursor.w = w };
-        // SAFETY: as above — the height.
-        unsafe { (*crtc).cursor.h = h };
-        // SAFETY: as above — the hot spot.
-        unsafe { (*crtc).cursor.hot_x = hot_x };
-        // SAFETY: as above — the hot spot.
-        unsafe { (*crtc).cursor.hot_y = hot_y };
+        let crtc = ptr::as_mut(crtc);
+        crtc.cursor.handle = handle;
+        crtc.cursor.obj = obj;
+        crtc.cursor.w = w;
+        crtc.cursor.h = h;
+        crtc.cursor.hot_x = hot_x;
+        crtc.cursor.hot_y = hot_y;
     }
 
     if flags & DRM_MODE_CURSOR_MOVE != 0 {
-        // SAFETY: `dev` is the caller's live device; this copies its ops pointer.
-        let ops = unsafe { (*dev).ops };
+        // `dev` is the caller's live device; this copies its ops pointer.
+        let ops = ptr::as_ref(dev).ops;
         if !ops.is_null() {
-            // SAFETY: `ops` is the driver's live ops table; this copies the
+            // `ops` is the driver's live ops table; this copies the
             // `cursor_move` fn pointer only.
-            let f = unsafe { (*ops).cursor_move };
+            let f = ptr::as_ref(ops).cursor_move;
             if let Some(f) = f {
                 let rc = f(crtc as *mut c_void, x, y);
                 if rc != 0 {
@@ -588,16 +578,15 @@ unsafe fn cursor_apply(
                 }
             }
         }
-        // SAFETY: `crtc` is the live CRTC; these store the new cursor position.
-        unsafe { (*crtc).cursor.x = x };
-        // SAFETY: as above — the position.
-        unsafe { (*crtc).cursor.y = y };
+        // `crtc` is the live CRTC; these store the new cursor position.
+        ptr::as_mut(crtc).cursor.x = x;
+        // as above — the position.
+        ptr::as_mut(crtc).cursor.y = y;
     }
     0
 }
 
-#[no_mangle]
-pub extern "C" fn mode_cursor(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_cursor(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -619,21 +608,17 @@ pub extern "C" fn mode_cursor(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
-    // SAFETY: `cursor_apply`'s contract: `file`/`dev` are the caller's live
+    let dev = ptr::as_ref(file).dev;
+    // `cursor_apply`'s contract: `file`/`dev` are the caller's live
     // client/device.
-    unsafe {
-        cursor_apply(
-            file, dev, req.flags, req.crtc_id, req.x, req.y, req.width, req.height, req.handle, 0,
-            0,
-        )
-    }
+    cursor_apply(
+        file, dev, req.flags, req.crtc_id, req.x, req.y, req.width, req.height, req.handle, 0, 0,
+    )
 }
 
-#[no_mangle]
-pub extern "C" fn mode_cursor2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_cursor2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -657,15 +642,13 @@ pub extern "C" fn mode_cursor2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
-    // SAFETY: `cursor_apply`'s contract: `file`/`dev` are the caller's live
+    let dev = ptr::as_ref(file).dev;
+    // `cursor_apply`'s contract: `file`/`dev` are the caller's live
     // client/device.
-    unsafe {
-        cursor_apply(
-            file, dev, req.flags, req.crtc_id, req.x, req.y, req.width, req.height, req.handle,
-            req.hot_x, req.hot_y,
-        )
-    }
+    cursor_apply(
+        file, dev, req.flags, req.crtc_id, req.x, req.y, req.width, req.height, req.handle,
+        req.hot_x, req.hot_y,
+    )
 }

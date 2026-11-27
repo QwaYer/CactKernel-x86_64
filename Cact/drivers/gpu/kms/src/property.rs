@@ -13,6 +13,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::{ptr, user};
+
 use super::mode_object::{drm_connector_find, Connector, Crtc, Encoder};
 use crate::device::drm_driver_set_config;
 use crate::ffi::{drm_copy_in, drm_copy_out, drm_put_raw, uptru};
@@ -134,12 +136,6 @@ const DRM_IOCTL_MODE_DESTROYPROPBLOB: u32 = drm_iowr(0xBE, 4);
  * pool and has no entry cap. */
 const MAX_BLOB_BYTES: u32 = 1 << 20;
 
-extern "C" {
-    fn validate_user_ptr(ptr: *const c_void, size: u32) -> c_int;
-    fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-    fn copy_to_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-}
-
 /* ── the pool ────────────────────────────────────────────────────────────── */
 
 /// Gather the properties attached to one object.
@@ -147,8 +143,7 @@ extern "C" {
 /// Writes at most `max` entries and returns the number of attachments that
 /// exist, so a caller can count with `max == 0` first and then ask for exactly
 /// that many.
-#[no_mangle]
-pub extern "C" fn drm_prop_collect(
+pub fn drm_prop_collect(
     dev: *mut DrmDevice,
     obj_type: u32,
     obj_id: u32,
@@ -162,22 +157,16 @@ pub extern "C" fn drm_prop_collect(
     let limit = if max <= 0 { 0usize } else { max as usize };
     let mut total = 0usize;
     let mut filled = 0usize;
-    // SAFETY: `dev` is the caller's live device; this borrow of its attachment list
+    // `dev` is the caller's live device; this borrow of its attachment list
     // is consumed by the walk below.
-    let attach = unsafe { &(*dev).prop_attach };
+    let attach = &ptr::as_ref(dev).prop_attach;
     for a in attach.iter() {
         if a.obj_type == obj_type && a.obj_id == obj_id {
             if filled < limit && !ids.is_null() && !values.is_null() {
-                // SAFETY: `filled < limit` and the caller passed a `limit`-entry `ids`
-                // array (non-null, checked above).
-                let id_slot = unsafe { ids.add(filled) };
-                // SAFETY: `filled < limit` and the caller passed a `limit`-entry
-                // `values` array (non-null, checked above).
-                let value_slot = unsafe { values.add(filled) };
-                // SAFETY: `id_slot` points at one in-bounds out slot.
-                unsafe { *id_slot = a.prop_id };
-                // SAFETY: `value_slot` points at one in-bounds out slot.
-                unsafe { *value_slot = a.value };
+                // `filled < limit` and the caller passed `limit`-entry `ids` and
+                // `values` arrays (non-null, checked above).
+                ptr::slice_mut(ids, limit)[filled] = a.prop_id;
+                ptr::slice_mut(values, limit)[filled] = a.value;
                 filled += 1;
             }
             total += 1;
@@ -190,18 +179,16 @@ pub extern "C" fn drm_prop_collect(
 ///
 /// The pointer borrows the device's own list; callers must not create or remove
 /// properties while holding it.
-#[no_mangle]
-pub extern "C" fn drm_prop_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_prop_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's device.
-    unsafe { (*dev).find_prop(id) as *mut c_void }
+    // read-only walk of the caller's device.
+    ptr::as_ref(dev).find_prop(id) as *mut c_void
 }
 
 /// `drm_prop_create` — define a new device property.
-#[no_mangle]
-pub extern "C" fn drm_prop_create(
+pub fn drm_prop_create(
     dev: *mut DrmDevice,
     name: *const u8,
     flags: u32,
@@ -217,11 +204,11 @@ pub extern "C" fn drm_prop_create(
     let mut pname = [0u8; PROPERTY_NAME_LEN];
     let mut k = 0;
     while k < PROPERTY_NAME_LEN - 1 {
-        // SAFETY: `name` is a NUL-terminated string (checked non-null above) and
+        // `name` is a NUL-terminated string (checked non-null above) and
         // `k < PROPERTY_NAME_LEN - 1`, so this byte pointer is in bounds.
-        let np = unsafe { name.add(k) };
-        // SAFETY: `np` points at one byte of that string.
-        let b = unsafe { *np };
+        let np = ptr::add(name, k);
+        // `np` points at one byte of that string.
+        let b = ptr::read(np);
         pname[k] = b;
         if b == 0 {
             break;
@@ -239,30 +226,30 @@ pub extern "C" fn drm_prop_create(
             let val = if values.is_null() {
                 0
             } else {
-                // SAFETY: the caller passes `num_values` readable `u64`s and
+                // the caller passes `num_values` readable `u64`s and
                 // `v < n <= num_values`, so this element pointer is in bounds.
-                let vp = unsafe { values.add(v) };
-                // SAFETY: `vp` points at one in-bounds value.
-                unsafe { *vp }
+                let vp = ptr::add(values, v);
+                // `vp` points at one in-bounds value.
+                ptr::read(vp)
             };
             vals.push(val);
             let nm = if enum_names.is_null() {
                 core::ptr::null()
             } else {
-                // SAFETY: the caller passes `num_values` readable name pointers and
+                // the caller passes `num_values` readable name pointers and
                 // `v < n <= num_values`, so this element pointer is in bounds.
-                let ep = unsafe { enum_names.add(v) };
-                // SAFETY: `ep` points at one in-bounds name pointer.
-                unsafe { *ep }
+                let ep = ptr::add(enum_names, v);
+                // `ep` points at one in-bounds name pointer.
+                ptr::read(ep)
             };
             names.push(nm);
         }
     }
 
     {
-        // SAFETY: `dev` is the caller's live device; this borrow is exclusive for the
+        // `dev` is the caller's live device; this borrow is exclusive for the
         // property insert below.
-        let dev = unsafe { &mut *dev };
+        let dev = ptr::as_mut(dev);
         dev.next_prop_id += 1;
         let id = dev.next_prop_id;
         dev.props.push(Property {
@@ -279,8 +266,7 @@ pub extern "C" fn drm_prop_create(
 }
 
 /// `drm_prop_attach` — attach a property to an object (idempotent).
-#[no_mangle]
-pub extern "C" fn drm_prop_attach(
+pub fn drm_prop_attach(
     dev: *mut DrmDevice,
     prop_id: u32,
     obj_type: u32,
@@ -290,28 +276,25 @@ pub extern "C" fn drm_prop_attach(
     if dev.is_null() || drm_prop_find(dev, prop_id).is_null() {
         return -22;
     }
-    // SAFETY: caller's device.
-    unsafe {
-        let dev = &mut *dev;
-        for a in &mut dev.prop_attach {
-            if a.prop_id == prop_id && a.obj_type == obj_type && a.obj_id == obj_id {
-                a.value = value;
-                return 0;
-            }
+    // caller's device.
+    let dev = ptr::as_mut(dev);
+    for a in &mut dev.prop_attach {
+        if a.prop_id == prop_id && a.obj_type == obj_type && a.obj_id == obj_id {
+            a.value = value;
+            return 0;
         }
-        dev.prop_attach.push(PropAttach {
-            prop_id,
-            obj_type,
-            obj_id,
-            value,
-        });
     }
+    dev.prop_attach.push(PropAttach {
+        prop_id,
+        obj_type,
+        obj_id,
+        value,
+    });
     0
 }
 
 /// `drm_prop_set` — change the value of an existing attachment.
-#[no_mangle]
-pub extern "C" fn drm_prop_set(
+pub fn drm_prop_set(
     dev: *mut DrmDevice,
     prop_id: u32,
     obj_type: u32,
@@ -321,14 +304,12 @@ pub extern "C" fn drm_prop_set(
     if dev.is_null() {
         return -22;
     }
-    // SAFETY: caller's device.
-    unsafe {
-        let dev = &mut *dev;
-        for a in &mut dev.prop_attach {
-            if a.prop_id == prop_id && a.obj_type == obj_type && a.obj_id == obj_id {
-                a.value = value;
-                return 0;
-            }
+    // caller's device.
+    let dev = ptr::as_mut(dev);
+    for a in &mut dev.prop_attach {
+        if a.prop_id == prop_id && a.obj_type == obj_type && a.obj_id == obj_id {
+            a.value = value;
+            return 0;
         }
     }
     -22
@@ -350,8 +331,7 @@ fn copy_prop_name(dst: &mut [u8; MODE_NAME_LEN], src: &[u8; PROPERTY_NAME_LEN]) 
 /* ── ioctls ──────────────────────────────────────────────────────────────── */
 
 /// `DRM_IOCTL_MODE_GETPROPERTY`.
-#[no_mangle]
-pub extern "C" fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -374,15 +354,15 @@ pub extern "C" fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_i
         return -22;
     }
 
-    // SAFETY: `file` is the caller's open client.
-    let dev = unsafe { (*file).dev };
+    // `file` is the caller's open client.
+    let dev = ptr::as_ref(file).dev;
     let p = drm_prop_find(dev, req.prop_id) as *const Property;
     if p.is_null() {
         return -22;
     }
-    // SAFETY: `p` was just looked up in the caller's device, and nothing in
+    // `p` was just looked up in the caller's device, and nothing in
     // this handler adds or removes a property.
-    let p = unsafe { &*p };
+    let p = ptr::as_ref(p);
 
     /* At most the number of values the client declared room for: the array it
      * pointed at is no larger than `count_values`, so writing the whole list
@@ -419,11 +399,11 @@ pub extern "C" fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_i
                 if !src.is_null() {
                     let mut k = 0;
                     while k < MODE_NAME_LEN - 1 {
-                        // SAFETY: the pool stores NUL-terminated names and
+                        // the pool stores NUL-terminated names and
                         // `k < MODE_NAME_LEN - 1`, so this byte pointer is in bounds.
-                        let cp = unsafe { src.add(k) };
-                        // SAFETY: `cp` points at one byte of that name.
-                        let b = unsafe { *cp };
+                        let cp = ptr::add(src, k);
+                        // `cp` points at one byte of that name.
+                        let b = ptr::read(cp);
                         en[i].name[k] = b;
                         if b == 0 {
                             break;
@@ -462,8 +442,7 @@ pub extern "C" fn mode_get_property(file: *mut DrmFile, arg: *mut c_void) -> c_i
 }
 
 /// `DRM_IOCTL_MODE_OBJ_GETPROPERTIES`.
-#[no_mangle]
-pub extern "C" fn mode_obj_get_properties(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_obj_get_properties(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -487,8 +466,8 @@ pub extern "C" fn mode_obj_get_properties(file: *mut DrmFile, arg: *mut c_void) 
     /* Count first, then materialise exactly that many on the heap: a 256-entry
      * table on the kernel stack is what this handler must not spend, and the
      * attachment table is no longer a fixed size anyway. */
-    // SAFETY: `file` is the caller's open client.
-    let dev = unsafe { (*file).dev };
+    // `file` is the caller's open client.
+    let dev = ptr::as_ref(file).dev;
     let n = drm_prop_collect(dev, req.obj_type, req.obj_id, core::ptr::null_mut(), core::ptr::null_mut(), 0);
     if n < 0 {
         return -22;
@@ -539,8 +518,7 @@ pub extern "C" fn mode_obj_get_properties(file: *mut DrmFile, arg: *mut c_void) 
 }
 
 /// `DRM_IOCTL_MODE_OBJ_SETPROPERTY`.
-#[no_mangle]
-pub extern "C" fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -560,8 +538,8 @@ pub extern "C" fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) ->
         return -22;
     }
 
-    // SAFETY: `file` is the caller's open client.
-    let dev = unsafe { (*file).dev };
+    // `file` is the caller's open client.
+    let dev = ptr::as_ref(file).dev;
     let p = drm_prop_find(dev, req.prop_id) as *const Property;
     if p.is_null() {
         return -22;
@@ -574,9 +552,9 @@ pub extern "C" fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) ->
 
     /* DPMS on a connector is the one property with a hardware effect: the
      * driver hears about it through set_config (blanking). */
-    // SAFETY: `p` was just looked up; drm_prop_set does not add or remove.
-    let is_dpms = unsafe {
-        let prop: &Property = &*p;
+    // `p` was just looked up; drm_prop_set does not add or remove.
+    let is_dpms = {
+        let prop = ptr::as_ref(p);
         prop.name[0..5] == *b"DPMS\0"
     };
     if req.obj_type == DRM_MODE_OBJECT_CONNECTOR && is_dpms {
@@ -584,23 +562,23 @@ pub extern "C" fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) ->
         if c.is_null() {
             return -22;
         }
-        // SAFETY: `c` is the live connector looked up in the caller's device; this
+        // `c` is the live connector looked up in the caller's device; this
         // stores its requested DPMS state.
-        unsafe { (*c).dpms = req.value as u32 };
-        // SAFETY: as above — its attached encoder.
-        let enc = unsafe { (*c).encoder };
+        ptr::as_mut(c).dpms = req.value as u32;
+        // as above — its attached encoder.
+        let enc = ptr::as_ref(c).encoder;
         if !enc.is_null() {
-            // SAFETY: `enc` is a live encoder (non-null, checked above); this reads its
+            // `enc` is a live encoder (non-null, checked above); this reads its
             // CRTC.
-            let crtc = unsafe { (*(enc as *mut Encoder)).crtc };
+            let crtc = ptr::as_ref(enc as *mut Encoder).crtc;
             if !crtc.is_null() {
                 let crtc = crtc as *mut Crtc;
                 let on = req.value == DRM_MODE_DPMS_ON;
                 let mut conns: [*mut c_void; 1] = [c as *mut c_void];
-                // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-                let crtc_fb = unsafe { (*crtc).fb };
-                // SAFETY: as above — its current mode.
-                let crtc_mode = unsafe { (*crtc).mode };
+                // `crtc` is the live CRTC; this reads its framebuffer.
+                let crtc_fb = ptr::as_ref(crtc).fb;
+                // as above — its current mode.
+                let crtc_mode = ptr::as_ref(crtc).mode;
                 let mut set = ModeSet {
                     fb: if on { crtc_fb } else { core::ptr::null_mut() },
                     crtc: crtc as *mut c_void,
@@ -614,8 +592,8 @@ pub extern "C" fn mode_obj_set_property(file: *mut DrmFile, arg: *mut c_void) ->
                 if src != 0 {
                     return src;
                 }
-                // SAFETY: as above — marking the CRTC enabled or disabled.
-                unsafe { (*crtc).enabled = if on { 1 } else { 0 } };
+                // as above — marking the CRTC enabled or disabled.
+                ptr::as_mut(crtc).enabled = if on { 1 } else { 0 };
             }
         }
     }
@@ -634,23 +612,21 @@ pub(crate) fn drm_prop_edid_id(dev: *mut DrmDevice) -> u32 {
     if dev.is_null() {
         return 0;
     }
-    // SAFETY: caller's device.
-    unsafe {
-        let existing = (*dev).find_prop_by_name(b"EDID");
-        if existing != 0 {
-            return existing;
-        }
-        drm_prop_create(
-            dev,
-            c"EDID".as_ptr() as *const u8,
-            DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE,
-            DRM_MODE_PROP_BLOB,
-            0,
-            core::ptr::null(),
-            core::ptr::null(),
-            4,
-        )
+    // caller's device.
+    let existing = ptr::as_ref(dev).find_prop_by_name(b"EDID");
+    if existing != 0 {
+        return existing;
     }
+    drm_prop_create(
+        dev,
+        c"EDID".as_ptr() as *const u8,
+        DRM_MODE_PROP_BLOB | DRM_MODE_PROP_IMMUTABLE,
+        DRM_MODE_PROP_BLOB,
+        0,
+        core::ptr::null(),
+        core::ptr::null(),
+        4,
+    )
 }
 
 /// The universal-planes `type` property: one device-wide, immutable enum
@@ -662,31 +638,28 @@ pub(crate) fn drm_prop_plane_type_id(dev: *mut DrmDevice) -> u32 {
     if dev.is_null() {
         return 0;
     }
-    // SAFETY: caller's device.
-    unsafe {
-        let existing = (*dev).find_prop_by_name(b"type");
-        if existing != 0 {
-            return existing;
-        }
-        let values: [u64; 3] = [0, 1, 2];
-        let names: [*const u8; 3] = [OVERLAY.as_ptr(), PRIMARY.as_ptr(), CURSOR.as_ptr()];
-        drm_prop_create(
-            dev,
-            c"type".as_ptr() as *const u8,
-            DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE,
-            DRM_MODE_PROP_ENUM,
-            3,
-            values.as_ptr(),
-            names.as_ptr(),
-            4,
-        )
+    // caller's device.
+    let existing = ptr::as_ref(dev).find_prop_by_name(b"type");
+    if existing != 0 {
+        return existing;
     }
+    let values: [u64; 3] = [0, 1, 2];
+    let names: [*const u8; 3] = [OVERLAY.as_ptr(), PRIMARY.as_ptr(), CURSOR.as_ptr()];
+    drm_prop_create(
+        dev,
+        c"type".as_ptr() as *const u8,
+        DRM_MODE_PROP_ENUM | DRM_MODE_PROP_IMMUTABLE,
+        DRM_MODE_PROP_ENUM,
+        3,
+        values.as_ptr(),
+        names.as_ptr(),
+        4,
+    )
 }
 
 /// `DRM_IOCTL_MODE_CREATEPROPBLOB` — copy client bytes into a new blob.  Used
 /// for the `MODE_ID` blobs an atomic commit refers to.
-#[no_mangle]
-pub extern "C" fn mode_create_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_create_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -710,23 +683,23 @@ pub extern "C" fn mode_create_blob(file: *mut DrmFile, arg: *mut c_void) -> c_in
 
     let user = req.data as u32 as usize as *const c_void;
     let mut buf: Vec<u8> = vec![0u8; req.length as usize];
-    // SAFETY: `user` is the client's pointer; this range-checks it for the length.
-    if unsafe { validate_user_ptr(user, req.length) } == 0 {
+    // `user` is the client's pointer; this range-checks it for the length.
+    if !user::validate_user_ptr(user, req.length) {
         return -22;
     }
-    // SAFETY: the range check above passed, so `user` is a readable userspace range
+    // the range check above passed, so `user` is a readable userspace range
     // and `buf` is a writable buffer of the same size.
-    if unsafe { copy_from_user(buf.as_mut_ptr() as *mut c_void, user, req.length) } != 0 {
+    if !user::copy_from_user(buf.as_mut_ptr() as *mut c_void, user, req.length) {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
-    // SAFETY: `dev` is the live device; this creates a blob from `buf`.
-    req.blob_id = unsafe { (*dev).blob_create(&buf) };
+    // `dev` is the live device; this creates a blob from `buf`.
+    req.blob_id = ptr::as_mut(dev).blob_create(&buf);
     req.data = 0;
     drm_copy_out(
         arg,
@@ -737,8 +710,7 @@ pub extern "C" fn mode_create_blob(file: *mut DrmFile, arg: *mut c_void) -> c_in
 
 /// `DRM_IOCTL_MODE_GETPROPBLOB` — the client asks with the length it expects
 /// (having learned it from the property), exactly as Linux requires.
-#[no_mangle]
-pub extern "C" fn mode_get_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_get_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -757,27 +729,25 @@ pub extern "C" fn mode_get_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
-    // SAFETY: `dev` is the live device; this finds the blob by id.
-    let blob = unsafe { (*dev).find_blob(req.blob_id) };
+    // `dev` is the live device; this finds the blob by id.
+    let blob = ptr::as_ref(dev).find_blob(req.blob_id);
     if blob.is_null() {
         return -2; // -ENOENT
     }
-    // SAFETY: `blob` is the live blob (non-null, checked above); this borrow is
+    // `blob` is the live blob (non-null, checked above); this borrow is
     // consumed by the reads below.
-    let blob = unsafe { &*blob };
+    let blob = ptr::as_ref(blob);
     if req.length == blob.data.len() as u32 && req.data != 0 {
         let user = req.data as u32 as usize as *mut c_void;
-        // SAFETY: `user` is the client's writable buffer and `blob.data` is the blob
+        // `user` is the client's writable buffer and `blob.data` is the blob
         // payload of exactly that length (checked above).
-        if unsafe { copy_to_user(user, blob.data.as_ptr() as *const c_void, blob.data.len() as u32) }
-            != 0
-        {
+        if !user::copy_to_user(user, blob.data.as_ptr() as *const c_void, blob.data.len() as u32) {
             return -14; // -EFAULT
         }
     }
@@ -790,8 +760,7 @@ pub extern "C" fn mode_get_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 }
 
 /// `DRM_IOCTL_MODE_DESTROYPROPBLOB`.
-#[no_mangle]
-pub extern "C" fn mode_destroy_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_destroy_blob(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -805,14 +774,14 @@ pub extern "C" fn mode_destroy_blob(file: *mut DrmFile, arg: *mut c_void) -> c_i
     {
         return -22;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
-    // SAFETY: `dev` is the live device; this destroys the blob by id.
-    if !unsafe { (*dev).blob_destroy(req.blob_id) } {
+    // `dev` is the live device; this destroys the blob by id.
+    if !ptr::as_mut(dev).blob_destroy(req.blob_id) {
         return -2; // -ENOENT
     }
     0
@@ -824,7 +793,7 @@ pub extern "C" fn mode_destroy_blob(file: *mut DrmFile, arg: *mut c_void) -> c_i
 /// by (name, object type), so a connector's `CRTC_ID` and a plane's `CRTC_ID`
 /// are separate property objects — which is what lets the atomic ioctl tell
 /// which object pool an id refers to.
-unsafe fn prop_get_or_create(
+fn prop_get_or_create(
     dev: *mut DrmDevice,
     name: &[u8],
     flags: u32,
@@ -835,9 +804,9 @@ unsafe fn prop_get_or_create(
     if dev.is_null() {
         return 0;
     }
-    // SAFETY: `dev` is the caller's live device (checked non-null above); the
+    // `dev` is the caller's live device (checked non-null above); the
     // lookup only reads its property list.
-    let existing = unsafe { (*dev).find_prop_by_name_type(name, ptype) };
+    let existing = ptr::as_ref(dev).find_prop_by_name_type(name, ptype);
     if existing != 0 {
         return existing;
     }
@@ -862,77 +831,67 @@ unsafe fn prop_get_or_create(
 
 /// `ACTIVE` on a CRTC: 0 is off, 1 is on.
 pub(crate) fn drm_prop_crtc_active(dev: *mut DrmDevice) -> u32 {
-    // SAFETY: caller's device.
-    unsafe {
-        prop_get_or_create(
-            dev,
-            b"ACTIVE",
-            DRM_MODE_PROP_RANGE | DRM_MODE_PROP_ATOMIC,
-            DRM_MODE_OBJECT_CRTC,
-            &[0, 1],
-            4,
-        )
-    }
+    // caller's device.
+    prop_get_or_create(
+        dev,
+        b"ACTIVE",
+        DRM_MODE_PROP_RANGE | DRM_MODE_PROP_ATOMIC,
+        DRM_MODE_OBJECT_CRTC,
+        &[0, 1],
+        4,
+    )
 }
 
 /// `MODE_ID` on a CRTC: a blob id naming the mode to set.
 pub(crate) fn drm_prop_crtc_mode_id(dev: *mut DrmDevice) -> u32 {
-    // SAFETY: caller's device.
-    unsafe {
-        prop_get_or_create(
-            dev,
-            b"MODE_ID",
-            DRM_MODE_PROP_BLOB | DRM_MODE_PROP_ATOMIC,
-            DRM_MODE_OBJECT_CRTC,
-            &[],
-            4,
-        )
-    }
+    // caller's device.
+    prop_get_or_create(
+        dev,
+        b"MODE_ID",
+        DRM_MODE_PROP_BLOB | DRM_MODE_PROP_ATOMIC,
+        DRM_MODE_OBJECT_CRTC,
+        &[],
+        4,
+    )
 }
 
 /// `CRTC_ID` on a connector: the CRTC it is bound to (0 detaches).
 pub(crate) fn drm_prop_connector_crtc_id(dev: *mut DrmDevice) -> u32 {
-    // SAFETY: caller's device.
-    unsafe {
-        prop_get_or_create(
-            dev,
-            b"CRTC_ID",
-            DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
-            DRM_MODE_OBJECT_CONNECTOR,
-            &[],
-            4,
-        )
-    }
+    // caller's device.
+    prop_get_or_create(
+        dev,
+        b"CRTC_ID",
+        DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
+        DRM_MODE_OBJECT_CONNECTOR,
+        &[],
+        4,
+    )
 }
 
 /// `CRTC_ID` on a plane: the CRTC the plane is attached to (0 detaches).
 pub(crate) fn drm_prop_plane_crtc_id(dev: *mut DrmDevice) -> u32 {
-    // SAFETY: caller's device.
-    unsafe {
-        prop_get_or_create(
-            dev,
-            b"CRTC_ID",
-            DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
-            DRM_MODE_OBJECT_PLANE,
-            &[],
-            4,
-        )
-    }
+    // caller's device.
+    prop_get_or_create(
+        dev,
+        b"CRTC_ID",
+        DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
+        DRM_MODE_OBJECT_PLANE,
+        &[],
+        4,
+    )
 }
 
 /// `FB_ID` on a plane: the framebuffer it scans out (0 turns it off).
 pub(crate) fn drm_prop_plane_fb_id(dev: *mut DrmDevice) -> u32 {
-    // SAFETY: caller's device.
-    unsafe {
-        prop_get_or_create(
-            dev,
-            b"FB_ID",
-            DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
-            DRM_MODE_OBJECT_PLANE,
-            &[],
-            4,
-        )
-    }
+    // caller's device.
+    prop_get_or_create(
+        dev,
+        b"FB_ID",
+        DRM_MODE_PROP_OBJECT | DRM_MODE_PROP_ATOMIC,
+        DRM_MODE_OBJECT_PLANE,
+        &[],
+        4,
+    )
 }
 
 /// The plane's geometry properties, in the order
@@ -946,22 +905,20 @@ pub(crate) fn drm_prop_plane_rects(dev: *mut DrmDevice) -> [u32; 8] {
     ];
     let mut ids = [0u32; 8];
     for (i, name) in names.iter().enumerate() {
-        // SAFETY: caller's device.
-        ids[i] = unsafe {
-            let signed = i == 4 || i == 5; // CRTC_X / CRTC_Y may be negative
-            prop_get_or_create(
-                dev,
-                name,
-                if signed {
-                    DRM_MODE_PROP_SIGNED_RANGE | DRM_MODE_PROP_ATOMIC
-                } else {
-                    DRM_MODE_PROP_RANGE | DRM_MODE_PROP_ATOMIC
-                },
-                DRM_MODE_OBJECT_PLANE,
-                if signed { &I32_RANGE } else { &U32_RANGE },
-                4,
-            )
-        };
+        // caller's device.
+        let signed = i == 4 || i == 5; // CRTC_X / CRTC_Y may be negative
+        ids[i] = prop_get_or_create(
+            dev,
+            name,
+            if signed {
+                DRM_MODE_PROP_SIGNED_RANGE | DRM_MODE_PROP_ATOMIC
+            } else {
+                DRM_MODE_PROP_RANGE | DRM_MODE_PROP_ATOMIC
+            },
+            DRM_MODE_OBJECT_PLANE,
+            if signed { &I32_RANGE } else { &U32_RANGE },
+            4,
+        );
     }
     ids
 }
@@ -973,15 +930,15 @@ pub(crate) fn drm_prop_name_and_type(dev: *mut DrmDevice, prop_id: u32) -> ([u8;
     if dev.is_null() {
         return (name, 0);
     }
-    // SAFETY: `dev` is the caller's live device; this finds the property by id.
-    let p = unsafe { (*dev).find_prop(prop_id) };
+    // `dev` is the caller's live device; this finds the property by id.
+    let p = ptr::as_ref(dev).find_prop(prop_id);
     if p.is_null() {
         return (name, 0);
     }
-    // SAFETY: `p` is the live property (non-null, checked above); this reads its name.
-    name = unsafe { (*p).name };
-    // SAFETY: as above — its object type.
-    let ptype = unsafe { (*p).ptype };
+    // `p` is the live property (non-null, checked above); this reads its name.
+    name = ptr::as_ref(p).name;
+    // as above — its object type.
+    let ptype = ptr::as_ref(p).ptype;
     (name, ptype)
 }
 

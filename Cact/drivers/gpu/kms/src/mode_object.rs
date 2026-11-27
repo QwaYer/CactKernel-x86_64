@@ -14,16 +14,14 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::ptr;
+
 use crate::device::drm_driver_set_config;
 use crate::ffi::drm_copy_in;
 use crate::gem::{drm_gem_ref, drm_gem_unref};
 use crate::kms::framebuffer::{drm_fb_find, Framebuffer};
 use crate::mode::{DisplayMode, MODE_NAME_LEN};
 use crate::structs::{pool_set, DrmDevice, DrmFile, GemObject, ModeSet};
-
-extern "C" {
-
-}
 
 /* ── CRTC ────────────────────────────────────────────────────────────────── */
 
@@ -101,11 +99,11 @@ const _: () = assert!(core::mem::offset_of!(Encoder, crtc) == 32);
 fn copy_name(dst: &mut [u8; MODE_NAME_LEN], src: *const u8) {
     let mut i = 0;
     while i < MODE_NAME_LEN - 1 {
-        // SAFETY: the caller passes a NUL-terminated string (or NULL, checked by the
+        // The caller passes a NUL-terminated string (or NULL, checked by the
         // caller) and `i < MODE_NAME_LEN - 1`, so this byte pointer is in bounds.
-        let p = unsafe { src.add(i) };
-        // SAFETY: `p` points at one byte of that string.
-        let b = unsafe { *p };
+        let p = ptr::add(src, i);
+        // `p` points at one byte of that string.
+        let b = ptr::read(p);
         dst[i] = b;
         if b == 0 {
             return;
@@ -150,28 +148,27 @@ fn write_indexed_name(dst: &mut [u8; MODE_NAME_LEN], prefix: &[u8], n: i32) {
 }
 
 /// `drm_mode_crtc_init` — allocate and register CRTC number `index`.
-#[no_mangle]
-pub extern "C" fn drm_mode_crtc_init(dev: *mut DrmDevice, index: i32, name: *const u8) -> c_int {
+pub fn drm_mode_crtc_init(dev: *mut DrmDevice, index: i32, name: *const u8) -> c_int {
     if dev.is_null() || index < 0 {
         return -22;
     }
     let slot = index as usize;
-    // SAFETY: `dev` is the caller's live device; this borrow of its CRTC pool is
+    // `dev` is the caller's live device; this borrow of its CRTC pool is
     // consumed by the occupancy check.
-    if dev_index_used(unsafe { (*dev).crtcs.as_slice() }, slot) {
+    if dev_index_used(ptr::as_ref(dev).crtcs.as_slice(), slot) {
         return -22;
     }
     let mem = cact_mm::kmalloc(core::mem::size_of::<Crtc>()) as *mut Crtc;
     if mem.is_null() {
         return -12;
     }
-    // SAFETY: `mem` is the fresh `kmalloc` block just checked non-null, so zeroing
+    // `mem` is the fresh `kmalloc` block just checked non-null, so zeroing
     // one `Crtc` covers exactly that allocation.
-    unsafe { core::ptr::write_bytes(mem, 0, 1) };
+    ptr::write_bytes(mem, 0, 1);
     {
-        // SAFETY: `mem` is the fresh, exclusively-owned CRTC; this borrow is consumed
+        // `mem` is the fresh, exclusively-owned CRTC; this borrow is consumed
         // by the field stores below.
-        let crtc = unsafe { &mut *mem };
+        let crtc = ptr::as_mut(mem);
         crtc.dev = dev;
         crtc.index = index;
         if name.is_null() {
@@ -180,8 +177,8 @@ pub extern "C" fn drm_mode_crtc_init(dev: *mut DrmDevice, index: i32, name: *con
             copy_name(&mut crtc.name, name);
         }
 
-        // SAFETY: `dev` is the live device; claiming the slot in its CRTC pool.
-        crtc.id = pool_set(unsafe { &mut (*dev).crtcs }, slot, mem as *mut c_void);
+        // `dev` is the live device; claiming the slot in its CRTC pool.
+        crtc.id = pool_set(&mut ptr::as_mut(dev).crtcs, slot, mem as *mut c_void);
 
         /* The properties an atomic commit drives a CRTC through. */
         let active = crate::kms::property::drm_prop_crtc_active(crtc.dev);
@@ -209,8 +206,7 @@ pub extern "C" fn drm_mode_crtc_init(dev: *mut DrmDevice, index: i32, name: *con
 }
 
 /// `drm_mode_encoder_init` — allocate and register encoder number `index`.
-#[no_mangle]
-pub extern "C" fn drm_mode_encoder_init(
+pub fn drm_mode_encoder_init(
     dev: *mut DrmDevice,
     index: i32,
     etype: u32,
@@ -221,30 +217,30 @@ pub extern "C" fn drm_mode_encoder_init(
         return -22;
     }
     let slot = index as usize;
-    // SAFETY: `dev` is the caller's live device; this borrow of its encoder pool is
+    // `dev` is the caller's live device; this borrow of its encoder pool is
     // consumed by the occupancy check.
-    if dev_index_used(unsafe { (*dev).encoders.as_slice() }, slot) {
+    if dev_index_used(ptr::as_ref(dev).encoders.as_slice(), slot) {
         return -22;
     }
     let mem = cact_mm::kmalloc(core::mem::size_of::<Encoder>()) as *mut Encoder;
     if mem.is_null() {
         return -12;
     }
-    // SAFETY: `mem` is the fresh `kmalloc` block just checked non-null, so zeroing
+    // `mem` is the fresh `kmalloc` block just checked non-null, so zeroing
     // one `Encoder` covers exactly that allocation.
-    unsafe { core::ptr::write_bytes(mem, 0, 1) };
+    ptr::write_bytes(mem, 0, 1);
     {
-        // SAFETY: `mem` is the fresh, exclusively-owned encoder; this borrow is
+        // `mem` is the fresh, exclusively-owned encoder; this borrow is
         // consumed by the field stores below.
-        let enc = unsafe { &mut *mem };
+        let enc = ptr::as_mut(mem);
         enc.dev = dev;
         enc.index = index;
         enc.encoder_type = etype;
         enc.possible_crtcs = possible_crtcs;
         enc.possible_clones = possible_clones;
 
-        // SAFETY: `dev` is the live device; claiming the slot in its encoder pool.
-        enc.id = pool_set(unsafe { &mut (*dev).encoders }, slot, mem as *mut c_void);
+        // `dev` is the live device; claiming the slot in its encoder pool.
+        enc.id = pool_set(&mut ptr::as_mut(dev).encoders, slot, mem as *mut c_void);
     }
     0
 }
@@ -255,23 +251,21 @@ fn dev_index_used(pool: &[*mut c_void], index: usize) -> bool {
 }
 
 /// `drm_crtc_find` — look a CRTC up by the id userspace uses.
-#[no_mangle]
-pub extern "C" fn drm_crtc_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_crtc_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's live device.
-    unsafe { (*dev).find_crtc(id) }
+    // read-only walk of the caller's live device.
+    ptr::as_ref(dev).find_crtc(id)
 }
 
 /// `drm_encoder_find` — look an encoder up by id.
-#[no_mangle]
-pub extern "C" fn drm_encoder_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_encoder_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's live device.
-    unsafe { (*dev).find_encoder(id) }
+    // read-only walk of the caller's live device.
+    ptr::as_ref(dev).find_encoder(id)
 }
 
 /* ── connector ───────────────────────────────────────────────────────────── */
@@ -372,10 +366,10 @@ fn add_std_props(conn: *mut Connector) {
         DPMS_OFF.as_ptr(),
     ];
 
-    // SAFETY: `conn` is the caller's freshly created connector; this borrow is
+    // `conn` is the caller's freshly created connector; this borrow is
     // exclusive for the property setup below (the property helpers only take its
     // device and ids).
-    let conn = unsafe { &mut *conn };
+    let conn = ptr::as_mut(conn);
     let id = crate::kms::property::drm_prop_create(
         conn.dev,
         c"DPMS".as_ptr() as *const u8,
@@ -423,8 +417,7 @@ fn add_std_props(conn: *mut Connector) {
 }
 
 /// `drm_mode_connector_init` — allocate and register connector `index`.
-#[no_mangle]
-pub extern "C" fn drm_mode_connector_init(
+pub fn drm_mode_connector_init(
     dev: *mut DrmDevice,
     index: i32,
     ctype: u32,
@@ -434,9 +427,9 @@ pub extern "C" fn drm_mode_connector_init(
         return -22;
     }
     let slot = index as usize;
-    // SAFETY: `dev` is the caller's live device; this borrow of its connector pool
+    // `dev` is the caller's live device; this borrow of its connector pool
     // is consumed by the occupancy check.
-    if dev_index_used(unsafe { (*dev).connectors.as_slice() }, slot) {
+    if dev_index_used(ptr::as_ref(dev).connectors.as_slice(), slot) {
         return -22;
     }
 
@@ -459,18 +452,17 @@ pub extern "C" fn drm_mode_connector_init(
             edid: Vec::new(),
         });
         let mem = Box::into_raw(conn);
-        // SAFETY: `dev` is the live device; claiming the slot in its connector pool.
-        let id = pool_set(unsafe { &mut (*dev).connectors }, slot, mem as *mut c_void);
-        // SAFETY: `mem` is the fresh connector; storing its id.
-        unsafe { (*mem).id = id };
+        // `dev` is the live device; claiming the slot in its connector pool.
+        let id = pool_set(&mut ptr::as_mut(dev).connectors, slot, mem as *mut c_void);
+        // `mem` is the fresh connector; storing its id.
+        ptr::as_mut(mem).id = id;
         add_std_props(mem);
     }
     0
 }
 
 /// `drm_mode_plane_init` — allocate and register plane `index`.
-#[no_mangle]
-pub extern "C" fn drm_mode_plane_init(
+pub fn drm_mode_plane_init(
     dev: *mut DrmDevice,
     index: i32,
     ptype: u32,
@@ -483,9 +475,9 @@ pub extern "C" fn drm_mode_plane_init(
         return -22;
     }
     let slot = index as usize;
-    // SAFETY: `dev` is the caller's live device; this borrow of its plane pool is
+    // `dev` is the caller's live device; this borrow of its plane pool is
     // consumed by the occupancy check.
-    if dev_index_used(unsafe { (*dev).planes.as_slice() }, slot) {
+    if dev_index_used(ptr::as_ref(dev).planes.as_slice(), slot) {
         return -22;
     }
 
@@ -494,11 +486,11 @@ pub extern "C" fn drm_mode_plane_init(
         if !formats.is_null() && format_count > 0 {
             list.reserve(format_count as usize);
             for i in 0..format_count as usize {
-                // SAFETY: the caller passes `format_count` readable `u32`s and
+                // the caller passes `format_count` readable `u32`s and
                 // `i < format_count`, so this element pointer is in bounds.
-                let f = unsafe { formats.add(i) };
-                // SAFETY: `f` points at one `u32` pixel format.
-                list.push(unsafe { *f });
+                let f = ptr::add(formats, i);
+                // `f` points at one `u32` pixel format.
+                list.push(ptr::read(f));
             }
         }
 
@@ -523,17 +515,17 @@ pub extern "C" fn drm_mode_plane_init(
             src_h: 0,
         });
         let mem = Box::into_raw(plane);
-        // SAFETY: `dev` is the live device; claiming the slot in its plane pool.
-        let id = pool_set(unsafe { &mut (*dev).planes }, slot, mem as *mut c_void);
-        // SAFETY: `mem` is the fresh plane; storing its id.
-        unsafe { (*mem).id = id };
+        // `dev` is the live device; claiming the slot in its plane pool.
+        let id = pool_set(&mut ptr::as_mut(dev).planes, slot, mem as *mut c_void);
+        // `mem` is the fresh plane; storing its id.
+        ptr::as_mut(mem).id = id;
 
         /* Every plane carries the universal-planes `type` property, which is
          * how userspace tells a primary plane from a cursor plane (the uapi
          * GETPLANE carries no type field). */
-        // SAFETY: `mem` is the fresh, exclusively-owned plane; this borrow is
+        // `mem` is the fresh, exclusively-owned plane; this borrow is
         // consumed by the property setup below.
-        let plane_ref = unsafe { &mut *mem };
+        let plane_ref = ptr::as_mut(mem);
         let type_prop = crate::kms::property::drm_prop_plane_type_id(plane_ref.dev);
         if type_prop != 0 {
             let _ = crate::kms::property::drm_prop_attach(
@@ -577,39 +569,36 @@ pub extern "C" fn drm_mode_plane_init(
 }
 
 /// `drm_connector_find` — look a connector up by id.
-#[no_mangle]
-pub extern "C" fn drm_connector_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_connector_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's live device.
-    unsafe { (*dev).find_connector(id) }
+    // read-only walk of the caller's live device.
+    ptr::as_ref(dev).find_connector(id)
 }
 
 /// `drm_plane_find` — look a plane up by id.
-#[no_mangle]
-pub extern "C" fn drm_plane_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_plane_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's live device.
-    unsafe { (*dev).find_plane(id) }
+    // read-only walk of the caller's live device.
+    ptr::as_ref(dev).find_plane(id)
 }
 
 /// `drm_connector_add_mode` — append a mode, ignoring duplicates.
 ///
 /// Drivers usually recompute their mode list on every probe, so the same mode
 /// arriving twice must not grow the list without bound.
-#[no_mangle]
-pub extern "C" fn drm_connector_add_mode(conn: *mut Connector, mode: *const DisplayMode) {
+pub fn drm_connector_add_mode(conn: *mut Connector, mode: *const DisplayMode) {
     if conn.is_null() || mode.is_null() {
         return;
     }
-    // SAFETY: `conn` is the caller's live connector; this borrow is consumed by the
+    // `conn` is the caller's live connector; this borrow is consumed by the
     // copy below.
-    let conn = unsafe { &mut *conn };
-    // SAFETY: `mode` is the caller's live display mode.
-    let mode = unsafe { &*mode };
+    let conn = ptr::as_mut(conn);
+    // `mode` is the caller's live display mode.
+    let mode = ptr::as_ref(mode);
     {
         for m in &conn.modes {
             if m.hdisplay == mode.hdisplay && m.vdisplay == mode.vdisplay && m.clock == mode.clock {
@@ -622,17 +611,16 @@ pub extern "C" fn drm_connector_add_mode(conn: *mut Connector, mode: *const Disp
 }
 
 /// `drm_connector_set_edid` — copy an EDID block into the connector.
-#[no_mangle]
-pub extern "C" fn drm_connector_set_edid(conn: *mut Connector, edid: *const c_void, len: u32) {
+pub fn drm_connector_set_edid(conn: *mut Connector, edid: *const c_void, len: u32) {
     if conn.is_null() || edid.is_null() {
         return;
     }
-    // SAFETY: `edid` points at `len` readable bytes (the caller's contract), so this
+    // `edid` points at `len` readable bytes (the caller's contract), so this
     // shared slice spans them.
-    let src = unsafe { core::slice::from_raw_parts(edid as *const u8, len as usize) };
-    // SAFETY: `conn` is the caller's live connector; this borrow is consumed by the
+    let src = ptr::slice(edid as *const u8, len as usize);
+    // `conn` is the caller's live connector; this borrow is consumed by the
     // copy below.
-    let conn = unsafe { &mut *conn };
+    let conn = ptr::as_mut(conn);
     conn.edid.clear();
     conn.edid.extend_from_slice(src);
     conn.edid_len = len;
@@ -644,8 +632,8 @@ pub extern "C" fn drm_connector_set_edid(conn: *mut Connector, edid: *const c_vo
     if !dev.is_null() {
         let prop = crate::kms::property::drm_prop_edid_id(dev);
         if prop != 0 {
-            // SAFETY: `dev` is the live device; creating the blob from `src`.
-            let blob_id = unsafe { (*dev).blob_create(src) };
+            // `dev` is the live device; creating the blob from `src`.
+            let blob_id = ptr::as_mut(dev).blob_create(src);
             let _ = crate::kms::property::drm_prop_attach(
                 dev,
                 prop,
@@ -658,27 +646,21 @@ pub extern "C" fn drm_connector_set_edid(conn: *mut Connector, edid: *const c_vo
 }
 
 /// `drm_connector_attach_encoder`.
-#[no_mangle]
-pub extern "C" fn drm_connector_attach_encoder(conn: *mut Connector, enc: *mut c_void) {
+pub fn drm_connector_attach_encoder(conn: *mut Connector, enc: *mut c_void) {
     if conn.is_null() || enc.is_null() {
         return;
     }
-    // SAFETY: caller's connector.
-    unsafe {
-        (*conn).encoder = enc;
-    }
+    // caller's connector.
+    ptr::as_mut(conn).encoder = enc;
 }
 
 /// `drm_encoder_attach_crtc`.
-#[no_mangle]
-pub extern "C" fn drm_encoder_attach_crtc(enc: *mut Encoder, crtc: *mut c_void) {
+pub fn drm_encoder_attach_crtc(enc: *mut Encoder, crtc: *mut c_void) {
     if enc.is_null() {
         return;
     }
-    // SAFETY: caller's encoder.
-    unsafe {
-        (*enc).crtc = crtc;
-    }
+    // caller's encoder.
+    ptr::as_mut(enc).crtc = crtc;
 }
 
 /* ── SETPLANE ───────────────────────────────────────────────────────────── */
@@ -717,8 +699,7 @@ const DRM_IOCTL_MODE_SETPLANE: u32 = (3u32 << 30) | (0x64u32 << 8) | 0xB7 | (48 
 /// uses — there is no separate plane hardware to program.  The plane's own
 /// state (which CRTC/framebuffer, and the rectangles) is what GETPLANE reports
 /// and what an atomic commit reads back.
-#[no_mangle]
-pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -746,9 +727,9 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
         return -22;
     }
 
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
+    // `file` is the caller's live client (checked non-null above); this reads
     // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let plane = drm_plane_find(dev, req.plane_id) as *mut Plane;
     if plane.is_null() {
         return -22;
@@ -757,12 +738,12 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
     /* crtc_id == 0 (or fb_id == 0) turns the plane off: disable whatever scanout it
      * was driving, then forget the attach. */
     if req.crtc_id == 0 || req.fb_id == 0 {
-        // SAFETY: `plane` is the live plane; this reads its attached CRTC id.
-        let plane_crtc_id = unsafe { (*plane).crtc_id };
+        // `plane` is the live plane; this reads its attached CRTC id.
+        let plane_crtc_id = ptr::as_ref(plane).crtc_id;
         let crtc = drm_crtc_find(dev, plane_crtc_id) as *mut Crtc;
         if !crtc.is_null() {
-            // SAFETY: `crtc` is the live CRTC; this reads its current mode.
-            let crtc_mode = unsafe { (*crtc).mode };
+            // `crtc` is the live CRTC; this reads its current mode.
+            let crtc_mode = ptr::as_ref(crtc).mode;
             let mut set = ModeSet {
                 fb: core::ptr::null_mut(),
                 crtc: crtc as *mut c_void,
@@ -776,22 +757,22 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
             if rc != 0 {
                 return rc;
             }
-            // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-            let old_fb = unsafe { (*crtc).fb };
+            // `crtc` is the live CRTC; this reads its framebuffer.
+            let old_fb = ptr::as_ref(crtc).fb;
             if !old_fb.is_null() {
-                // SAFETY: `old_fb` is a live framebuffer; this reads the GEM object it
+                // `old_fb` is a live framebuffer; this reads the GEM object it
                 // holds a reference to.
-                let obj = unsafe { (*(old_fb as *mut Framebuffer)).obj };
+                let obj = ptr::as_ref(old_fb as *mut Framebuffer).obj;
                 drm_gem_unref(obj);
             }
-            // SAFETY: as above — clearing the CRTC's framebuffer.
-            unsafe { (*crtc).fb = core::ptr::null_mut() };
-            // SAFETY: as above — marking the CRTC disabled.
-            unsafe { (*crtc).enabled = 0 };
+            // as above — clearing the CRTC's framebuffer.
+            ptr::as_mut(crtc).fb = core::ptr::null_mut();
+            // as above — marking the CRTC disabled.
+            ptr::as_mut(crtc).enabled = 0;
         }
-        // SAFETY: `clear_plane`'s contract: `plane` is a live plane owned by the
+        // `clear_plane`'s contract: `plane` is a live plane owned by the
         // caller.
-        unsafe { clear_plane(plane) };
+        clear_plane(plane);
         return 0;
     }
 
@@ -808,17 +789,17 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
         return -22;
     }
     /* The plane has to be able to scan the format out. */
-    // SAFETY: `plane` is the live plane; this borrow of its format list is consumed
+    // `plane` is the live plane; this borrow of its format list is consumed
     // by the scan.
-    let formats = unsafe { &(*plane).formats };
-    // SAFETY: `fb` is the live framebuffer; this reads its pixel format.
-    let fb_format = unsafe { (*fb).format };
+    let formats = &ptr::as_ref(plane).formats;
+    // `fb` is the live framebuffer; this reads its pixel format.
+    let fb_format = ptr::as_ref(fb).format;
     if !formats.contains(&fb_format) {
         return -22;
     }
 
-    // SAFETY: `crtc` is the live CRTC; this reads its current mode.
-    let crtc_mode = unsafe { (*crtc).mode };
+    // `crtc` is the live CRTC; this reads its current mode.
+    let crtc_mode = ptr::as_ref(crtc).mode;
     let mut set = ModeSet {
         fb: fb as *mut c_void,
         crtc: crtc as *mut c_void,
@@ -835,28 +816,28 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
 
     /* Publish only after the driver accepted the mode.  The CRTC holds the
      * framebuffer reference; the plane just names it. */
-    // SAFETY: `crtc` is the live CRTC; this reads its framebuffer.
-    let old_fb = unsafe { (*crtc).fb };
+    // `crtc` is the live CRTC; this reads its framebuffer.
+    let old_fb = ptr::as_ref(crtc).fb;
     if old_fb != fb as *mut c_void {
         if !old_fb.is_null() {
-            // SAFETY: `old_fb` is a live framebuffer; this reads the GEM object it
+            // `old_fb` is a live framebuffer; this reads the GEM object it
             // holds a reference to.
-            let obj = unsafe { (*(old_fb as *mut Framebuffer)).obj };
+            let obj = ptr::as_ref(old_fb as *mut Framebuffer).obj;
             drm_gem_unref(obj);
         }
-        // SAFETY: as above — installing the new framebuffer.
-        unsafe { (*crtc).fb = fb as *mut c_void };
-        // SAFETY: `fb` is the live framebuffer; this reads its GEM object to take a
+        // as above — installing the new framebuffer.
+        ptr::as_mut(crtc).fb = fb as *mut c_void;
+        // `fb` is the live framebuffer; this reads its GEM object to take a
         // reference.
-        let obj = unsafe { (*fb).obj };
+        let obj = ptr::as_ref(fb).obj;
         drm_gem_ref(obj);
     }
-    // SAFETY: as above — marking the CRTC enabled.
-    unsafe { (*crtc).enabled = 1 };
+    // as above — marking the CRTC enabled.
+    ptr::as_mut(crtc).enabled = 1;
 
-    // SAFETY: `plane` is the live plane; this borrow is consumed by the write-back of
+    // `plane` is the live plane; this borrow is consumed by the write-back of
     // its attach state.
-    let plane = unsafe { &mut *plane };
+    let plane = ptr::as_mut(plane);
     plane.crtc_id = req.crtc_id;
     plane.fb_id = req.fb_id;
     plane.crtc_x = req.crtc_x;
@@ -871,11 +852,11 @@ pub extern "C" fn mode_set_plane(file: *mut DrmFile, arg: *mut c_void) -> c_int 
 }
 
 /// Forget a plane's attach state.
-unsafe fn clear_plane(plane: *mut Plane) {
-    // SAFETY: `plane` is a live plane owned by the caller (mode_set_plane checks it
+fn clear_plane(plane: *mut Plane) {
+    // `plane` is a live plane owned by the caller (mode_set_plane checks it
     // against the device's plane pool before calling); this borrow is exclusive and
     // consumed by the field clears below.
-    let plane = unsafe { &mut *plane };
+    let plane = ptr::as_mut(plane);
     plane.crtc_id = 0;
     plane.fb_id = 0;
     plane.crtc_x = 0;

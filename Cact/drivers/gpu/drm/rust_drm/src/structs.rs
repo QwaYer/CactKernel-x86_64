@@ -36,18 +36,10 @@ pub struct Spinlock {
     _opaque: [u8; 4],
 }
 
-/// `irq_spinlock_t` — likewise opaque.
-#[repr(C)]
-pub struct IrqSpinlock {
-    _opaque: [u8; 8],
-}
-
-impl IrqSpinlock {
-    /// An uninitialised lock; `irq_spinlock_init` must be called before use.
-    pub const fn new() -> Self {
-        Self { _opaque: [0; 8] }
-    }
-}
+/// `irq_spinlock_t` — the kernel's IRQ-saving spinlock, re-exported from
+/// `kernel_rust` so the KMS half can use its safe `acquire`/`release`/`init`
+/// instead of carrying its own copy.
+pub use kernel_rust::sync::irq_spinlock_t as IrqSpinlock;
 
 const _: () = assert!(core::mem::size_of::<Spinlock>() == 4);
 const _: () = assert!(core::mem::size_of::<IrqSpinlock>() == 8);

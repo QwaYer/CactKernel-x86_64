@@ -18,6 +18,7 @@ cact_net  = { path = "../../net/rust_net" }
 cact_sync = { path = "../sync" }
 cact80211 = { path = "../../net/wireless" }
 cact_crypto = { path = "../../crypto" }
+cact_drm = { path = "../../drivers/gpu/drm/rust_drm" }
 
 [profile.release]
 panic = "abort"

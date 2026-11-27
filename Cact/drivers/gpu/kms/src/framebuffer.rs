@@ -12,6 +12,8 @@
 
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::{ptr, user};
+
 use super::mode_object::Crtc;
 use crate::device::drm_driver_dirty;
 use crate::ffi::{drm_copy_in, drm_copy_out};
@@ -131,39 +133,28 @@ const DRM_FORMAT_MOD_LINEAR: u32 = 0;
  * client is free to split a larger dirty region. */
 const MAX_DIRTY_CLIPS: usize = 16;
 
-extern "C" {
-
-    fn irq_spinlock_acquire(lock: *mut IrqSpinlock);
-    fn irq_spinlock_release(lock: *mut IrqSpinlock);
-    fn validate_user_ptr(ptr: *const c_void, size: u32) -> c_int;
-    fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> c_int;
-}
-
+/// Address of the device's IRQ-saving lock word.  `dev` must be a live device.
 #[inline]
-unsafe fn lock_ptr(dev: *mut DrmDevice) -> *mut IrqSpinlock {
-    // SAFETY: `dev` is a live device owned by the caller; `addr_of_mut!` only
-    // forms the address of its `lock` field and never creates a reference.
-    unsafe { core::ptr::addr_of_mut!((*dev).lock) }
+pub(crate) fn lock_ptr(dev: *mut DrmDevice) -> *mut IrqSpinlock {
+    let d = ptr::as_mut(dev);
+    core::ptr::addr_of_mut!(d.lock)
 }
 
 /* ── lookup ─────────────────────────────────────────────────────────────── */
 
 /// `drm_fb_find` — look a framebuffer up by id.
-#[no_mangle]
-pub extern "C" fn drm_fb_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
+pub fn drm_fb_find(dev: *mut DrmDevice, id: u32) -> *mut c_void {
     if dev.is_null() {
         return core::ptr::null_mut();
     }
-    // SAFETY: read-only walk of the caller's live device.
-    unsafe { (*dev).find_fb(id) }
+    ptr::as_ref(dev).find_fb(id)
 }
 
 /* ── lifetime ───────────────────────────────────────────────────────────── */
 
 /// `drm_fb_handle_init` — create a framebuffer and register it for `file`.
-#[no_mangle]
 #[allow(clippy::too_many_arguments)]
-pub extern "C" fn drm_fb_handle_init(
+pub fn drm_fb_handle_init(
     file: *mut DrmFile,
     width: u32,
     height: u32,
@@ -180,8 +171,7 @@ pub extern "C" fn drm_fb_handle_init(
     if file.is_null() || obj.is_null() || fb_id_out.is_null() {
         return -22;
     }
-    // SAFETY: caller's file and object.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return -22;
     }
@@ -203,9 +193,7 @@ pub extern "C" fn drm_fb_handle_init(
     }
     // The framebuffer has to fit inside the object it points at.
     let need = offset as u64 + pitch as u64 * height as u64;
-    // SAFETY: `obj` is the caller's live GEM object (checked non-null above), so
-    // its `size` field is readable.
-    if need > unsafe { (*obj).size } as u64 {
+    if need > ptr::as_ref(obj).size as u64 {
         return -22;
     }
 
@@ -213,12 +201,10 @@ pub extern "C" fn drm_fb_handle_init(
     if mem.is_null() {
         return -12;
     }
-    // SAFETY: `mem` is the fresh `kmalloc` block just checked non-null, so zeroing
-    // one `Framebuffer` covers exactly that allocation.
-    unsafe { core::ptr::write_bytes(mem, 0, 1) };
-    // SAFETY: `mem` is the fresh, exclusively-owned framebuffer; this borrow is
-    // consumed by the field stores below.
-    let fb = unsafe { &mut *mem };
+    // `mem` is the fresh `kmalloc` block just checked non-null, so zeroing one
+    // `Framebuffer` covers exactly that allocation.
+    ptr::write_bytes(mem, 0, 1);
+    let fb = ptr::as_mut(mem);
     fb.dev = dev;
     fb.width = width;
     fb.height = height;
@@ -230,48 +216,35 @@ pub extern "C" fn drm_fb_handle_init(
     fb.offset = offset;
     drm_gem_ref(obj);
 
-    // SAFETY: `lock_ptr`'s contract: `dev` is the caller's live device.
-    let lock = unsafe { lock_ptr(dev) };
-    // SAFETY: `lock` is the device's lock word; the pair brackets the id update.
-    unsafe { irq_spinlock_acquire(lock) };
+    let lock = lock_ptr(dev);
+    ptr::as_mut(lock).acquire();
     /* Ids only move forward, so a removed framebuffer's id is never handed out
      * again while the device lives. */
-    // SAFETY: `dev` is the live device; this advances its framebuffer counter.
-    unsafe { (*dev).next_fb_id += 1 };
-    // SAFETY: as above — reading the freshly-assigned id.
-    fb.id = unsafe { (*dev).next_fb_id };
-    // SAFETY: as above — publishing the new framebuffer in the device list.
-    unsafe { (*dev).fbs.push(mem as *mut c_void) };
-    // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(dev).next_fb_id += 1;
+    fb.id = ptr::as_ref(dev).next_fb_id;
+    ptr::as_mut(dev).fbs.push(mem as *mut c_void);
+    ptr::as_mut(lock).release();
 
-    // SAFETY: `file` is the caller's live client; recording the new id in its list.
-    unsafe { (*file).fbs.push(fb.id) };
-    // SAFETY: `fb_id_out` is the caller's out-parameter for the id.
-    unsafe { *fb_id_out = fb.id };
+    ptr::as_mut(file).fbs.push(fb.id);
+    ptr::write(fb_id_out, fb.id);
     0
 }
 
 /// `drm_fb_handle_release` — drop the client's reference to a framebuffer.
-#[no_mangle]
-pub extern "C" fn drm_fb_handle_release(file: *mut DrmFile, fb_id: u32) {
+pub fn drm_fb_handle_release(file: *mut DrmFile, fb_id: u32) {
     if file.is_null() {
         return;
     }
-    // SAFETY: `file` is the caller's live client (checked non-null above); this reads
-    // its device pointer.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     if dev.is_null() {
         return;
     }
 
-    // SAFETY: `file` is the live client; this finds the id in its framebuffer list.
-    let pos = match unsafe { (*file).fbs.iter().position(|&x| x == fb_id) } {
+    let pos = match ptr::as_ref(file).fbs.iter().position(|&x| x == fb_id) {
         Some(pos) => pos,
         None => return,
     };
-    // SAFETY: as above — removing the id at that position.
-    unsafe { (*file).fbs.remove(pos) };
+    ptr::as_mut(file).fbs.remove(pos);
 
     let fb = drm_fb_find(dev, fb_id) as *mut Framebuffer;
     if fb.is_null() {
@@ -282,56 +255,42 @@ pub extern "C" fn drm_fb_handle_release(file: *mut DrmFile, fb_id: u32) {
      * started; clearing crtc->fb must drop that reference too, or the object can
      * never be freed.  (Each CRTC that has this framebuffer attached holds one
      * reference of its own, so this is one unref per matching CRTC.) */
-    // SAFETY: `dev` is the live device; this borrow of its CRTC list is consumed by
-    // the scan.
-    let crtcs = unsafe { &(*dev).crtcs };
+    let crtcs = &ptr::as_ref(dev).crtcs;
     for &c in crtcs.iter() {
         let crtc = c as *mut Crtc;
         if !crtc.is_null() {
-            // SAFETY: `crtc` is a live CRTC (non-null, checked above); this reads its
-            // framebuffer.
-            let cur = unsafe { (*crtc).fb };
+            let cur = ptr::as_ref(crtc).fb;
             if cur == fb as *mut c_void {
-                // SAFETY: `fb` is the live framebuffer; this reads the object the CRTC
-                // held a reference to.
-                let obj = unsafe { (*fb).obj };
+                let obj = ptr::as_ref(fb).obj;
                 if !obj.is_null() {
                     drm_gem_unref(obj);
                 }
-                // SAFETY: as above — clearing the CRTC's framebuffer pointer.
-                unsafe { (*crtc).fb = core::ptr::null_mut() };
+                ptr::as_mut(crtc).fb = core::ptr::null_mut();
             }
         }
     }
 
-    // SAFETY: `lock_ptr`'s contract: `dev` is the live device.
-    let lock = unsafe { lock_ptr(dev) };
-    // SAFETY: `lock` is the device's lock word; the pair brackets the list removal.
-    unsafe { irq_spinlock_acquire(lock) };
-    // SAFETY: `dev` is the live device; this finds the framebuffer in its list.
-    let dev_pos = unsafe { (*dev).fbs.iter().position(|&p| p == fb as *mut c_void) };
+    let lock = lock_ptr(dev);
+    ptr::as_mut(lock).acquire();
+    let dev_pos = ptr::as_ref(dev).fbs.iter().position(|&p| p == fb as *mut c_void);
     if let Some(pos) = dev_pos {
-        // SAFETY: as above — removing the entry at that position.
-        unsafe { (*dev).fbs.remove(pos) };
+        ptr::as_mut(dev).fbs.remove(pos);
     }
-    // SAFETY: as above — releasing the same lock.
-    unsafe { irq_spinlock_release(lock) };
+    ptr::as_mut(lock).release();
 
-    // SAFETY: `fb` is the live framebuffer; this reads its GEM object.
-    let obj = unsafe { (*fb).obj };
+    let obj = ptr::as_ref(fb).obj;
     if !obj.is_null() {
         drm_gem_unref(obj);
     }
-    // SAFETY: `fb` was allocated by `kmalloc` and has just been unlinked, so
-    // reclaiming it here is the matching free.
-    unsafe { cact_mm::kfree(fb as *mut u8) };
+    // `fb` was allocated by `kmalloc` and has just been unlinked, so reclaiming
+    // it here is the matching free.
+    kernel_rust::mem::kfree(fb as *mut u8);
 }
 
 /* ── ioctls ─────────────────────────────────────────────────────────────── */
 
 /// `DRM_IOCTL_MODE_ADDFB2`.
-#[no_mangle]
-pub extern "C" fn mode_addfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_addfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -392,8 +351,7 @@ pub extern "C" fn mode_addfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 }
 
 /// `DRM_IOCTL_MODE_ADDFB` (v1: depth/bpp instead of a fourcc).
-#[no_mangle]
-pub extern "C" fn mode_addfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_addfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -454,8 +412,7 @@ pub extern "C" fn mode_addfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 }
 
 /// `DRM_IOCTL_MODE_RMFB` — the payload is a bare `unsigned int` fb id.
-#[no_mangle]
-pub extern "C" fn mode_rmfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_rmfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -474,8 +431,7 @@ pub extern "C" fn mode_rmfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 }
 
 /// `DRM_IOCTL_MODE_GETFB2`.
-#[no_mangle]
-pub extern "C" fn mode_getfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_getfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -500,16 +456,13 @@ pub extern "C" fn mode_getfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return -22;
     }
 
-    // SAFETY: caller's file.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let fb = drm_fb_find(dev, req.fb_id) as *mut Framebuffer;
     if fb.is_null() {
         return -22;
     }
 
-    // SAFETY: `fb` is the live framebuffer looked up above; this borrow is consumed
-    // by the field reads below.
-    let fb = unsafe { &*fb };
+    let fb = ptr::as_ref(fb);
     let mut handle: u32 = 0;
     if drm_gem_handle_create(file, fb.obj, &mut handle) != 0 {
         return -12;
@@ -527,8 +480,7 @@ pub extern "C" fn mode_getfb2(file: *mut DrmFile, arg: *mut c_void) -> c_int {
 }
 
 /// `DRM_IOCTL_MODE_DIRTYFB`.
-#[no_mangle]
-pub extern "C" fn mode_dirtyfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
+pub fn mode_dirtyfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
     if file.is_null() {
         return -22;
     }
@@ -549,8 +501,7 @@ pub extern "C" fn mode_dirtyfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         return -22;
     }
 
-    // SAFETY: caller's file.
-    let dev = unsafe { (*file).dev };
+    let dev = ptr::as_ref(file).dev;
     let fb = drm_fb_find(dev, req.fb_id) as *mut Framebuffer;
     if fb.is_null() {
         return -22;
@@ -570,19 +521,18 @@ pub extern "C" fn mode_dirtyfb(file: *mut DrmFile, arg: *mut c_void) -> c_int {
         req.num_clips as usize
     };
     if n != 0 && req.clips_ptr != 0 {
-        let user = req.clips_ptr as u32 as usize as *mut c_void;
+        let user_ptr = req.clips_ptr as u32 as usize as *mut c_void;
         let bytes = (n * core::mem::size_of::<ClipRect>()) as u32;
-        // SAFETY: `user` is the client's pointer; this range-checks it for the copy.
-        if unsafe { validate_user_ptr(user, bytes) } == 0 {
+        // Range-check the client's pointer before the copy.
+        if !user::validate_user_ptr(user_ptr, bytes) {
             return -22;
         }
-        // SAFETY: the range check above passed, so `user` is a readable userspace
-        // range and `clips` is a writable buffer of the same size.
-        if unsafe { copy_from_user(clips.as_mut_ptr() as *mut c_void, user, bytes) } != 0 {
+        // The range check passed, so `user_ptr` is a readable userspace range and
+        // `clips` is a writable buffer of the same size.
+        if !user::copy_from_user(clips.as_mut_ptr() as *mut c_void, user_ptr, bytes) {
             return -22;
         }
     }
 
     drm_driver_dirty(dev, fb, clips.as_ptr(), n as u32)
 }
-
