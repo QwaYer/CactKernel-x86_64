@@ -768,10 +768,9 @@ impl TxToken for CactTxToken<'_> {
         if !nic.is_null() {
             let skb = skb::skb_alloc();
             if !skb.is_null() {
-                // SAFETY: `skb` is a fresh `Skb` this call exclusively owns and
-                // `len` is bounded by `PHY_MTU` (the token's buffer length), so
-                // `skb_put` writes inside its payload.
-                let p = unsafe { skb::skb_put(skb, len as u16) };
+                // `skb` is a fresh `Skb` this call exclusively owns and `len` is
+                // bounded by `PHY_MTU` (the token's buffer length).
+                let p = skb::skb_put(skb, len as u16);
                 if !p.is_null() {
                     // SAFETY: `p` points to `len` writable bytes inside `skb`
                     // and `this.buf` is a local frame buffer, so the two ranges
@@ -1168,16 +1167,12 @@ pub unsafe fn stack_enqueue_rx(skb: *mut Skb) {
     if skb.is_null() {
         return;
     }
-    // SAFETY: the caller contract (see # Safety) makes `skb` a live, initialised
-    // `Skb` this call owns, so `skb_len` reads a real length.
-    let len = unsafe { skb::skb_len(skb) } as usize;
+    let len = skb::skb_len(skb) as usize;
     if len == 0 || len > PHY_MTU {
         skb::kfree_skb(skb);
         return;
     }
-    // SAFETY: as above — `skb` is live and initialised for this call, so
-    // `skb_data` returns a pointer to its payload.
-    let src = unsafe { skb::skb_data(skb) };
+    let src = skb::skb_data(skb);
     let slot = CURRENT_RX_SLOT.load(Ordering::Acquire);
     let slot = if slot < NET_IF_MAX { slot } else { 0 };
     let queued = {

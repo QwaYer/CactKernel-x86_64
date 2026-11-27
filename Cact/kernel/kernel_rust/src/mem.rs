@@ -98,6 +98,12 @@ pub fn pin_range(pd: *mut u64, va: u64, size: u64, frames: &mut [u64]) -> i64 {
     unsafe { sys::vmm_pin_range(pd, va, size, frames.as_mut_ptr()) }
 }
 
+/// Hand a `kmalloc` block back to the heap (`ptr` must come from `kmalloc`).
+pub fn kfree(ptr: *mut u8) {
+    // SAFETY: the caller passes a live `kmalloc` block.
+    unsafe { sys::kfree(ptr) };
+}
+
 /// Unpin frames previously pinned by [`pin_range`].
 pub fn unpin_frames(frames: &[u64]) {
     // SAFETY: `frames` holds `phys` values from a prior `vmm_pin_range`.

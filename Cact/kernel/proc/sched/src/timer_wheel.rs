@@ -251,6 +251,14 @@ pub fn timer_wheel_tick() {
     unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
 }
 
+/// Block the current task for `ticks` timer ticks.  Safe wrapper over
+/// [`sched_sleep_ticks`]: callable from any task context (which every in-kernel
+/// caller is), so crates that must not write `unsafe` can sleep.
+pub fn sleep_ticks(ticks: u32) {
+    // SAFETY: the caller is a task context with `SCHEDULER_LOCK` free.
+    unsafe { sched_sleep_ticks(ticks) };
+}
+
 /// # Safety
 ///
 /// Must be called from a task context (a current task exists) with `SCHEDULER_LOCK` free.

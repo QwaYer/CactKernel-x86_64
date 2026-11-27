@@ -542,8 +542,7 @@ fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize, da_off: u
     if skb.is_null() {
         return;
     }
-    // SAFETY: `skb` is a fresh, non-null skb.
-    let dst = unsafe { skb_put(skb, (14 + payload.len()) as u16) };
+    let dst = skb_put(skb, (14 + payload.len()) as u16);
     if dst.is_null() {
         kfree_skb(skb);
         return;
@@ -569,8 +568,7 @@ extern "C" fn net_send(skb: *mut Skb) -> i32 {
     if skb.is_null() {
         return 0;
     }
-    // SAFETY: `skb` is the live buffer the stack handed down for transmission.
-    let (ptr, len) = unsafe { (skb_data(skb), skb_len(skb) as usize) };
+    let (ptr, len) = (skb_data(skb), skb_len(skb) as usize);
     let mut rc = 0;
     if !ptr.is_null() && len >= 14 {
         // SAFETY: `ptr`/`len` describe the Ethernet frame in the skb.

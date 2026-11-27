@@ -5,6 +5,8 @@
 
 use core::ffi::c_int;
 
+use kernel_rust::ptr;
+
 pub fn send_echo_request_host(dst_ip_host: u32, id: u16, seq: u16) -> c_int {
     if dst_ip_host == 0 || dst_ip_host == 0xFFFF_FFFF {
         return -1;
@@ -40,12 +42,9 @@ pub fn send_echo_request6_host(addr: [u8; 16], id: u16, seq: u16) -> c_int {
 /// briefly to keep sub-millisecond RTT resolution, then falls back to a tick
 /// sleep so a lost probe does not burn a whole timeout in the CPU.
 ///
-/// # Safety
-///
 /// `src_ip_out` and `bytes_out` may be null (the corresponding result is then
-/// discarded), but each non-null one must point to a writable, properly aligned
-/// `u32` that stays live until this call returns.
-pub unsafe fn ping_wait_host(
+/// discarded); a non-null one must point to a writable, properly aligned `u32`.
+pub fn ping_wait_host(
     dst_ip_host: u32,
     id: u16,
     seq: u16,
@@ -72,13 +71,10 @@ pub unsafe fn ping_wait_host(
                 _ => 0,
             };
             if !src_ip_out.is_null() {
-                // SAFETY: the caller contract (see # Safety) makes `src_ip_out`
-                // a writable, aligned `u32`; the null check above excluded null.
-                unsafe { *src_ip_out = src };
+                ptr::write(src_ip_out, src);
             }
             if !bytes_out.is_null() {
-                // SAFETY: as above, for `bytes_out`.
-                unsafe { *bytes_out = bytes as u32 };
+                ptr::write(bytes_out, bytes as u32);
             }
             return rtt.min(i32::MAX as u64) as c_int;
         }
@@ -99,9 +95,7 @@ pub unsafe fn ping_wait_host(
             // the requested microseconds; it touches no memory of ours.
             crate::ffi_kernel::ktime_busy_wait_us(1000);
         } else {
-            // SAFETY: `sched_sleep_ticks` is a kernel service that suspends the
-            // calling task for the requested number of ticks.
-            unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+            sched::timer_wheel::sleep_ticks(1);
         }
     }
 }
@@ -113,12 +107,10 @@ pub unsafe fn ping_wait_host(
 /// `-4` when a pending signal interrupted the wait.  On success `src_addr_out`
 /// receives the responder's address (16 octets) and `bytes_out` the message size.
 ///
-/// # Safety
-///
 /// `src_addr_out` and `bytes_out` may be null (the corresponding result is then
-/// discarded), but a non-null `src_addr_out` must point to 16 writable bytes and
-/// a non-null `bytes_out` to a writable, aligned `u32`, both live for the call.
-pub unsafe fn ping_wait6_host(
+/// discarded); a non-null `src_addr_out` must point to 16 writable bytes and a
+/// non-null `bytes_out` to a writable, properly aligned `u32`.
+pub fn ping_wait6_host(
     addr: [u8; 16],
     id: u16,
     seq: u16,
@@ -148,14 +140,10 @@ pub unsafe fn ping_wait6_host(
                 let rtt = crate::ffi_kernel::ktime_get_usec().saturating_sub(t0);
                 if !src_addr_out.is_null() {
                     let o = v6.octets();
-                    // SAFETY: the caller contract (see # Safety) makes
-                    // `src_addr_out` a 16-byte writable buffer; `o` is a distinct
-                    // local array.
-                    unsafe { core::ptr::copy_nonoverlapping(o.as_ptr(), src_addr_out, 16) };
+                    ptr::copy_nonoverlapping(o.as_ptr(), src_addr_out, 16);
                 }
                 if !bytes_out.is_null() {
-                    // SAFETY: as above, for `bytes_out`.
-                    unsafe { *bytes_out = bytes as u32 };
+                    ptr::write(bytes_out, bytes as u32);
                 }
                 return rtt.min(i32::MAX as u64) as c_int;
             }
@@ -176,9 +164,7 @@ pub unsafe fn ping_wait6_host(
             // the requested microseconds; it touches no memory of ours.
             crate::ffi_kernel::ktime_busy_wait_us(1000);
         } else {
-            // SAFETY: `sched_sleep_ticks` is a kernel service that suspends the
-            // calling task for the requested number of ticks.
-            unsafe { sched::timer_wheel::sched_sleep_ticks(1) };
+            sched::timer_wheel::sleep_ticks(1);
         }
     }
 }

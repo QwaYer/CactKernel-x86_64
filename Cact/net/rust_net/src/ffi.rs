@@ -26,14 +26,12 @@ fn parse_ipv4_host(bytes: &[u8]) -> Option<u32> {
 }
 
 fn cstr_len(ptr: *const c_char) -> usize {
+    let base = ptr.cast::<u8>();
     let mut len = 0usize;
     loop {
-        // SAFETY: the caller owns `ptr` and guarantees it is NUL-terminated, so
-        // every offset below the terminator is a readable byte of that string.
-        let p = unsafe { ptr.add(len) };
-        // SAFETY: `p` is a byte of the NUL-terminated string above; the scan
-        // stops as soon as it is the terminator.
-        if unsafe { *p } == 0 {
+        // The caller guarantees `ptr` is NUL-terminated, so every offset below
+        // the terminator is a readable byte.
+        if kernel_rust::ptr::read(base.wrapping_add(len)) == 0 {
             break;
         }
         len += 1;
@@ -41,27 +39,20 @@ fn cstr_len(ptr: *const c_char) -> usize {
     len
 }
 
-/// # Safety
-///
 /// `input` must be a NUL-terminated string readable for its whole length, and
 /// `out_host_ip` must point to a writable, properly aligned `u32`.  Both may be
 /// null, in which case the call returns -1 without touching memory.
-pub unsafe fn rust_net_parse_ipv4(input: *const c_char, out_host_ip: *mut u32) -> c_int {
+pub fn rust_net_parse_ipv4(input: *const c_char, out_host_ip: *mut u32) -> c_int {
     if input.is_null() || out_host_ip.is_null() {
         return -1;
     }
 
     let len = cstr_len(input);
-    // SAFETY: the caller contract (see # Safety) makes `input` a NUL-terminated
-    // string, so `cstr_len` counted exactly the bytes before the terminator and
-    // all `len` of them are readable.
-    let bytes = unsafe { core::slice::from_raw_parts(input.cast::<u8>(), len) };
+    let bytes = kernel_rust::ptr::slice(input.cast::<u8>(), len);
 
     match parse_ipv4_host(bytes) {
         Some(ip) => {
-            // SAFETY: the caller contract (see # Safety) makes `out_host_ip` a
-            // writable, aligned `u32`; the null check above excluded null.
-            unsafe { *out_host_ip = ip; }
+            kernel_rust::ptr::write(out_host_ip, ip);
             0
         }
         None => -1,
@@ -75,12 +66,9 @@ pub fn rust_net_ping_echo_host(dst_ip_host: u32, id: u16, seq: u16) -> c_int {
 /// Send one echo request and block until the matching reply arrives.
 /// Returns the round-trip time in microseconds, or -1 on timeout.
 ///
-/// # Safety
-///
-/// `src_ip_out` and `bytes_out` may be null (that result is then dropped), but
-/// each non-null one must point to a writable, properly aligned `u32` that
-/// stays live for the call.
-pub unsafe fn rust_net_ping_wait(
+/// `src_ip_out` and `bytes_out` may be null (that result is then dropped); a
+/// non-null one must point to a writable, properly aligned `u32`.
+pub fn rust_net_ping_wait(
     dst_ip_host: u32,
     id: u16,
     seq: u16,
@@ -88,38 +76,29 @@ pub unsafe fn rust_net_ping_wait(
     src_ip_out: *mut u32,
     bytes_out: *mut u32,
 ) -> c_int {
-    // SAFETY: the caller contract above makes each non-null output pointer a
-    // writable `u32`; `ping_wait_host` only stores through them after its own
-    // `is_null` checks, and it blocks no longer than `timeout_ms`.
-    unsafe { ping::ping_wait_host(dst_ip_host, id, seq, timeout_ms, src_ip_out, bytes_out) }
+    ping::ping_wait_host(dst_ip_host, id, seq, timeout_ms, src_ip_out, bytes_out)
 }
 
 /// Send one ICMPv6 echo request to `addr` (sixteen big-endian octets).  0 on
 /// success.
 ///
-/// # Safety
-///
 /// `addr` must point to 16 readable bytes that stay live for the call.
-pub unsafe fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16) -> c_int {
+pub fn rust_net_ping_echo6(addr: *const u8, id: u16, seq: u16) -> c_int {
     if addr.is_null() {
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
-    // readable buffer and `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
+    kernel_rust::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
     ping::send_echo_request6_host(a6, id, seq)
 }
 
 /// Send one ICMPv6 echo request and block until the matching reply arrives.
 /// Returns the round-trip time in microseconds, or -1 on timeout.
 ///
-/// # Safety
-///
 /// `addr` must point to 16 readable bytes.  `src_addr_out` (16 bytes) and
-/// `bytes_out` may be null (that result is then dropped) but, if non-null, must
-/// be writable and stay live for the call.
-pub unsafe fn rust_net_ping_wait6(
+/// `bytes_out` may be null (that result is then dropped); a non-null one must be
+/// writable.
+pub fn rust_net_ping_wait6(
     addr: *const u8,
     id: u16,
     seq: u16,
@@ -131,10 +110,6 @@ pub unsafe fn rust_net_ping_wait6(
         return -1;
     }
     let mut a6 = [0u8; 16];
-    // SAFETY: the caller contract (see # Safety) makes `addr` a live 16-byte
-    // readable buffer and `a6` is a distinct local array.
-    unsafe { core::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16) };
-    // SAFETY: the output pointers are forwarded under this function's contract;
-    // `ping_wait6_host` stores through them only after its own null checks.
-    unsafe { ping::ping_wait6_host(a6, id, seq, timeout_ms, src_addr_out, bytes_out) }
+    kernel_rust::ptr::copy_nonoverlapping(addr, a6.as_mut_ptr(), 16);
+    ping::ping_wait6_host(a6, id, seq, timeout_ms, src_addr_out, bytes_out)
 }

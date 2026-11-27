@@ -37,6 +37,7 @@ extern "C" {
 
     // ---- memory ---------------------------------------------------------
     pub fn kalloc() -> *mut u8;
+    pub fn kfree(ptr: *mut u8);
     pub fn free_page(ptr: *mut u8);
     pub fn vmm_v2p(ptr: *const u8) -> u64;
     pub fn vmm_pin_range(pd: *mut u64, va: u64, size: u64, out_phys: *mut u64) -> i64;
