@@ -3,27 +3,15 @@
 // Copyright (C) 2026 CactOS Project
 
 #![allow(internal_features)]
-// Safety baseline: implicit unsafe ops inside `unsafe fn` bodies are rejected, and
-// every `unsafe` block must carry a SAFETY comment (enforced under clippy).
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(unused_unsafe)]
-#![deny(clippy::undocumented_unsafe_blocks)]
-#![deny(clippy::missing_safety_doc)]
-#![deny(static_mut_refs)]
+// This crate talks to the C kernel only through `kernel_rust`, the graph's one
+// `unsafe` crate: the `extern "C"` surface and the raw-pointer/`static mut`
+// plumbing both live there, so this crate holds no `unsafe` of its own and
+// forbids it outright.  Its C-ABI exports (`#[no_mangle]`) live in `kernel_abi`.
+#![forbid(unsafe_code)]
+// The C-ABI hooks this crate defines (`extern "C" fn` slab ctor/dtor and the
+// swap read/write callbacks) still have to be FFI-safe, so that check stays in
+// addition to the `unsafe_code` ban.
 #![deny(improper_ctypes, improper_ctypes_definitions)]
-// Additional safety lints (all verified zero-hit when enabled, 2026-09-26):
-// transmute misuse, byte-vs-element count confusion and assumptions that
-// uninitialised memory is valid become hard errors instead of silent warnings.
-#![deny(clippy::transmute_ptr_to_ref)]
-#![deny(clippy::transmute_ptr_to_ptr)]
-#![deny(clippy::useless_transmute)]
-#![deny(clippy::size_of_in_element_count)]
-#![deny(clippy::uninit_assumed_init)]
-#![deny(invalid_reference_casting)]
-// Finally, at most one unsafe operation per `unsafe` block, so every block is
-// small enough to audit on its own (the same maximal tightening applied to the
-// scheduler and the network stack).
-#![deny(clippy::multiple_unsafe_ops_per_block)]
 
 //! Rust-side memory management: physical allocator, kernel heap, page tables, COW,
 //! page faults, mmap, and per-process helpers. Calls into C for low-level VMM/PMM.
