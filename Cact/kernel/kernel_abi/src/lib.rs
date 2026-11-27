@@ -19,6 +19,7 @@
 // single call into a safe function.
 #![allow(unsafe_code)]
 
+mod crypto;
 mod net;
 mod sync;
 mod wireless;

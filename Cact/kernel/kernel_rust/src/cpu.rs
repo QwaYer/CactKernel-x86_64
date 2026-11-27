@@ -165,3 +165,43 @@ pub fn eflags_read() -> u32 {
         flags as u32
     }
 }
+
+// ---- entropy / timing instructions (CSPRNG seeding) ------------------------
+
+/// True when the CPU advertises RDRAND (CPUID leaf 1, ECX bit 30).
+pub fn has_rdrand() -> bool {
+    // SAFETY: `cpu_has_rdrand` is the kernel's CPUID helper; no preconditions.
+    unsafe { sys::cpu_has_rdrand() != 0 }
+}
+
+/// One 32-bit RDRAND word, or `None` when the CPU has no RDRAND or the few
+/// retries all failed (RDRAND is allowed to signal transient failure).
+pub fn rdrand32() -> Option<u32> {
+    if !has_rdrand() {
+        return None;
+    }
+    for _ in 0..10 {
+        let mut v: u32 = 0;
+        // SAFETY: RDRAND was confirmed present by the CPUID check above, and
+        // `&mut v` is a valid place for the instruction to write its result.
+        let ok = unsafe { core::arch::x86_64::_rdrand32_step(&mut v) };
+        if ok == 1 {
+            return Some(v);
+        }
+    }
+    None
+}
+
+/// Time-stamp counter (`rdtsc`).  Callers harvest the *low* bits as timing
+/// jitter, so they take deltas rather than absolute values.
+pub fn rdtsc() -> u64 {
+    let lo: u32;
+    let hi: u32;
+    // SAFETY: `rdtsc` is readable in ring 0, writes only the two named output
+    // registers and touches no memory or flags.
+    unsafe {
+        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi,
+                         options(nomem, nostack, preserves_flags));
+    }
+    ((hi as u64) << 32) | lo as u64
+}

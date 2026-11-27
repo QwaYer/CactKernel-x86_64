@@ -67,6 +67,9 @@ extern "C" {
     pub fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> i32;
     pub fn copy_to_user(dst: *mut c_void, src: *const c_void, size: u32) -> i32;
 
+    // ---- CPU feature query (cpudev.h) -----------------------------------
+    pub fn cpu_has_rdrand() -> i32;
+
     // ---- devfs character-device registration ----------------------------
     pub fn register_chrdev(
         name: *const c_char,

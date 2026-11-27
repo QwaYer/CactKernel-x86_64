@@ -17,6 +17,7 @@ cact_hv   = { path = "../hypervisor/rust_hv" }
 cact_net  = { path = "../../net/rust_net" }
 cact_sync = { path = "../sync" }
 cact80211 = { path = "../../net/wireless" }
+cact_crypto = { path = "../../crypto" }
 
 [profile.release]
 panic = "abort"

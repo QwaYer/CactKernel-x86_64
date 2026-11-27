@@ -4,28 +4,18 @@
 
 #![allow(non_snake_case)]
 #![allow(non_upper_case_globals)]
-// Safety baseline: unsafe ops inside `unsafe fn` bodies must be explicit, and every
-// `unsafe` block needs a SAFETY comment (the latter enforced under clippy).
-#![deny(unsafe_op_in_unsafe_fn)]
-#![deny(unused_unsafe)]
-#![deny(clippy::undocumented_unsafe_blocks)]
-#![deny(clippy::missing_safety_doc)]
-#![deny(static_mut_refs)]
+// This crate talks to the C kernel only through `kernel_rust` (the graph's one
+// `unsafe` crate): the CSPRNG's entropy/timing instructions, the leaf mutex and
+// the raw-pointer plumbing all live there, so this crate holds no `unsafe` of
+// its own and forbids it outright.
+#![forbid(unsafe_code)]
+// The `/dev/crypto` entry points are exported through `kernel_abi` and still
+// have to be FFI-safe, so that check stays in addition to the `unsafe_code` ban.
 #![deny(improper_ctypes, improper_ctypes_definitions)]
-// Additional safety lints (all verified zero-hit when enabled, 2026-09-26):
-// transmute misuse, byte-vs-element count confusion and assumptions that
-// uninitialised memory is valid become hard errors instead of silent warnings.
-#![deny(clippy::transmute_ptr_to_ref)]
-#![deny(clippy::transmute_ptr_to_ptr)]
-#![deny(clippy::useless_transmute)]
-#![deny(clippy::size_of_in_element_count)]
-#![deny(clippy::uninit_assumed_init)]
-#![deny(invalid_reference_casting)]
-// Maximal-safety: one unsafe operation per `unsafe` block, so each `// SAFETY:`
-// justifies exactly one operation.
-#![deny(clippy::multiple_unsafe_ops_per_block)]
 
 extern crate alloc;
+
+mod ffi;
 
 pub mod hash;
 pub mod hkdf;

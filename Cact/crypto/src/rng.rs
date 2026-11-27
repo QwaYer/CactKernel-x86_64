@@ -18,64 +18,14 @@
 //! is the classic no-hardware-entropy source — weaker, and worth knowing about:
 //! `cact_csprng_hw_entropy()` reports whether the hardware source was present.
 
-use kernel_rust::sync::Mutex;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
 use chacha20::{ChaCha20, Key, Nonce};
 use sha2::{Digest, Sha256};
 
-// SAFETY: all three are C kernel symbols, linked into the final image.
-unsafe extern "C" {
-    // Reached only from the x86-32 `rdrand32`; other targets use a stub.
-    #[cfg(target_arch = "x86")]
-    fn cpu_has_rdrand() -> i32;
-    fn ktime_get_usec() -> u64;
-    fn timer_ticks_get() -> u32;
-}
-
-
-/// One hardware random word, or None when the CPU has no RDRAND.  RDRAND is
-/// allowed to fail transiently, so retry a few times before giving up on it.
-#[cfg(target_arch = "x86")]
-fn rdrand32() -> Option<u32> {
-    // SAFETY: guarded by the CPUID feature bit.
-    if unsafe { cpu_has_rdrand() } == 0 {
-        return None;
-    }
-    for _ in 0..10 {
-        let mut v: u32 = 0;
-        // SAFETY: RDRAND was confirmed present by the CPUID check above, and
-        // `&mut v` is a valid place to write the instruction's result.
-        let ok = unsafe { core::arch::x86::_rdrand32_step(&mut v) };
-        if ok == 1 {
-            return Some(v);
-        }
-    }
-    None
-}
-
-#[cfg(not(target_arch = "x86"))]
-fn rdrand32() -> Option<u32> {
-    None
-}
-
-/// Cycle counter.  Its *low* bits are what carry jitter, so callers use deltas.
-#[cfg(target_arch = "x86")]
-fn rdtsc() -> u64 {
-    let lo: u32;
-    let hi: u32;
-    // SAFETY: rdtsc is readable in ring 0.
-    unsafe {
-        core::arch::asm!("rdtsc", out("eax") lo, out("edx") hi,
-                         options(nomem, nostack, preserves_flags));
-    }
-    ((hi as u64) << 32) | lo as u64
-}
-
-#[cfg(not(target_arch = "x86"))]
-fn rdtsc() -> u64 {
-    // SAFETY: pure C call; no TSC on other targets.
-    unsafe { ktime_get_usec() }
-}
+use kernel_rust::cpu::{rdrand32, rdtsc};
+use kernel_rust::net::{ktime_get_usec, timer_ticks_get};
+use kernel_rust::ptr;
+use kernel_rust::sync::Mutex;
 
 /// Harvest timing jitter into `digest`.
 ///
@@ -142,11 +92,9 @@ fn seed(g: &mut Drbg) {
             g.hw_entropy = true;
         }
     }
-    // SAFETY: C kernel timer/clock.
-    src[n..n + 8].copy_from_slice(&unsafe { ktime_get_usec() }.to_le_bytes());
+    src[n..n + 8].copy_from_slice(&ktime_get_usec().to_le_bytes());
     n += 8;
-    // SAFETY: C kernel timer; no arguments, only reads the tick counter.
-    src[n..n + 4].copy_from_slice(&unsafe { timer_ticks_get() }.to_le_bytes());
+    src[n..n + 4].copy_from_slice(&timer_ticks_get().to_le_bytes());
     n += 4;
     let stack_probe = 0u8;
     src[n..n + 4].copy_from_slice(&((&stack_probe as *const u8 as usize as u32).to_le_bytes()));
@@ -157,10 +105,8 @@ fn seed(g: &mut Drbg) {
     // Independent nonce material; the same hash would tie the two together.
     let mut n2 = [0u8; 48];
     n2[..32].copy_from_slice(&g.key);
-    // SAFETY: C kernel timer/clock.
-    n2[32..40].copy_from_slice(&unsafe { ktime_get_usec() }.to_le_bytes());
-    // SAFETY: C kernel timer; no arguments, only reads the tick counter.
-    n2[40..44].copy_from_slice(&unsafe { timer_ticks_get() }.to_le_bytes());
+    n2[32..40].copy_from_slice(&ktime_get_usec().to_le_bytes());
+    n2[40..44].copy_from_slice(&timer_ticks_get().to_le_bytes());
     g.nonce.copy_from_slice(&hash_sources(b"cact-csprng-v1-nonce", &n2[..44], 64)[..12]);
     g.ready = true;
 }
@@ -179,11 +125,9 @@ fn stir(g: &mut Drbg) {
             n += 4;
         }
     }
-    // SAFETY: C kernel timer/clock.
-    src[n..n + 8].copy_from_slice(&unsafe { ktime_get_usec() }.to_le_bytes());
+    src[n..n + 8].copy_from_slice(&ktime_get_usec().to_le_bytes());
     n += 8;
-    // SAFETY: C kernel timer; no arguments, only reads the tick counter.
-    src[n..n + 4].copy_from_slice(&unsafe { timer_ticks_get() }.to_le_bytes());
+    src[n..n + 4].copy_from_slice(&timer_ticks_get().to_le_bytes());
     n += 4;
 
     let d = hash_sources(b"cact-csprng-v1-stir", &src[..n], 32);
@@ -238,29 +182,23 @@ pub fn fill(buf: &mut [u8]) {
     apply_and_rekey(key, nonce, buf);
 }
 
-/// C ABI: fill a kernel buffer.  Returns 0, or -1 on a null buffer.
-///
-/// # Safety
-///
-/// `buf` must point to at least `len` bytes of writable memory that stay valid
-/// and unaliased for the duration of the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact_csprng_fill(buf: *mut u8, len: u32) -> i32 {
+/// C ABI (exported via `kernel_abi`): fill a kernel buffer.  Returns 0, or -1
+/// on a null buffer.  `buf` must point to at least `len` writable bytes that
+/// stay valid and unaliased for the duration of the call.
+pub fn cact_csprng_fill(buf: *mut u8, len: u32) -> i32 {
     if len == 0 {
         return 0;
     }
     if buf.is_null() {
         return -1;
     }
-    // SAFETY: the caller promises `len` writable bytes at `buf`.
-    fill(unsafe { core::slice::from_raw_parts_mut(buf, len as usize) });
+    fill(ptr::slice_mut(buf, len as usize));
     0
 }
 
-/// C ABI: 1 when the CSPRNG was seeded from a hardware source (RDRAND), 0 when
-/// it had to fall back to timing jitter alone.
-#[no_mangle]
-pub extern "C" fn cact_csprng_hw_entropy() -> i32 {
+/// C ABI (exported via `kernel_abi`): 1 when the CSPRNG was seeded from a
+/// hardware source (RDRAND), 0 when it had to fall back to timing jitter alone.
+pub fn cact_csprng_hw_entropy() -> i32 {
     let g = DRBG.lock();
     if (g.ready && g.hw_entropy) || rdrand32().is_some() {
         1

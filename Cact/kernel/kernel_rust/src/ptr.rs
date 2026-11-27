@@ -58,3 +58,10 @@ pub fn slice_mut<'a, T>(p: *mut T, len: usize) -> &'a mut [T] {
     // SAFETY: `p` is a C-boundary buffer of `len` writable elements.
     unsafe { core::slice::from_raw_parts_mut(p, len) }
 }
+
+/// Advance a pointer by `count` elements (`p.add(count)`) without dereferencing.
+/// The caller guarantees the result stays within the same allocated object.
+pub fn add<T>(p: *const T, count: usize) -> *const T {
+    // SAFETY: the caller guarantees the result stays in `p`'s allocation.
+    unsafe { p.add(count) }
+}
