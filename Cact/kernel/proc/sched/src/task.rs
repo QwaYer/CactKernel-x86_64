@@ -325,12 +325,10 @@ pub(crate) fn map_user_stack_in_pd(pd: *mut u64, p: &ProcMeta) {
     // task; `p` is a live `ProcMeta` whose `ustack_phys`/`ustack_phys_extra` hold this process's
     // stack pages (the VAs `kalloc` handed out, so `vmm_v2p` gives the frames the entries take),
     // so each `vmm_map` is handed a real physical page.
-    unsafe {
-        for i in 0..USER_STACK_PAGES {
-            let vaddr = p.ustack_virt.wrapping_add((i as u64).wrapping_mul(PAGE_SIZE as u64));
-            let phys = cact_mm::vmm_v2p(ustack_phys_by_idx(p, i as usize) as *const u8);
-            cact_mm::vmm_map(pd, vaddr, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
-        }
+    for i in 0..USER_STACK_PAGES {
+        let vaddr = p.ustack_virt.wrapping_add((i as u64).wrapping_mul(PAGE_SIZE as u64));
+        let phys = cact_mm::vmm_v2p(ustack_phys_by_idx(p, i as usize) as *const u8);
+        cact_mm::vmm_map(pd, vaddr, phys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
     }
 }
 
@@ -378,7 +376,7 @@ pub(crate) fn task_zero_init(t: *mut TaskStruct, p: *mut ProcMeta) -> bool {
         return false;
     }
     // SAFETY: `mmap_tbl` is a fresh `MmapTable`-sized block.
-    unsafe { cact_mm::mmap_table_init(mmap_tbl) };
+    cact_mm::mmap_table_init(mmap_tbl);
     p.mmap_table = mmap_tbl;
 
     t.state      = TaskState::Ready;

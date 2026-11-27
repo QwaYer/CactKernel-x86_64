@@ -99,7 +99,7 @@ pub unsafe extern "C" fn proc_free_pages(t: *mut ProcPageTracker) {
     if !t.page_dir.is_null() {
         // SAFETY: `t.page_dir` is the process's page directory, which this
         // teardown is allowed to free; the borrow of `t` ends at this statement.
-        unsafe { vmm_free_address_space(t.page_dir) };
+        vmm_free_address_space(t.page_dir);
         t.page_dir = core::ptr::null_mut();
     }
 }

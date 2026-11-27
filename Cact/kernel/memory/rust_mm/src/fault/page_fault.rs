@@ -73,7 +73,7 @@ pub(crate) unsafe fn ensure_private_pte(pd: *mut u64, va: u64, extra_flags: u32)
     // SAFETY: the caller guarantees `pd` is a live page map it owns; `create`
     // makes the walk allocate the missing levels and split a large page, marked
     // private because this is the caller's own address space.
-    let w = unsafe { crate::vmm::paging::walk(pd, va, true, true) };
+    let w = crate::vmm::paging::walk(pd, va, true, true);
     if w.pte_entry.is_null() {
         return core::ptr::null_mut();
     }
@@ -111,7 +111,7 @@ pub(crate) fn pte_get(pd: *mut u64, vaddr: u64) -> *mut u64 {
     }
     // SAFETY: `pd` is a live page map and the walk only reads it (`create`
     // false), so nothing is allocated or mutated.
-    unsafe { crate::vmm::paging::walk(pd, vaddr, false, false).pte_entry }
+    crate::vmm::paging::walk(pd, vaddr, false, false).pte_entry
 }
 
 fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, cr3: &mut Cr3Guard) {
@@ -236,7 +236,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32);
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see the
             // note above.
@@ -270,7 +270,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
             zero_page(phys);
             // SAFETY: `pd` is the faulting task's page directory, `page_va` is in
             // the user stack window and `phys` is the zeroed frame just allocated.
-            unsafe { vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32); }
+            vmm_map(pd, page_va, v2p(phys), (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32);
             flush_tlb(page_va);
             // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see above.
             (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).stack_grows += 1;
@@ -421,14 +421,12 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
                 // SAFETY: `pd` is valid, `page_va` is inside the user stack window
                 // and `phys` is the zeroed frame just allocated for it; the mapping
                 // takes the frame's physical address.
-                unsafe {
-                    vmm_map(
-                        pd,
-                        page_va,
-                        v2p(phys),
-                        (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
-                    );
-                }
+                vmm_map(
+                    pd,
+                    page_va,
+                    v2p(phys),
+                    (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
+                );
                 flush_tlb(page_va);
                 // SAFETY: `G_STATS.stack_grows` — unprotected diagnostic counter; see above.
                 (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).stack_grows += 1;

@@ -191,7 +191,7 @@ unsafe fn zswap_writeback_one(pd: *mut u64) -> bool {
     while it < max_iter {
         it += 1;
         // SAFETY: `pd` is the caller's live page map; the walk only reads it.
-        let w = unsafe { crate::vmm::paging::walk(pd, va as u64, false, false) };
+        let w = crate::vmm::paging::walk(pd, va as u64, false, false);
         if !w.pte_entry.is_null() {
             let entry = w.pte_entry as *mut AtomicU64;
             // SAFETY: `entry` points at one live atomic PTE.

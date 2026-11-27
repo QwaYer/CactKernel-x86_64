@@ -660,7 +660,7 @@ pub unsafe extern "C" fn schedule() {
     let effective_prev_pd = if prev_pd.is_null() { kernel_pd } else { prev_pd };
 
     // SAFETY: maps the kernel MMIO ranges into the incoming page directory.
-    unsafe { cact_mm::vmm_sync_kernel_mmio_mappings(effective_next_pd) };
+    cact_mm::vmm_sync_kernel_mmio_mappings(effective_next_pd);
 
     if effective_next_pd != effective_prev_pd {
         // SAFETY: switches CR3 to the incoming live address space.  A page map is

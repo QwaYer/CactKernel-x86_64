@@ -80,9 +80,7 @@ pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
         // PAGE_SIZE` is inside the SHM window chosen above, and the segment's
         // frames stay live while `SHM_LOCK` is held.  `seg.pages[i]` is the
         // `kalloc` VA of the frame, so the entry takes its physical address.
-        unsafe {
-            vmm_map(pd, (va + i * PAGE_SIZE) as u64, v2p(seg.pages[i as usize]), page_flags)
-        };
+        vmm_map(pd, (va + i * PAGE_SIZE) as u64, v2p(seg.pages[i as usize]), page_flags);
     }
 
     // SAFETY: `proc_meta` is the live `ProcMeta` and `slot` is in bounds

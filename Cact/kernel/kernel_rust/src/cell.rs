@@ -16,6 +16,7 @@ use core::cell::UnsafeCell;
 /// single-threaded bring-up, or under an external lock (the `/dev/chv` run
 /// mutex for the hypervisor model).  [`KCell::with`] relies on that invariant,
 /// which is what lets callers stay free of `unsafe`.
+#[repr(transparent)]
 pub struct KCell<T>(UnsafeCell<T>);
 
 // SAFETY: every access goes through `with`/`get`/`set`, which run only where

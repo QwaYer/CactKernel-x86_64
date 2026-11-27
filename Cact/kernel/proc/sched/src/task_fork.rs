@@ -50,7 +50,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if child_raw.is_null() {
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
@@ -61,7 +61,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         // `child_raw` is a live allocation owned here.
         cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
@@ -75,7 +75,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         // `child_raw` is a live allocation owned here.
         cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
@@ -97,7 +97,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
             // `child_raw` is a live allocation owned here.
             cact_mm::kfree((child_raw as *mut c_void) as *mut u8);
             // SAFETY: `child_pd` is a live address space owned here.
-            unsafe { cact_mm::vmm_free_address_space(child_pd) };
+            cact_mm::vmm_free_address_space(child_pd);
             // the lock was acquired above.
             irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return ptr::null_mut();
@@ -178,7 +178,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         // `child` is a live allocation owned here.
         cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
@@ -213,7 +213,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         // `child` is a live allocation owned here.
         cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
@@ -255,36 +255,34 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         // `child` is a live allocation owned here.
         cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8);
         // SAFETY: `child_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(child_pd) };
+        cact_mm::vmm_free_address_space(child_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
     // SAFETY: `child_mmap` is a fresh `MmapTable`-sized block.
-    unsafe { cact_mm::mmap_table_init(child_mmap) };
+    cact_mm::mmap_table_init(child_mmap);
     child_p.mmap_table = child_mmap;
 
     if !parent.page_directory.is_null() {
         // SAFETY: `parent.page_directory` and `child_pd` are both live address spaces.
-        unsafe { cact_mm::vmm_fork_address_space(parent.page_directory, child_pd) };
+        cact_mm::vmm_fork_address_space(parent.page_directory, child_pd);
     }
 
     let parent_mmap_table = parent_p_ref.mmap_table;
     // SAFETY: both mmap tables are live and both page directories are valid; the clone reads the
     // parent's and writes the child's.
-    unsafe {
-        cact_mm::mmap_table_clone(
-            parent_mmap_table,
-            child_p.mmap_table,
-            parent.page_directory,
-            child_pd,
-        )
-    };
+    cact_mm::mmap_table_clone(
+        parent_mmap_table,
+        child_p.mmap_table,
+        parent.page_directory,
+        child_pd,
+    );
 
     // The kernel MMIO mappings (framebuffer, xHCI BARs...) must be present in
     // the child pd; fork only deep-copies the user half.
     // SAFETY: `child_pd` is a live address space.
-    unsafe { cact_mm::vmm_sync_kernel_mmio_mappings(child_pd) };
+    cact_mm::vmm_sync_kernel_mmio_mappings(child_pd);
 
     for i in 0..USER_STACK_PAGES as usize {
         let vaddr = child_p.ustack_virt.wrapping_add((i as u64).wrapping_mul(PAGE_SIZE as u64));
@@ -293,7 +291,7 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         let cphys = cact_mm::vmm_v2p(ustack_phys_by_idx(child_p, i) as *const u8);
         // SAFETY: `child_pd` is a live address space, `vaddr` is in the child's user range and
         // `cphys` is a page owned by the child.
-        unsafe { cact_mm::vmm_map(child_pd, vaddr, cphys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32) };
+        cact_mm::vmm_map(child_pd, vaddr, cphys, (PAGE_USER | PAGE_RW | PAGE_PRESENT) as i32);
         // SAFETY: the child's and parent's stack pages are live and distinct, so the copy stays
         // inside both.
         unsafe {
@@ -717,7 +715,7 @@ fn reap_task_free(t: *mut TaskStruct, last: bool) {
             let pd = unsafe { (*t).page_directory };
             if !pd.is_null() {
                 // SAFETY: `mt` is the task's live mmap table and `pd` its live page directory.
-                unsafe { cact_mm::mmap_table_free(mt, pd) };
+                cact_mm::mmap_table_free(mt, pd);
             }
             // `mt` is a live allocation owned by this dying thread group.
             cact_mm::kfree((mt as *mut c_void) as *mut u8);

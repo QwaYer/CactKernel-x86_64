@@ -382,7 +382,7 @@ pub unsafe extern "C" fn swap_migrate_pd(pd: *mut u64) -> i32 {
     let mut va = USER_SPACE_START as u64;
     while va < end {
         // SAFETY: `pd` is a live page map and the walk only reads it.
-        let w = unsafe { crate::vmm::paging::walk(pd, va, false, false) };
+        let w = crate::vmm::paging::walk(pd, va, false, false);
         if !w.pte_entry.is_null() {
             let entry = w.pte_entry as *mut AtomicU64;
             // SAFETY: `entry` points at one live atomic PTE.
@@ -503,7 +503,7 @@ unsafe fn swap_evict_page_inner(pd: *mut u64) -> i32 {
         // (reading only, `create` false), so the scan follows exactly the tables
         // the CPU walks rather than assuming a two-level layout.
         // SAFETY: `pd` is the caller's live page map and the walk only reads it.
-        let w = unsafe { crate::vmm::paging::walk(pd, va as u64, false, false) };
+        let w = crate::vmm::paging::walk(pd, va as u64, false, false);
         if !w.pte_entry.is_null() {
             let pte_entry = w.pte_entry as *mut AtomicU64;
             // SAFETY: `pte_entry` points at one live atomic PTE; a relaxed load is
@@ -540,9 +540,7 @@ unsafe fn swap_evict_page_inner(pd: *mut u64) -> i32 {
                     // (under pressure this faulted in `file_unref`).
                     // SAFETY: `current_proc()` is the running task's `ProcMeta`
                     // (or null, which classifies the address as anonymous).
-                    if !unsafe {
-                        crate::vmm::stats::va_is_anonymous(crate::vmm::stats::current_proc(), va)
-                    } {
+                    if !crate::vmm::stats::va_is_anonymous(crate::vmm::stats::current_proc(), va) {
                         va += PAGE_SIZE;
                         if va >= USER_STACK_TOP {
                             va = USER_SPACE_START;
@@ -627,7 +625,7 @@ pub unsafe extern "C" fn swap_handle_fault(pd: *mut u64, fault_addr: u64) -> i32
 
     // SAFETY: `pd` is a live page map and the walk only reads it (`create`
     // false), so nothing is allocated or mutated.
-    let w = unsafe { crate::vmm::paging::walk(pd, page_va, false, false) };
+    let w = crate::vmm::paging::walk(pd, page_va, false, false);
     if w.pte_entry.is_null() {
         return -1;
     }

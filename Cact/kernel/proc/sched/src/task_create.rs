@@ -351,7 +351,7 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     let t = create_user_task_internal(ptr::null(), false);
     if t.is_null() {
         // SAFETY: `pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(pd) };
+        cact_mm::vmm_free_address_space(pd);
         return ptr::null_mut();
     }
 
@@ -374,7 +374,7 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
         // `t` is a live allocation owned here.
         cact_mm::kfree((t as *mut c_void) as *mut u8);
         // SAFETY: `pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(pd) };
+        cact_mm::vmm_free_address_space(pd);
         return ptr::null_mut();
     }
     p.shared = shared;
@@ -422,7 +422,7 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
         // `t` is a live allocation owned here.
         cact_mm::kfree((t as *mut c_void) as *mut u8);
         // SAFETY: `pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(pd) };
+        cact_mm::vmm_free_address_space(pd);
         return ptr::null_mut();
     }
 

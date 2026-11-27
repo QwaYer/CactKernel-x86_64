@@ -78,9 +78,7 @@ pub(crate) fn map_sigreturn_trampoline_on_pd(t: *mut TaskStruct, pd: *mut u64) {
     // SAFETY: `pd` is a valid page directory (checked at entry) and `phys` is a freshly
     // allocated page (a direct-map VA, translated here because the page-table entry takes a
     // physical address), so mapping it at `tramp_vaddr` is the documented operation.
-    unsafe {
-        cact_mm::vmm_map(pd, tramp_vaddr, cact_mm::vmm_v2p(phys), vmm_flags as i32)
-    };
+    cact_mm::vmm_map(pd, tramp_vaddr, cact_mm::vmm_v2p(phys), vmm_flags as i32);
 
     if !t_proc.is_null() {
         // SAFETY: `t_proc` is the task's live `ProcMeta` (non-null checked here), so storing the

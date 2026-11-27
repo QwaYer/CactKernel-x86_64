@@ -54,7 +54,7 @@ pub unsafe extern "C" fn vmm_map_demand(
 /// `pd` must be null or a valid page directory that the caller owns and may
 /// mutate; the caller must serialise concurrent page-table changes.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn vmm_map_zero(
+pub extern "C" fn vmm_map_zero(
     pd: *mut u64,
     virtual_addr: u64,
     size: u32,
@@ -208,14 +208,12 @@ pub unsafe extern "C" fn vmm_setup_user_stack(pd: *mut u64, initial_size: u32) -
         // SAFETY: `pd` is valid (checked at entry), `va` lies in the user stack
         // window and `phys` is the zeroed frame just allocated for it; the
         // mapping takes the frame's physical address.
-        unsafe {
-            vmm_map(
-                pd,
-                va,
-                v2p(phys),
-                (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
-            );
-        }
+        vmm_map(
+            pd,
+            va,
+            v2p(phys),
+            (PAGE_PRESENT | PAGE_RW | PAGE_USER) as i32,
+        );
         va += PAGE_SIZE as u64;
     }
 

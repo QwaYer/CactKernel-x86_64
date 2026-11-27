@@ -159,7 +159,7 @@ pub unsafe extern "C" fn task_exec(
             && unsafe { ffi::vfs_check_perm(exec_node, 0x01) } >= 0;
         if !perm_ok {
             // SAFETY: `new_pd` is a live address space owned here.
-            unsafe { cact_mm::vmm_free_address_space(new_pd) };
+            cact_mm::vmm_free_address_space(new_pd);
             for page in new_ustack_pages {
                 // SAFETY: each entry is a page allocated by `kalloc` above.
                 unsafe { cact_mm::free_page((page) as *mut u8) };
@@ -193,7 +193,7 @@ pub unsafe extern "C" fn task_exec(
     };
     if entry.is_null() {
         // SAFETY: `new_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(new_pd) };
+        cact_mm::vmm_free_address_space(new_pd);
         for page in new_ustack_pages {
             // SAFETY: each entry is a page allocated by `kalloc` above.
             unsafe { cact_mm::free_page((page) as *mut u8) };
@@ -244,7 +244,7 @@ pub unsafe extern "C" fn task_exec(
 
     map_sigreturn_trampoline_on_pd(t, new_pd);
     // SAFETY: `new_pd` is a live address space.
-    unsafe { cact_mm::vmm_sync_kernel_mmio_mappings(new_pd) };
+    cact_mm::vmm_sync_kernel_mmio_mappings(new_pd);
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let stack_base = unsafe { (*p).stack_base };
@@ -278,7 +278,7 @@ pub unsafe extern "C" fn task_exec(
                     [old_ustack_pages[1], old_ustack_pages[2], old_ustack_pages[3]]
             };
             // SAFETY: `new_pd` is a live address space owned here.
-            unsafe { cact_mm::vmm_free_address_space(new_pd) };
+            cact_mm::vmm_free_address_space(new_pd);
             // the lock was acquired above.
             irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return -1;
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn task_exec(
                     [old_ustack_pages[1], old_ustack_pages[2], old_ustack_pages[3]]
             };
             // SAFETY: `new_pd` is a live address space owned here.
-            unsafe { cact_mm::vmm_free_address_space(new_pd) };
+            cact_mm::vmm_free_address_space(new_pd);
             // the lock was acquired above.
             irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return -1;
@@ -356,7 +356,7 @@ pub unsafe extern "C" fn task_exec(
             (*p).ustack_phys_extra = [old_ustack_pages[1], old_ustack_pages[2], old_ustack_pages[3]]
         };
         // SAFETY: `new_pd` is a live address space owned here.
-        unsafe { cact_mm::vmm_free_address_space(new_pd) };
+        cact_mm::vmm_free_address_space(new_pd);
         // the lock was acquired above.
         irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -1;
@@ -437,7 +437,7 @@ pub unsafe extern "C" fn task_exec(
     // SAFETY: `p` is the live current task's `ProcMeta`.
     let mmap_table = unsafe { (*p).mmap_table };
     // SAFETY: `mmap_table` is this task's live mmap table.
-    unsafe { cact_mm::mmap_table_init(mmap_table) };
+    cact_mm::mmap_table_init(mmap_table);
 
     for i in 3..MAX_FD {
         // SAFETY: `p` is the live current task's `ProcMeta`.
@@ -466,10 +466,10 @@ pub unsafe extern "C" fn task_exec(
     unsafe { ffi::switch_paging(cact_mm::vmm_v2p(new_pd as *const u8) as *mut u64) };
     if !old_pd.is_null() {
         // SAFETY: `old_pd` is this task's previous, now-unreferenced address space.
-        unsafe { cact_mm::vmm_free_address_space(old_pd) };
+        cact_mm::vmm_free_address_space(old_pd);
     }
     // SAFETY: `new_pd` is a live address space.
-    unsafe { cact_mm::vmm_sync_kernel_mmio_mappings(new_pd) };
+    cact_mm::vmm_sync_kernel_mmio_mappings(new_pd);
 
     // SAFETY: `invlpg` on the freshly mapped `entry` page is a TLB maintenance instruction
     // issued while the scheduler lock is held; it reads no memory and only invalidates one

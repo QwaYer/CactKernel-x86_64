@@ -164,7 +164,7 @@ pub(crate) fn shm_unmap_from(pd: *mut u64, va: u32, num_pages: u32) {
         let addr = (va as u64) + (i as u64) * PAGE_SIZE as u64;
         // SAFETY: `pd` is the caller's live page map; `vmm_unmap` only walks and
         // clears the one entry for `addr`.
-        unsafe { crate::vmm::paging::vmm_unmap(pd, addr) };
+        crate::vmm::paging::vmm_unmap(pd, addr);
     }
 }
 
