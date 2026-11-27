@@ -26,14 +26,14 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     // SAFETY: `regs` points to the live interrupt frame (see # Safety); it is only read below.
     let regs = unsafe { &*regs };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not already
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not already
     // hold it (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     let parent_raw = current_task();
     if parent_raw.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
     // SAFETY: `parent_raw` is the live forking task (non-null checked above); it is only read
@@ -42,8 +42,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
 
     let child_pd = vmm_create_address_space();
     if child_pd.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
 
@@ -51,8 +51,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     if child_raw.is_null() {
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
 
@@ -62,8 +62,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
 
@@ -76,8 +76,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
 
@@ -98,8 +98,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
             unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
             // SAFETY: `child_pd` is a live address space owned here.
             unsafe { cact_mm::vmm_free_address_space(child_pd) };
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return ptr::null_mut();
         }
         ustack_pages[i] = page as *mut c_void;
@@ -179,8 +179,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
     child_p.shared    = child_shared;
@@ -214,8 +214,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
     let parent_fds = parent_p_ref.fds;
@@ -256,8 +256,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
         unsafe { cact_mm::kfree((child as *mut TaskStruct as *mut c_void) as *mut u8) };
         // SAFETY: `child_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(child_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return ptr::null_mut();
     }
     // SAFETY: `child_mmap` is a fresh `MmapTable`-sized block.
@@ -365,8 +365,8 @@ pub unsafe extern "C" fn task_fork(regs: *mut ContextFrame) -> *mut TaskStruct {
     // SAFETY: `child` is live and `SCHEDULER_LOCK` is held.
     unsafe { mlfq::mlfq_enqueue_locked(child as *mut TaskStruct, child.priority) };
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     child as *mut TaskStruct
 }
@@ -392,8 +392,8 @@ pub unsafe extern "C" fn sched_task_exit(exit_code: i32) {
     // SAFETY: `t` is the live current task and this is its own exit path.
     unsafe { crate::task::clear_child_tid_on_exit(t) };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     unsafe { (*p).exit_code = exit_code };
@@ -422,8 +422,8 @@ pub unsafe extern "C" fn sched_task_exit(exit_code: i32) {
         child = next_child;
     }
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `schedule` is the scheduler's core switch routine; this task never runs again.
     unsafe { crate::mlfq::schedule() };
@@ -449,9 +449,9 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
     let cur_pid = unsafe { (*cur).pid };
 
     'wait: loop {
-        // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; it is released on every
+        // `SCHEDULER_LOCK` is the scheduler's global spinlock; it is released on every
         // exit path of this loop and re-acquired at the top.
-        unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+        irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
         // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
         let mut t = unsafe { task_list_head };
@@ -484,8 +484,8 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
                         // from under it.  Yield and rescan: the transition is a
                         // few instructions away, and nothing would wake a parked
                         // parent for it.
-                        // SAFETY: the lock was acquired above.
-                        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+                        // the lock was acquired above.
+                        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
                         if options & WNOHANG != 0 {
                             return 0;
                         }
@@ -514,8 +514,8 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
                     // held, serializing this against other reaps.
                     let last = unsafe { proc_shared_unref_locked(child_shared) };
                     let to_free = t;
-                    // SAFETY: the lock was acquired above.
-                    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+                    // the lock was acquired above.
+                    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
                     reap_task_free(to_free, last);
 
@@ -530,8 +530,8 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
                 }
                 if matches!(t_state, TaskState::Stopped) && options & WUNTRACED != 0 {
                     let stopped_pid = t_pid;
-                    // SAFETY: the lock was acquired above.
-                    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+                    // the lock was acquired above.
+                    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
                     if !status.is_null() {
                         // WIFSTOPPED: low byte 0x7f, stopping signal in bits 8-15.
@@ -548,14 +548,14 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
         }
 
         if !found_child {
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return -1;
         }
 
         if options & WNOHANG != 0 {
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return 0;
         }
 
@@ -568,8 +568,8 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
             // SAFETY: `cur` is the live current task.
             unsafe { (*cur).state = TaskState::Waiting };
         }
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         // SAFETY: `schedule` is the scheduler's core switch routine, called with the lock free.
         unsafe { crate::mlfq::schedule() };
     }
@@ -591,12 +591,12 @@ pub unsafe extern "C" fn sched_waitpid(target_pid: i32, status: *mut i32, option
 /// `t` must be the live current task on its way out, and must not be `Zombie`
 /// yet: a reap during the release would free the stack underneath it.
 pub unsafe fn release_fds_on_death(t: *mut TaskStruct) {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `t` is the live current task; the lock is held.
     let last = unsafe { last_live_member(t) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
     if last {
         // SAFETY: `t` is the live current task and owns its fd table.
         unsafe { close_all_fds(t) };
@@ -769,8 +769,8 @@ pub unsafe extern "C" fn task_reap() {
     let mut last_flags: [bool; 64] = [false; 64];
     let mut count = 0usize;
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let mut cur = unsafe { task_list_head };
     while !cur.is_null() && count < 64 {
@@ -813,8 +813,8 @@ pub unsafe extern "C" fn task_reap() {
         }
         cur = next;
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     for i in 0..count {
         reap_task_free(to_reap[i], last_flags[i]);

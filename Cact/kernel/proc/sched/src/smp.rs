@@ -623,9 +623,9 @@ pub fn smp_cpu_offline(cpu: u32) -> i32 {
     }
     let idx = cpu as usize;
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs
     // from task context (the master's idle loop), which does not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut crate::task::SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut crate::task::SCHEDULER_LOCK);
     let idle_task = crate::percpu::cpu_idle(idx);
     let safe = !idle_task.is_null()
         && crate::percpu::cpu_current(idx) == idle_task
@@ -634,8 +634,8 @@ pub fn smp_cpu_offline(cpu: u32) -> i32 {
     if safe {
         crate::percpu::set_park_request(idx);
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut crate::task::SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut crate::task::SCHEDULER_LOCK);
     if !safe {
         return -1;
     }

@@ -106,15 +106,15 @@ fn state() -> &'static mut EnergyState {
 }
 
 fn lock() {
-    // SAFETY: `ENERGY_LOCK` is a statically initialised `irq_spinlock_t` at a unique address, so
+    // `ENERGY_LOCK` is a statically initialised `irq_spinlock_t` at a unique address, so
     // `&raw mut ENERGY_LOCK` is a valid, aligned pointer to live lock storage.
-    unsafe { irq_spinlock_acquire(&raw mut ENERGY_LOCK) };
+    irq_spinlock_acquire(&raw mut ENERGY_LOCK);
 }
 
 fn unlock() {
-    // SAFETY: pairs with the `lock()` above on the same statically initialised `ENERGY_LOCK`,
+    // pairs with the `lock()` above on the same statically initialised `ENERGY_LOCK`,
     // which this call site holds.
-    unsafe { irq_spinlock_release(&raw mut ENERGY_LOCK) };
+    irq_spinlock_release(&raw mut ENERGY_LOCK);
 }
 
 fn core_index(cpu: u32) -> Option<usize> {

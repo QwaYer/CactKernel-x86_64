@@ -98,14 +98,14 @@ pub unsafe extern "C" fn create_task(entry_point: *const c_void) -> *mut TaskStr
     t_ref.page_directory = ptr::null_mut();
     p_ref.stack_base     = stack as *mut c_void;
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { task_list_add(t_ref as *mut TaskStruct) };
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { mlfq::mlfq_enqueue_locked(t_ref as *mut TaskStruct, t_ref.priority) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     t_ref as *mut TaskStruct
 }
@@ -233,14 +233,14 @@ fn create_user_task_internal(entry_point: *const c_void, add_to_list: bool) -> *
     }
 
     if add_to_list {
-        // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock.
-        unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+        // `SCHEDULER_LOCK` is the scheduler's global spinlock.
+        irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
         // SAFETY: `t_ref` is live and the lock is held.
         unsafe { task_list_add(t_ref as *mut TaskStruct) };
         // SAFETY: `t_ref` is live and the lock is held.
         unsafe { mlfq::mlfq_enqueue_locked(t_ref as *mut TaskStruct, t_ref.priority) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
     }
 
     t_ref as *mut TaskStruct
@@ -326,14 +326,14 @@ pub unsafe extern "C" fn create_task_with_entry(
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { task_list_add(t_ref as *mut TaskStruct) };
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { mlfq::mlfq_enqueue_locked(t_ref as *mut TaskStruct, t_ref.priority) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     t_ref as *mut TaskStruct
 }
@@ -509,14 +509,14 @@ pub unsafe extern "C" fn create_elf_task(path: *const u8) -> *mut TaskStruct {
     // SAFETY: `t_ref` is live; installing its sigreturn trampoline is part of creation.
     unsafe { task_setup_sigreturn(t_ref as *mut TaskStruct) };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { task_list_add(t_ref as *mut TaskStruct) };
     // SAFETY: `t_ref` is live and the lock is held.
     unsafe { mlfq::mlfq_enqueue_locked(t_ref as *mut TaskStruct, t_ref.priority) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     t_ref as *mut TaskStruct
 }

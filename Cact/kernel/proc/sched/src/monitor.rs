@@ -89,15 +89,15 @@ fn state() -> &'static mut MonitorState {
 }
 
 fn lock() {
-    // SAFETY: `MONITOR_LOCK` is a statically initialised `irq_spinlock_t` with a unique address,
+    // `MONITOR_LOCK` is a statically initialised `irq_spinlock_t` with a unique address,
     // so `&raw mut MONITOR_LOCK` is a valid, aligned pointer to live lock storage.
-    unsafe { irq_spinlock_acquire(&raw mut MONITOR_LOCK) };
+    irq_spinlock_acquire(&raw mut MONITOR_LOCK);
 }
 
 fn unlock() {
-    // SAFETY: pairs with the `lock()` above on the same statically initialised `MONITOR_LOCK`,
+    // pairs with the `lock()` above on the same statically initialised `MONITOR_LOCK`,
     // which this call site holds.
-    unsafe { irq_spinlock_release(&raw mut MONITOR_LOCK) };
+    irq_spinlock_release(&raw mut MONITOR_LOCK);
 }
 
 fn core_index(cpu: u32) -> Option<usize> {

@@ -79,14 +79,14 @@ static mut RADIO_LOCK: cact_sync::mutex_t = cact_sync::mutex_t {
 };
 
 fn radio_lock() {
-    // SAFETY: `RADIO_LOCK` is the engine's kernel-lifetime mutex; every acquirer
-    // goes through this pair.
-    unsafe { cact_sync::mutex_lock(core::ptr::addr_of_mut!(RADIO_LOCK)) };
+    // `RADIO_LOCK` is the engine's kernel-lifetime mutex; every acquirer goes
+    // through this pair.
+    cact_sync::mutex_lock(core::ptr::addr_of_mut!(RADIO_LOCK));
 }
 
 fn radio_unlock() {
-    // SAFETY: releases a mutex this task holds (paired with `radio_lock`).
-    unsafe { cact_sync::mutex_unlock(core::ptr::addr_of_mut!(RADIO_LOCK)) };
+    // Releases a mutex this task holds (paired with `radio_lock`).
+    cact_sync::mutex_unlock(core::ptr::addr_of_mut!(RADIO_LOCK));
 }
 
 fn rx_enqueue(f: &[u8]) {

@@ -199,16 +199,16 @@ pub unsafe fn timer_wheel_insert(task: *mut TaskStruct) {
 }
 
 pub fn timer_wheel_tick() {
-    // SAFETY: `sleep_wheel_mut` points at the statically allocated `SLEEP_WHEEL`; the timer path
+    // `sleep_wheel_mut` points at the statically allocated `SLEEP_WHEEL`; the timer path
     // that calls this is running alone for this wheel, and all list mutation below happens under
     // `SCHEDULER_LOCK`.
     // Take the lock BEFORE touching the wheel: `timer_wheel_insert` runs from
     // `sched_park_prev` on any CPU, so an unlocked drain could drop a sleeper
     // another core is inserting into the same slot.
     //
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the timer path holds no lock
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the timer path holds no lock
     // when it calls in.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     let sw = unsafe { &mut *sleep_wheel_mut() };
     sw.current_tick = sw.current_tick.wrapping_add(1);
@@ -247,8 +247,8 @@ pub fn timer_wheel_tick() {
         cur = next;
     }
 
-    // SAFETY: the lock was acquired above and has not been released yet.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above and has not been released yet.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// Block the current task for `ticks` timer ticks.  Safe wrapper over
@@ -264,16 +264,16 @@ pub fn sleep_ticks(ticks: u32) {
 /// Must be called from a task context (a current task exists) with `SCHEDULER_LOCK` free.
 #[no_mangle]
 pub unsafe extern "C" fn sched_sleep_ticks(ticks: u32) {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
     // (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     let cur = crate::task::current_task();
     // SAFETY: `cur` is the live current task (non-null checked just below).
     let cur_p = if cur.is_null() { ptr::null_mut() } else { unsafe { (*cur).proc } };
     if cur.is_null() || cur_p.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return;
     }
 
@@ -286,8 +286,8 @@ pub unsafe extern "C" fn sched_sleep_ticks(ticks: u32) {
     // SAFETY: `cur` is the live current task (non-null checked above).
     let cur_state = unsafe { (*cur).state };
     if matches!(cur_state, TaskState::Zombie) {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         // SAFETY: `schedule` is the core switch routine, called with the lock free;
         // `sched_park_prev` leaves a Zombie task unqueued, so it does not come back.
         unsafe { crate::mlfq::schedule() };
@@ -306,8 +306,8 @@ pub unsafe extern "C" fn sched_sleep_ticks(ticks: u32) {
     // actually parked, so "in the wheel" means "parked" and a concurrent waker
     // never queues a task another core is still running.
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `schedule` is the scheduler's core switch routine, called here as the documented
     // sleep path under no held lock.

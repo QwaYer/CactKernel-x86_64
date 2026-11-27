@@ -41,13 +41,13 @@ pub unsafe extern "C" fn sched_create_thread(
     set_tid:  u64,
     clr_tid:  u64,
 ) -> i32 {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     let parent_raw = current_task();
     if parent_raw.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -1;
     }
     // SAFETY: `parent_raw` is the live current task (non-null checked above); it is only read
@@ -55,31 +55,31 @@ pub unsafe extern "C" fn sched_create_thread(
     let parent = unsafe { &*parent_raw };
     let parent_proc = parent.proc;
     if parent_proc.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -2;
     }
     // SAFETY: `parent_proc` is the live current task's `ProcMeta`.
     let parent_shared = unsafe { (*parent_proc).shared };
     if parent_shared.is_null() || parent.page_directory.is_null() {
         // A ring-0 task or one without an address space cannot host threads.
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -3;
     }
 
     let child_raw = cact_mm::kmalloc(core::mem::size_of::<TaskStruct>()) as *mut TaskStruct;
     if child_raw.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -4;
     }
     let child_p_raw = cact_mm::kmalloc(core::mem::size_of::<ProcMeta>()) as *mut ProcMeta;
     if child_p_raw.is_null() {
         // SAFETY: `child_raw` is a live allocation owned here.
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -4;
     }
     // SAFETY: `kstack_alloc` has no preconditions and returns a live stack or null.
@@ -89,8 +89,8 @@ pub unsafe extern "C" fn sched_create_thread(
         unsafe { cact_mm::kfree((child_p_raw as *mut c_void) as *mut u8) };
         // SAFETY: `child_raw` is a live allocation owned here.
         unsafe { cact_mm::kfree((child_raw as *mut c_void) as *mut u8) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -5;
     }
 
@@ -202,8 +202,8 @@ pub unsafe extern "C" fn sched_create_thread(
     // SAFETY: `child` is live and `SCHEDULER_LOCK` is held.
     unsafe { mlfq::mlfq_enqueue_locked(child as *mut TaskStruct, child.priority) };
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     pid as i32
 }

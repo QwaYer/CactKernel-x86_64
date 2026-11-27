@@ -10,6 +10,11 @@ edition = "2021"
 name       = "cact_sync"
 crate-type = ["lib"]
 
+[dependencies]
+# The graph's one `unsafe` crate: the spinlock primitives and the C/scheduler
+# boundary live there, so this crate can forbid `unsafe_code`.
+kernel_rust = { path = "../kernel_rust" }
+
 [profile.release]
 panic           = "abort"
 opt-level       = 2

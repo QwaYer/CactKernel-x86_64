@@ -168,13 +168,13 @@ pub extern "C" fn energy_balance_migrate(src: u32, dst: u32, pid: u32) -> i32 {
         return -1;
     }
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs on
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs on
     // the master's tick/idle path, which does not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut crate::task::SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut crate::task::SCHEDULER_LOCK);
     // SAFETY: the lock is held, so `src`'s ready queues are stable for the move.
     let moved = unsafe { mlfq::mlfq_migrate_locked(src, dst, pid) };
-    // SAFETY: pairs with the acquire above.
-    unsafe { irq_spinlock_release(&raw mut crate::task::SCHEDULER_LOCK) };
+    // pairs with the acquire above.
+    irq_spinlock_release(&raw mut crate::task::SCHEDULER_LOCK);
 
     if moved == 0 {
         return -1;

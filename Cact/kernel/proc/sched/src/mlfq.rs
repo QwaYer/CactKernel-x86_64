@@ -443,9 +443,9 @@ pub unsafe extern "C" fn sched_park_prev(prev: *mut TaskStruct) {
     if prev == crate::percpu::idle() {
         return;
     }
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; `switch_to` released it
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; `switch_to` released it
     // before the switch (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `prev` is the live task just switched away from (see # Safety); the lock is held.
     let state = unsafe { (*prev).state };
@@ -502,8 +502,8 @@ pub unsafe extern "C" fn sched_park_prev(prev: *mut TaskStruct) {
         }
     }
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// # Safety
@@ -535,17 +535,17 @@ pub unsafe extern "C" fn schedule() {
         unsafe { crate::task::task_reap() };
     }
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock and `schedule` is entered
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock and `schedule` is entered
     // without holding it (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `current_task` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let prev = crate::task::current_task();
     // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let head = unsafe { crate::task::task_list_head };
     if prev.is_null() || head.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         crate::percpu::schedule_guard().store(0, Ordering::Release);
         return;
     }
@@ -615,8 +615,8 @@ pub unsafe extern "C" fn schedule() {
         // SAFETY: `prev` is the live running task (non-null checked above).
         let prev_now = unsafe { (*prev).state };
         if matches!(prev_now, TaskState::Running) {
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             crate::percpu::schedule_guard().store(0, Ordering::Release);
             return;
         }
@@ -624,8 +624,8 @@ pub unsafe extern "C" fn schedule() {
     }
 
     if next.is_null() || next == prev {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         crate::percpu::schedule_guard().store(0, Ordering::Release);
         return;
     }
@@ -645,8 +645,8 @@ pub unsafe extern "C" fn schedule() {
     let me = crate::percpu::this_cpu() as u32;
     crate::energy::observe_schedule(me, next_pid);
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `prev` is live.
     let prev_pd = unsafe { (*prev).page_directory };
@@ -807,15 +807,15 @@ pub unsafe extern "C" fn on_timer_tick() {
         return;
     }
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the timer path holds no lock
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the timer path holds no lock
     // when it calls in (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `current_task` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let cur = crate::task::current_task();
     if cur.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return;
     }
 
@@ -852,8 +852,8 @@ pub unsafe extern "C" fn on_timer_tick() {
         }
     }
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // Global timekeeping (the timer wheel) is advanced on the master core only.
     if me == 0 {
@@ -903,13 +903,13 @@ pub unsafe extern "C" fn mlfq_wake_task(task: *mut TaskStruct) {
     if task.is_null() {
         return;
     }
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
     // (see # Safety).
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `task` is non-null and live (see # Safety) and the lock is now held.
     unsafe { mlfq_wake_task_locked(task) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// State-aware wake for a task the caller has just decided to release.

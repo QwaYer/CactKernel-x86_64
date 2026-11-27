@@ -97,8 +97,8 @@ pub unsafe extern "C" fn task_exec(
         new_ustack_pages[i] = page as *mut c_void;
     }
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // dynlink is gone; the old address space's frames are reclaimed when
     // old_pd is released below.  Free the stale tracker array here so execs
@@ -116,8 +116,8 @@ pub unsafe extern "C" fn task_exec(
             // SAFETY: each entry is a page allocated by `kalloc` above.
             unsafe { cact_mm::free_page((page) as *mut u8) };
         }
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -1;
     }
 
@@ -125,8 +125,8 @@ pub unsafe extern "C" fn task_exec(
     let mm_ptr = unsafe { core::ptr::addr_of_mut!((*shared).mm) };
     // SAFETY: `mm_ptr` is the live current task's page tracker.
     unsafe { ffi::proc_tracker_init(mm_ptr) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // PT_INTERP handoff (userspace ld.so): the kernel maps the main image and
     // the interpreter without any relocation pass; ld.so does the rest.
@@ -205,8 +205,8 @@ pub unsafe extern "C" fn task_exec(
     // SAFETY: `path` is a live string and `p` the live task's `ProcMeta`.
     unsafe { ffi::elf_load_exec_symtab(path, p as *mut c_void) };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; it was released above.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; it was released above.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `p` is the live current task's `ProcMeta`.
     unsafe { (*p).ustack_phys = new_ustack_pages[0] };
@@ -279,8 +279,8 @@ pub unsafe extern "C" fn task_exec(
             };
             // SAFETY: `new_pd` is a live address space owned here.
             unsafe { cact_mm::vmm_free_address_space(new_pd) };
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return -1;
         }
     };
@@ -299,8 +299,8 @@ pub unsafe extern "C" fn task_exec(
             };
             // SAFETY: `new_pd` is a live address space owned here.
             unsafe { cact_mm::vmm_free_address_space(new_pd) };
-            // SAFETY: the lock was acquired above.
-            unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+            // the lock was acquired above.
+            irq_spinlock_release(&raw mut SCHEDULER_LOCK);
             return -1;
         }
     };
@@ -357,8 +357,8 @@ pub unsafe extern "C" fn task_exec(
         };
         // SAFETY: `new_pd` is a live address space owned here.
         unsafe { cact_mm::vmm_free_address_space(new_pd) };
-        // SAFETY: the lock was acquired above.
-        unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -1;
     }
 
@@ -482,8 +482,8 @@ pub unsafe extern "C" fn task_exec(
         );
     }
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 
     // The console's foreground process group is deliberately NOT reassigned
     // here.  It used to be set to whichever process exec'd last, which is wrong

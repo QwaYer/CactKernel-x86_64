@@ -5,3 +5,10 @@ version = 4
 [[package]]
 name = "cact_sync"
 version = "0.1.0"
+dependencies = [
+ "kernel_rust",
+]
+
+[[package]]
+name = "kernel_rust"
+version = "0.1.0"

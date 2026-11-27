@@ -30,12 +30,12 @@ pub unsafe extern "C" fn task_kill(pid: u32) {
 /// Must be called from kernel context with `SCHEDULER_LOCK` free.
 #[no_mangle]
 pub unsafe extern "C" fn task_signal(pid: u32, signal: u32) {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `task_signal_locked` requires `SCHEDULER_LOCK`, which is held here.
     unsafe { task_signal_locked(pid, signal) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// Send `signal` to `pid` carrying `value` — POSIX's `sigqueue()`.  The value is
@@ -49,8 +49,8 @@ pub unsafe extern "C" fn task_signal(pid: u32, signal: u32) {
 /// Must be called from kernel context with `SCHEDULER_LOCK` free.
 #[no_mangle]
 pub unsafe extern "C" fn task_signal_value(pid: u32, signal: u32, value: u32) {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `find_task_by_pid` walks the task list, which the lock makes stable.
     let t = find_task_by_pid(pid);
     if !t.is_null() {
@@ -64,8 +64,8 @@ pub unsafe extern "C" fn task_signal_value(pid: u32, signal: u32, value: u32) {
     // SAFETY: `task_signal_locked` requires `SCHEDULER_LOCK`, held here, and
     // tolerates a pid that names no task (it simply finds nothing).
     unsafe { task_signal_locked(pid, signal) };
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// Non-zero when the *current* task has a signal that is pending and not blocked
@@ -181,8 +181,8 @@ pub unsafe extern "C" fn task_signal_pgid(pgid: u32, signal: u32) {
     if pgid == 0 {
         return;
     }
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let mut t = unsafe { task_list_head };
     while !t.is_null() {
@@ -202,8 +202,8 @@ pub unsafe extern "C" fn task_signal_pgid(pgid: u32, signal: u32) {
         }
         t = next;
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// Send `signal` to every task of the calling task's thread group except
@@ -228,8 +228,8 @@ pub unsafe extern "C" fn task_signal_group(except_pid: u32, signal: u32) {
     // SAFETY: `cur_proc` is that task's live `ProcMeta`.
     let tgid = unsafe { (*cur_proc).tgid };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let mut t = unsafe { task_list_head };
     while !t.is_null() {
@@ -249,8 +249,8 @@ pub unsafe extern "C" fn task_signal_group(except_pid: u32, signal: u32) {
         }
         t = next;
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 /// # Safety
@@ -346,8 +346,8 @@ unsafe fn notify_parent_of_stop(t: *mut TaskStruct) {
     // calls below, which never touch this task's own proc.
     let parent_pid = unsafe { (*proc_ptr).parent_pid };
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     if parent_pid != 0 {
         // SAFETY: signalling the parent requires the lock, which is held here.
         unsafe { task_signal_locked(parent_pid, SIGCHLD) };
@@ -370,8 +370,8 @@ unsafe fn notify_parent_of_stop(t: *mut TaskStruct) {
             }
         }
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 fn handle_signal_bit(
@@ -551,8 +551,8 @@ pub unsafe extern "C" fn task_check_timers() {
 fn check_alarm_timers() {
     let now = timer_wheel::timer_current_tick();
 
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
-    unsafe { irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; this runs with it free.
+    irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
 
     // SAFETY: `task_list_head` is a scheduler-owned global, read under `SCHEDULER_LOCK`.
     let mut cur = unsafe { task_list_head };
@@ -596,8 +596,8 @@ fn check_alarm_timers() {
         cur = next;
     }
 
-    // SAFETY: the lock was acquired above.
-    unsafe { irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    irq_spinlock_release(&raw mut SCHEDULER_LOCK);
 }
 
 fn wake_if_sigsuspend(t: *mut TaskStruct, signal: u32) {

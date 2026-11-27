@@ -42,3 +42,4 @@ pub mod frame;
 pub mod mem;
 pub mod net;
 pub mod ptr;
+pub mod sync;

@@ -11,6 +11,7 @@
 use core::ffi::{c_char, c_void};
 
 use crate::cpu::VmxEptMap;
+use crate::sync::irq_spinlock_t;
 
 extern "C" {
     // ---- console --------------------------------------------------------
@@ -51,4 +52,13 @@ extern "C" {
 
     // ---- C-visible state whose storage lives in `kernel_abi` ------------
     pub static mut active_nic: *mut c_void;
+
+    // ---- scheduler services the sync primitives build on ----------------
+    // Supplied by the `sched` crate (task context only).  Task pointers cross
+    // as `*mut c_void` so this crate stays a leaf that names no task type.
+    pub fn schedule();
+    pub fn sched_mlfq_wake_task_locked(task: *mut c_void);
+    pub fn cact_current_task_get() -> *mut c_void;
+    /// The scheduler's global IRQ spinlock (defined by `sched`).
+    pub static mut scheduler_lock: irq_spinlock_t;
 }

@@ -20,6 +20,7 @@
 #![allow(unsafe_code)]
 
 mod net;
+mod sync;
 
 use cact_hv::{ChvMem, ChvMsrs, ChvRegs, ChvSregs};
 

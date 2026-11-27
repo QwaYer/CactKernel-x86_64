@@ -181,6 +181,9 @@ version = "0.1.0"
 [[package]]
 name = "cact_sync"
 version = "0.1.0"
+dependencies = [
+ "kernel_rust",
+]
 
 [[package]]
 name = "cact_vfs"
@@ -486,6 +489,7 @@ version = "0.1.0"
 dependencies = [
  "cact_hv",
  "cact_net",
+ "cact_sync",
 ]
 
 [[package]]

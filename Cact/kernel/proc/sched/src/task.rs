@@ -492,8 +492,8 @@ pub unsafe extern "C" fn task_init() {
     // SAFETY: as above.
     unsafe { next_pid = 1 };
 
-    // SAFETY: initialises the scheduler's own spinlock before it is ever used.
-    unsafe { crate::sync::irq_spinlock_init(&raw mut SCHEDULER_LOCK) };
+    // initialises the scheduler's own spinlock before it is ever used.
+    crate::sync::irq_spinlock_init(&raw mut SCHEDULER_LOCK);
     mlfq::mlfq_init();
     timer_wheel::timer_wheel_global_init();
     // SAFETY: `printk` takes a static NUL-terminated byte string.
@@ -701,26 +701,26 @@ pub unsafe extern "C" fn task_park_state(blocked_state: u32) -> i32 {
         4 => TaskState::Waiting,
         _ => return -1,
     };
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
     // (see # Safety).
-    unsafe { crate::sync::irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    crate::sync::irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     let cur = crate::task::current_task();
     if cur.is_null() {
-        // SAFETY: the lock was acquired above.
-        unsafe { crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return -1;
     }
     // SAFETY: `cur` is the live current task (non-null checked above).
     let state = unsafe { (*cur).state };
     if matches!(state, TaskState::Zombie) {
-        // SAFETY: the lock was acquired above.
-        unsafe { crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+        // the lock was acquired above.
+        crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK);
         return 1;
     }
     // SAFETY: `cur` is live and `SCHEDULER_LOCK` is held.
     unsafe { (*cur).state = ns };
-    // SAFETY: the lock was acquired above.
-    unsafe { crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK);
     0
 }
 
@@ -739,9 +739,9 @@ pub unsafe extern "C" fn task_park_state(blocked_state: u32) -> i32 {
 /// Must be called from a task context with `SCHEDULER_LOCK` free.
 #[no_mangle]
 pub unsafe extern "C" fn task_park_sigwait(set: u32) -> u32 {
-    // SAFETY: `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
+    // `SCHEDULER_LOCK` is the scheduler's global spinlock; the caller must not hold it
     // (see # Safety).
-    unsafe { crate::sync::irq_spinlock_acquire(&raw mut SCHEDULER_LOCK) };
+    crate::sync::irq_spinlock_acquire(&raw mut SCHEDULER_LOCK);
     let cur = crate::task::current_task();
     let mut r = 1u32;
     if !cur.is_null() {
@@ -768,8 +768,8 @@ pub unsafe extern "C" fn task_park_sigwait(set: u32) -> u32 {
             }
         }
     }
-    // SAFETY: the lock was acquired above.
-    unsafe { crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK) };
+    // the lock was acquired above.
+    crate::sync::irq_spinlock_release(&raw mut SCHEDULER_LOCK);
     r
 }
 
