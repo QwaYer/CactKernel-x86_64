@@ -85,14 +85,12 @@ pub(crate) fn cstr<'a>(p: *const u8, buf: &'a mut [u8]) -> &'a str {
 }
 
 /// Sequence number of a DRM ioctl command.
-#[no_mangle]
-pub extern "C" fn drm_ioctl_nr(cmd: u32) -> u32 {
+pub fn drm_ioctl_nr(cmd: u32) -> u32 {
     (cmd >> IOC_NRSHIFT) & IOC_NRMASK
 }
 
 /// Payload size encoded in a DRM ioctl command.
-#[no_mangle]
-pub extern "C" fn drm_ioctl_size(cmd: u32) -> u32 {
+pub fn drm_ioctl_size(cmd: u32) -> u32 {
     (cmd >> IOC_SIZESHIFT) & IOC_SIZEMASK
 }
 
@@ -102,8 +100,7 @@ pub extern "C" fn drm_ioctl_size(cmd: u32) -> u32 {
 /// pass the struct their ioctl number was generated from, and accepting a
 /// shorter one would leave fields uninitialised.  Returns 0 or -1, like the C
 /// version did.
-#[no_mangle]
-pub extern "C" fn drm_copy_in(
+pub fn drm_copy_in(
     dst: *mut c_void,
     cmd: u32,
     user: *mut c_void,
@@ -131,8 +128,7 @@ pub extern "C" fn drm_copy_in(
 }
 
 /// Copy `size` bytes of an ioctl result back to userspace.  Returns 0 or -1.
-#[no_mangle]
-pub extern "C" fn drm_copy_out(user: *mut c_void, src: *const c_void, size: u32) -> c_int {
+pub fn drm_copy_out(user: *mut c_void, src: *const c_void, size: u32) -> c_int {
     if user.is_null() || src.is_null() {
         return -1;
     }
@@ -161,8 +157,7 @@ pub(crate) fn uptru(x: u64) -> *mut c_void {
 /// The uapi structs carry userspace addresses as `__u64`, and a client that
 /// only wants the counts leaves such a field zero — that is a "no buffer"
 /// request, not an error, so a null/zero-size request succeeds without copying.
-#[no_mangle]
-pub extern "C" fn drm_put_raw(user: *mut c_void, src: *const c_void, size: u32) -> c_int {
+pub fn drm_put_raw(user: *mut c_void, src: *const c_void, size: u32) -> c_int {
     if user.is_null() || size == 0 {
         return 0;
     }

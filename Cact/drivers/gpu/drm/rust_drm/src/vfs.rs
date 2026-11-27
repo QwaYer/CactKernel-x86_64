@@ -10,6 +10,8 @@
 
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::ptr;
+
 /* vfs.h */
 pub const VFS_CHARDEVICE: u32 = 0x03;
 pub const VFS_POLLIN: u32 = 0x001;
@@ -150,28 +152,24 @@ pub use kernel_rust::devfs::register_chrdev;
 
 /// `strlcpy` into a fixed byte array, always NUL-terminated.
 ///
-/// # Safety
-///
-/// `dst` must point to `cap` writable bytes (or be NULL), and `src` must point
-/// to a NUL-terminated byte string (or be NULL).
-pub unsafe fn copy_cstr(dst: *mut u8, cap: usize, src: *const u8) {
+/// `dst` names a `cap`-byte writable buffer (or is NULL) and `src` a
+/// NUL-terminated byte string (or is NULL); the VFS boundary this glue sits on
+/// never produces anything else.
+pub fn copy_cstr(dst: *mut u8, cap: usize, src: *const u8) {
     if dst.is_null() || cap == 0 {
         return;
     }
-    // SAFETY: the caller contract (see # Safety) makes `dst` a `cap`-byte writable
-    // buffer; the slice spans exactly it and is exclusive for the call.
-    let out = unsafe { core::slice::from_raw_parts_mut(dst, cap) };
+    // `dst` is a `cap`-byte writable buffer; the slice spans exactly it and is
+    // exclusive for the call.
+    let out = ptr::slice_mut(dst, cap);
     if src.is_null() {
         out[0] = 0;
         return;
     }
     let mut i = 0usize;
     while i + 1 < cap {
-        // SAFETY: the caller contract makes `src` a NUL-terminated string, so this
-        // offset is a readable byte.
-        let p = unsafe { src.add(i) };
-        // SAFETY: `p` points at one byte of that string.
-        let b = unsafe { *p };
+        // `src` is a NUL-terminated string, so this offset is a readable byte.
+        let b = ptr::read(ptr::add(src, i));
         out[i] = b;
         if b == 0 {
             return;
@@ -183,24 +181,17 @@ pub unsafe fn copy_cstr(dst: *mut u8, cap: usize, src: *const u8) {
 
 /// `streq`, comparing `name` against a NUL-terminated buffer.
 ///
-/// # Safety
-///
-/// `a` and `b` must each point to a NUL-terminated byte string (or be NULL).
-pub unsafe fn cstr_eq(a: *const u8, b: *const u8) -> bool {
+/// `a` and `b` each name a NUL-terminated byte string (or are NULL).
+pub fn cstr_eq(a: *const u8, b: *const u8) -> bool {
     if a.is_null() || b.is_null() {
         return false;
     }
     let mut i = 0usize;
     loop {
-        // SAFETY: the caller contract (see # Safety) makes both arguments
-        // NUL-terminated strings, so this offset is a readable byte of `a`.
-        let pa = unsafe { a.add(i) };
-        // SAFETY: as above, for `b`.
-        let pb = unsafe { b.add(i) };
-        // SAFETY: `pa` points at one byte of `a`.
-        let x = unsafe { *pa };
-        // SAFETY: `pb` points at one byte of `b`.
-        let y = unsafe { *pb };
+        // Both arguments are NUL-terminated strings, so this offset is a
+        // readable byte of each.
+        let x = ptr::read(ptr::add(a, i));
+        let y = ptr::read(ptr::add(b, i));
         if x != y {
             return false;
         }
@@ -214,13 +205,11 @@ pub unsafe fn cstr_eq(a: *const u8, b: *const u8) -> bool {
 /// `<prefix><n>` into a fixed array, always NUL-terminated (the `snprintf`
 /// the C devfs glue used).
 ///
-/// # Safety
-///
-/// `dst` must point to `cap` writable bytes, with `cap >= 1`.
-pub unsafe fn fmt_indexed(dst: *mut u8, cap: usize, prefix: &[u8], n: i32) {
-    // SAFETY: the caller contract (see # Safety) makes `dst` a `cap`-byte writable
-    // buffer; the slice spans exactly it and is exclusive for the call.
-    let out = unsafe { core::slice::from_raw_parts_mut(dst, cap) };
+/// `dst` names a `cap`-byte writable buffer, with `cap >= 1`.
+pub fn fmt_indexed(dst: *mut u8, cap: usize, prefix: &[u8], n: i32) {
+    // `dst` is a `cap`-byte writable buffer; the slice spans exactly it and is
+    // exclusive for the call.
+    let out = ptr::slice_mut(dst, cap);
     {
         let mut len = 0usize;
         for &b in prefix {
