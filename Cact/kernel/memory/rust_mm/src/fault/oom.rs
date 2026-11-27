@@ -48,16 +48,13 @@ fn oom_score(t: *mut TaskStruct) -> u32 {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn oom_kill() -> i32 {
-    // SAFETY: `scheduler_lock` is the C scheduler spinlock; `get()` hands out its
-    // stable address.  This is the only lock the task-list walk needs and it is
-    // not held yet at this point.
-    lock_acquire(unsafe { scheduler_lock.get() });
+    // `scheduler_lock` is the C scheduler spinlock; this is the only lock the
+    // task-list walk needs and it is not held yet at this point.
+    lock_acquire(scheduler_lock());
 
-    // SAFETY: task_list_head is a valid kernel global.
-    let head = unsafe { *task_list_head.get() };
+    let head = task_list_head();
     if head.is_null() {
-        // SAFETY: matching release of `scheduler_lock`, acquired above.
-        lock_release(unsafe { scheduler_lock.get() });
+        lock_release(scheduler_lock());
         return -1;
     }
 
@@ -80,10 +77,8 @@ pub extern "C" fn oom_kill() -> i32 {
     }
 
     if victim.is_null() || best_score == 0 {
-        // SAFETY: release of `scheduler_lock`, still held from the acquire above.
-        lock_release(unsafe { scheduler_lock.get() });
-        // SAFETY: printk_color takes a valid string.
-        unsafe { printk_color(c"oom: no killable process found\n".as_ptr() as *const u8, COLOR_LIGHT_RED); }
+        lock_release(scheduler_lock());
+        printk_color(c"oom: no killable process found\n".as_ptr() as *const u8, COLOR_LIGHT_RED);
         return -1;
     }
 
@@ -102,14 +97,11 @@ pub extern "C" fn oom_kill() -> i32 {
         unsafe { (*victim_shared).mm.count }
     };
 
-    unsafe extern "C" {
-        fn task_signal_locked(pid: u32, signal: u32);
-    }
-    // SAFETY: task_signal_locked is a C function; we hold the scheduler lock.
-    unsafe { task_signal_locked(victim_pid, SIGKILL); }
+    // We hold the scheduler lock, so the locked variant is the correct one.
+    kernel_rust::sync::task_signal_locked(victim_pid, SIGKILL);
 
-    // SAFETY: matching release of `scheduler_lock` before returning.
-    lock_release(unsafe { scheduler_lock.get() });
+    // Matching release of `scheduler_lock` before returning.
+    lock_release(scheduler_lock());
 
     // SAFETY: `G_STATS` is the OOM statistics block; `oom_kill` is its only writer.
     // It is not serialised against a concurrent OOM kill on another CPU, but the
@@ -120,24 +112,15 @@ pub extern "C" fn oom_kill() -> i32 {
     stats.last_killed_pid = victim_pid;
 
     let mut buf = [0u8; 16];
-    // SAFETY: `printk_color` takes a NUL-terminated static string; the literal
-    // below is one.
-    unsafe { printk_color(c"\noom: Killed pid=".as_ptr() as *const u8, COLOR_LIGHT_RED) };
-    // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes in bounds.
-    unsafe { itoa(victim_pid as i32, buf.as_mut_ptr()) };
-    // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-    unsafe { printk_color(buf.as_ptr(), COLOR_LIGHT_RED) };
-    // SAFETY: NUL-terminated static string, as above.
-    unsafe { printk_color(c" (".as_ptr() as *const u8, COLOR_LIGHT_RED) };
-    // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes in bounds.
-    unsafe { itoa(victim_pages as i32, buf.as_mut_ptr()) };
-    // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-    unsafe { printk_color(buf.as_ptr(), COLOR_LIGHT_RED) };
-    // SAFETY: NUL-terminated static string, as above.
-    unsafe { printk_color(c" pages)\n".as_ptr() as *const u8, COLOR_LIGHT_RED) };
+    printk_color(c"\noom: Killed pid=".as_ptr() as *const u8, COLOR_LIGHT_RED);
+    itoa(victim_pid as i32, buf.as_mut_ptr());
+    printk_color(buf.as_ptr(), COLOR_LIGHT_RED);
+    printk_color(c" (".as_ptr() as *const u8, COLOR_LIGHT_RED);
+    itoa(victim_pages as i32, buf.as_mut_ptr());
+    printk_color(buf.as_ptr(), COLOR_LIGHT_RED);
+    printk_color(c" pages)\n".as_ptr() as *const u8, COLOR_LIGHT_RED);
 
-    // SAFETY: task_reap is a kernel FFI entry point.
-    unsafe { task_reap(); }
+    task_reap();
     0
 }
 

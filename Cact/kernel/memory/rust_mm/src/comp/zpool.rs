@@ -63,41 +63,25 @@ struct Zpool {
     stored_bytes: u64,
 }
 
-unsafe extern "C" {
-    fn cact_zstd_compress(
-        level: i32,
-        src: *const u8,
-        src_size: usize,
-        dst: *mut u8,
-        dst_capacity: usize,
-    ) -> usize;
-    fn cact_zstd_compress_bound(src_size: usize) -> usize;
-    fn cact_zstd_decompress(
-        src: *const u8,
-        src_size: usize,
-        dst: *mut u8,
-        dst_capacity: usize,
-    ) -> usize;
-}
-
 /// Worst-case compressed size of one page.
 fn zstd_bound() -> usize {
-    // SAFETY: `cact_zstd_compress_bound` only computes a size from its argument.
-    unsafe { cact_zstd_compress_bound(PAGE) }
+    kernel_rust::mm::zstd_bound(PAGE)
 }
 
 /// Compress one page into `dst`; returns the compressed length, 0 on failure.
+///
+/// The caller guarantees `src` is a live PAGE_SIZE page and `dst` is writable
+/// for `dst_cap` bytes.
 fn zstd_compress(level: i32, src: *const u8, dst: *mut u8, dst_cap: usize) -> usize {
-    // SAFETY: the caller guarantees `src` is a live PAGE_SIZE page and `dst` is
-    // writable for `dst_cap` bytes; the glue touches only those.
-    unsafe { cact_zstd_compress(level, src, PAGE, dst, dst_cap) }
+    kernel_rust::mm::zstd_compress(level, src, PAGE, dst, dst_cap)
 }
 
 /// Decompress a `len`-byte frame into a full page; returns the length written.
+///
+/// The caller guarantees `src` is readable for `len` bytes and `dst` is
+/// writable for a full page.
 fn zstd_decompress(src: *const u8, len: usize, dst: *mut u8) -> usize {
-    // SAFETY: the caller guarantees `src` is readable for `len` bytes and `dst`
-    // is writable for a full page.
-    unsafe { cact_zstd_decompress(src, len, dst, PAGE) }
+    kernel_rust::mm::zstd_decompress(src, len, dst, PAGE)
 }
 
 /// Allocate a pool with `capacity_pages` slots and a `budget_bytes` payload
@@ -152,10 +136,7 @@ pub unsafe extern "C" fn zpool_create(
         core::ptr::write(
             pool_mem,
             Zpool {
-                lock: IrqSpinlock {
-                    spin_locked: 0,
-                    saved_flags: 0,
-                },
+                lock: IrqSpinlock::new(),
                 alloc,
                 links,
                 slots,
@@ -169,9 +150,7 @@ pub unsafe extern "C" fn zpool_create(
     // SAFETY: `pool_mem` now holds a live `Zpool`, so the address of its lock
     // field is valid; `addr_of_mut!` forms that pointer without a reference.
     let lock_ptr = unsafe { core::ptr::addr_of_mut!((*pool_mem).lock) };
-    // SAFETY: `lock_ptr` is the pool's own lock field, and this is its only
-    // initialisation.
-    unsafe { crate::ffi::irq_spinlock_init(lock_ptr) };
+    crate::ffi::irq_spinlock_init(lock_ptr);
 
     pool_mem as *mut c_void
 }

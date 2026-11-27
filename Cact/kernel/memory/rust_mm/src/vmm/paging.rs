@@ -535,12 +535,8 @@ pub extern "C" fn init_paging() {
     // tables); loading this PML4 swaps in the real map, and `enable_paging` is
     // then a no-op.  CR3 takes a *physical* address, and this table lives in the
     // kernel image — hence the translation.
-    // SAFETY: this is the one-time, single-threaded boot sequence, and the new
-    // map covers everything the bootstrap's did — the kernel image through
-    // PML4[511], RAM and MMIO through the identity map.
-    unsafe { load_page_directory(v2p(kernel_table()) as *mut u64) };
-    // SAFETY: as above — paging is enabled once, right after the map is loaded.
-    unsafe { enable_paging() };
+    load_page_directory(v2p(kernel_table()) as *mut u64);
+    enable_paging();
 }
 
 /// Keep one address space's view of the kernel's shared mappings in step with

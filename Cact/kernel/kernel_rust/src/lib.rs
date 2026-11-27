@@ -49,6 +49,7 @@ pub mod frame;
 pub mod fs;
 pub mod galloc;
 pub mod mem;
+pub mod mm;
 pub mod net;
 pub mod ptr;
 pub mod sync;

@@ -27,9 +27,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u
         t.pages = kmalloc(PROC_INITIAL_PAGES as usize * core::mem::size_of::<*mut u8>())
             as *mut *mut u8;
         if t.pages.is_null() {
-            // SAFETY: `printk` expects a NUL-terminated static string; the
-            // literal below is one.
-            unsafe { printk(c"proc-mm: ERR: initial alloc failed\n".as_ptr() as *const u8) };
+            printk(c"proc-mm: ERR: initial alloc failed\n".as_ptr() as *const u8);
             return -1;
         }
         // SAFETY: `t.pages` is the fresh `kmalloc` block of `PROC_INITIAL_PAGES`
@@ -45,8 +43,7 @@ pub unsafe extern "C" fn proc_tracker_add(t: *mut ProcPageTracker, frame: *mut u
         let new_cap = t.capacity + PROC_GROW_STEP;
         let new_arr = kmalloc(new_cap as usize * core::mem::size_of::<*mut u8>()) as *mut *mut u8;
         if new_arr.is_null() {
-            // SAFETY: NUL-terminated static string, as above.
-            unsafe { printk(c"proc-mm: ERR: grow alloc failed\n".as_ptr() as *const u8) };
+            printk(c"proc-mm: ERR: grow alloc failed\n".as_ptr() as *const u8);
             return -1;
         }
         // SAFETY: `new_arr` is the fresh `kmalloc` block of `new_cap` slots (just

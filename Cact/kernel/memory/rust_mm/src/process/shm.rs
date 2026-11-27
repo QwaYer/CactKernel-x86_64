@@ -35,7 +35,7 @@ const SHM_SEG_EMPTY: ShmSeg = ShmSeg {
 };
 
 pub(crate) static SHM_TABLE: KStatic<[ShmSeg; SHM_MAX_SEGMENTS]> = KStatic::new([SHM_SEG_EMPTY; SHM_MAX_SEGMENTS]);
-pub(crate) static SHM_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+pub(crate) static SHM_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 pub(crate) static SHM_INITIALIZED: KStatic<i32> = KStatic::new(0);
 
 pub(crate) fn shm_ensure_init() {
@@ -44,8 +44,7 @@ pub(crate) fn shm_ensure_init() {
     if *unsafe { KStatic::get_mut(SHM_INITIALIZED.as_ptr()) } != 0 {
         return;
     }
-    // SAFETY: boot-time init.
-    unsafe { irq_spinlock_init(SHM_LOCK.as_ptr()) };
+    irq_spinlock_init(SHM_LOCK.as_ptr());
     // SAFETY: `SHM_TABLE` reset during single-threaded first-use init.
     let table = unsafe { KStatic::get_mut(SHM_TABLE.as_ptr()) };
     for e in table.iter_mut() {
@@ -86,8 +85,7 @@ pub(crate) fn find_shm_va(num_pages: u32) -> u32 {
     let size = num_pages * PAGE_SIZE;
     let mut candidate = SHM_VA_BASE;
 
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     if t.is_null() {
         return 0;
     }
@@ -234,9 +232,7 @@ pub extern "C" fn shm_get(key: i32, size: u32, flags: i32) -> i32 {
         s.pages[i] = p;
     }
 
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may return
-    // null, which the test below handles.
-    let cur_task = unsafe { cact_current_task_get() };
+    let cur_task = cact_current_task_get();
     let cur_pid = if !cur_task.is_null() {
         // SAFETY: `cur_task` is the live current task (non-null, checked above), so
         // this `pid` field read is in bounds.

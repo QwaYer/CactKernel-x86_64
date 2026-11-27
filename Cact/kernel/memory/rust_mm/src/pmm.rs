@@ -134,8 +134,7 @@ pub extern "C" fn pmm_reserve_boot_images(end: u32) -> u32 {
     value
 }
 
-pub(crate) static PAGE_LOCK: KStatic<IrqSpinlock> =
-    KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+pub(crate) static PAGE_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 
 static MMAP_TABLE: KStatic<Mb2MmapTable> = KStatic::new(Mb2MmapTable {
     entries: [Mb2MmapFlat { base: 0, len: 0, ty: 0 }; MB2_MMAP_MAX_ENTRIES],
@@ -321,9 +320,7 @@ pub unsafe extern "C" fn pmm_init_from_mmap(mmap: *const Mb2MmapTable) {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn init_memory_manager() {
-    // SAFETY: boot-time initialisation of `PAGE_LOCK` before any lock user runs;
-    // the kernel is single-threaded here.
-    unsafe { irq_spinlock_init(PAGE_LOCK.as_ptr()) };
+    irq_spinlock_init(PAGE_LOCK.as_ptr());
     {
         // SAFETY: the bitmap was carved out during single-threaded boot and is
         // filled here, before `kalloc` can run.

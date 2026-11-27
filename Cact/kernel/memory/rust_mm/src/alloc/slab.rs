@@ -37,7 +37,7 @@ pub struct SlabCache {
 }
 
 static G_CACHE_LIST: KStatic<*mut SlabCache> = KStatic::new(core::ptr::null_mut());
-pub(crate) static G_CACHE_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+pub(crate) static G_CACHE_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 
 /// Number of generic (kmalloc-style) size caches.
 pub(crate) const GENERIC_CACHE_COUNT: usize = 9;
@@ -579,9 +579,7 @@ pub unsafe extern "C" fn slab_print_stats(cache: *const SlabCache) {
     }
 
     kprint_str(c"slab: cache=".as_ptr() as *const u8);
-    // SAFETY: `cache` is a live `SlabCache` and `name` is a NUL-terminated array
-    // inside it, so `printk` reads a valid string.
-    unsafe { printk(cache.name.as_ptr()) };
+    printk(cache.name.as_ptr());
     kprint_str(c" obj_size=".as_ptr() as *const u8);
     kprint_int(cache.obj_size as i32);
     kprint_str(c" slabs(full/partial/free)=".as_ptr() as *const u8);

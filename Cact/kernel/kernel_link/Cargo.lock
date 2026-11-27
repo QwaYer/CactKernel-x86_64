@@ -145,6 +145,7 @@ name = "cact_mm"
 version = "0.1.0"
 dependencies = [
  "cact_sync",
+ "kernel_rust",
 ]
 
 [[package]]

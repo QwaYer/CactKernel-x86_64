@@ -74,38 +74,36 @@ use crate::ffi::PAGE_SIZE;
 /// Does nothing if `ptr` is null.
 pub fn zero_page(ptr: *mut u8) {
     if !ptr.is_null() {
-        // SAFETY: caller guarantees `ptr` points to a valid 4 KiB page.
-        unsafe { core::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize) };
+        // The caller guarantees `ptr` points to a valid 4 KiB page.
+        kernel_rust::ptr::write_bytes(ptr, 0, PAGE_SIZE as usize);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Safe wrappers around inline-asm / FFI helpers
+// Safe wrappers around the kernel's low-level helpers
 // ---------------------------------------------------------------------------
 
-use crate::ffi::{
-    irq_spinlock_acquire, irq_spinlock_release, itoa, printk,
-    read_cr2, tlb_flush, tlb_flush_all, get_current_pd,
-};
+use crate::ffi::{cact_current_task_get, itoa, printk};
 
 /// Read the CR2 register (page-fault linear address).  CR2 is 64-bit in long mode.
 pub fn read_cr2_val() -> u64 {
-    read_cr2()
+    kernel_rust::cpu::read_cr2()
 }
 
 /// Flush a single TLB entry for `vaddr`.
 pub fn flush_tlb(vaddr: u64) {
-    tlb_flush(vaddr)
+    kernel_rust::cpu::tlb_flush(vaddr)
 }
 
 /// Flush the entire TLB by reloading CR3.
 pub fn flush_tlb_all() {
-    tlb_flush_all()
+    kernel_rust::cpu::tlb_flush_all()
 }
 
-/// Return the current page-directory pointer (the PML4 in long mode) from CR3.
+/// The current page directory (the PML4 in long mode) as a kernel VA: CR3 holds
+/// its physical address, translated here through the direct map.
 pub fn current_page_dir() -> *mut u64 {
-    get_current_pd()
+    crate::vmm::paging::p2v(kernel_rust::cpu::read_cr3()) as *mut u64
 }
 
 /// The page directory of the running task, falling back to `CR3` when it has
@@ -118,13 +116,11 @@ pub fn current_page_dir() -> *mut u64 {
 /// pages, leaving eviction with nothing to pick.  The fault's own pd is the
 /// address space the pressure came from.
 pub fn current_task_page_dir() -> *mut u64 {
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may
-    // return null, which the check below handles.
-    let t = unsafe { crate::ffi::cact_current_task_get() };
+    let t = cact_current_task_get();
     if !t.is_null() {
-        // SAFETY: `t` is the live current task; `page_directory` is a valid
-        // pointer or null, checked before use.
-        let pd = unsafe { (*t).page_directory };
+        // `t` is the live current task; `page_directory` is a valid pointer or
+        // null, checked before use.
+        let pd = kernel_rust::ptr::as_ref(t).page_directory;
         if !pd.is_null() {
             return pd;
         }
@@ -135,20 +131,18 @@ pub fn current_task_page_dir() -> *mut u64 {
 /// Print a null-terminated byte string via the kernel console.
 pub fn kprint_str(s: *const u8) {
     if !s.is_null() {
-        // SAFETY: caller guarantees `s` is a valid null-terminated string.
-        unsafe { printk(s) };
+        // The caller guarantees `s` is a valid null-terminated string.
+        printk(s);
     }
 }
 
 /// Print a signed integer.
 pub fn kprint_int(n: i32) {
     let mut buf = [0u8; 16];
-    // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes its digits
-    // (and terminator) in bounds.
-    unsafe { itoa(n, buf.as_mut_ptr()) };
-    // SAFETY: `buf` was just made a NUL-terminated string by `itoa` and stays
-    // valid for the call.
-    unsafe { printk(buf.as_ptr()) };
+    // `buf` is a live 16-byte stack array, so `itoa` writes its digits (and
+    // terminator) in bounds; `buf` is then a valid NUL-terminated string.
+    itoa(n, buf.as_mut_ptr());
+    printk(buf.as_ptr());
 }
 
 /// Log a message at the given level (KERN_SOH + level prefix).
@@ -171,11 +165,9 @@ pub fn klog_msg(level: u32, msg: *const u8) {
             if n >= buf.len() - 2 {
                 break;
             }
-            // SAFETY: the caller contract states `msg` is a null-terminated
-            // string, so `n - 2` indexes it in bounds.
-            let p = unsafe { msg.add(n - 2) };
-            // SAFETY: `p` points at one byte of that string.
-            let byte = unsafe { *p };
+            // The caller contract states `msg` is a null-terminated string, so
+            // `n - 2` indexes it in bounds.
+            let byte = kernel_rust::ptr::read(kernel_rust::ptr::add(msg, n - 2));
             if byte == 0 {
                 break;
             }
@@ -184,23 +176,20 @@ pub fn klog_msg(level: u32, msg: *const u8) {
         }
         buf[n] = b'\n';
         buf[n + 1] = 0;
-        // SAFETY: `buf` is a valid null-terminated string.
-        unsafe { printk(buf.as_ptr()) };
+        printk(buf.as_ptr());
     }
 }
 
 /// Acquire an IRQ-safe spinlock.
 pub fn lock_acquire(lock: *mut crate::ffi::IrqSpinlock) {
     if !lock.is_null() {
-        // SAFETY: the spinlock protocol ensures correctness.
-        unsafe { irq_spinlock_acquire(lock) };
+        kernel_rust::ptr::as_mut(lock).acquire();
     }
 }
 
 /// Release an IRQ-safe spinlock.
 pub fn lock_release(lock: *mut crate::ffi::IrqSpinlock) {
     if !lock.is_null() {
-        // SAFETY: must be called only after a matching `lock_acquire`.
-        unsafe { irq_spinlock_release(lock) };
+        kernel_rust::ptr::as_mut(lock).release();
     }
 }

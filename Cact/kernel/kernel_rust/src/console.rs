@@ -24,3 +24,41 @@ pub fn serial_putc(byte: u8) {
     // SAFETY: `serial_putc` takes the byte by value and touches no memory.
     unsafe { sys::serial_putc(byte as c_char) };
 }
+
+/// Write a **NUL-terminated** byte string to the kernel console (`printk`),
+/// reached by raw pointer rather than a slice.
+pub fn printk(msg: *const u8) {
+    // SAFETY: the caller contract is a NUL-terminated string that outlives the
+    // call, which is what `printk` reads.
+    unsafe { sys::printk(msg as *const c_char) };
+}
+
+/// Like [`printk`], but the line is drawn in `color` on the framebuffer console.
+pub fn printk_color(msg: *const u8, color: u32) {
+    // SAFETY: as in `printk`; `color` is a plain value.
+    unsafe { sys::printk_color(msg as *const c_char, color) };
+}
+
+/// Print `n` in hexadecimal via the kernel console (`printk_hex`).
+pub fn printk_hex(n: u32) {
+    // SAFETY: `printk_hex` takes `n` by value and touches no caller memory.
+    unsafe { sys::printk_hex(n) };
+}
+
+/// Render `n` as a decimal, NUL-terminated string into `buf` (`itoa`).
+///
+/// `buf` must be a writable buffer of at least 12 bytes (an `i32`, its sign and
+/// the terminator), which is what the C routine writes.
+pub fn itoa(n: i32, buf: *mut u8) {
+    // SAFETY: the caller contract above sizes `buf` for the full rendering.
+    unsafe { sys::itoa(n, buf) };
+}
+
+/// Render `n` as a NUL-terminated hex string into `buf` (`hex_to_ascii`).
+///
+/// `buf` must be a writable buffer of at least 11 bytes (`0x` + 8 digits +
+/// terminator), which is what the C routine writes.
+pub fn hex_to_ascii(n: u32, buf: *mut u8) {
+    // SAFETY: the caller contract above sizes `buf` for the full rendering.
+    unsafe { sys::hex_to_ascii(n, buf) };
+}

@@ -119,15 +119,9 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
     // task's behalf and may write its memory, so put its address space back.
     cr3.restore_address_space();
 
-    // SAFETY: regs is provided by the interrupt frame.
-    unsafe {
-        dump_context_frame(regs, fault_addr, SIGSEGV);
-    }
+    dump_context_frame(regs, fault_addr, SIGSEGV);
 
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; reading it
-    // from the #PF handler is valid and the pointer, if non-null, stays live
-    // until the handler schedules away.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     // SAFETY: `t` is non-null here and points to a live `TaskStruct`.
     if !t.is_null() && unsafe { (*t).is_kernel } == 0 {
         // SAFETY: `(*t).pid` of the live current task.
@@ -136,10 +130,7 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
         // which runs with interrupts disabled on this CPU.  Note: not serialised
         // across CPUs; a lost increment is harmless.
         (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).protection_faults += 1;
-        // SAFETY: `task_signal_code` is a kernel FFI entry point and `pid` comes
-        // from the live current task; we are in the #PF handler.  The fault
-        // address goes with it, so an SA_SIGINFO handler sees si_addr.
-        unsafe { task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr) };
+        task_signal_code(pid, SIGSEGV, SI_KERNEL, fault_addr);
         // Act on the signal on this very frame instead of waiting for a syscall
         // return that a faulting instruction never reaches: a default
         // disposition marks the task a Zombie *before* `schedule` parks it — a
@@ -148,25 +139,18 @@ fn kill_current(fault_addr: u64, _err: u32, _rip: u64, regs: *mut ContextFrame, 
         // on the syscall-return path, where the frame it builds on the user
         // stack belongs; doing it here means writing user memory from inside the
         // fault handler.
-        // SAFETY: `t` is the live current task and this is a kernel entry point.
-        unsafe { task_handle_signals(t) };
-        // SAFETY: `schedule` is a kernel FFI entry point; the faulting task has
-        // just been signalled, so yielding here is valid.
-        unsafe { schedule() };
+        task_handle_signals(t);
+        schedule();
         return;
     }
 
     // SAFETY: diagnostic counter — see the note above: `G_STATS` is only updated
     // from the #PF handler, unsynchronised across CPUs but harmless.
     (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).protection_faults += 1;
-    // SAFETY: `printk_color` takes a valid NUL-terminated string; the literal
-    // below is one.
-    unsafe {
-        printk_color(
-            c"[PF] KERNEL PAGE FAULT \u{2014} SYSTEM HALTED\n".as_ptr() as *const u8,
-            COLOR_LIGHT_RED,
-        );
-    }
+    printk_color(
+        c"[PF] KERNEL PAGE FAULT \u{2014} SYSTEM HALTED\n".as_ptr() as *const u8,
+        COLOR_LIGHT_RED,
+    );
     // SAFETY: a kernel page fault on the boot path has no recovery; spin in `hlt`
     // forever on this CPU.
     unsafe {
@@ -204,8 +188,7 @@ pub unsafe extern "C" fn page_fault_handler(regs: *mut ContextFrame) {
     // disabled on this CPU, and a cross-CPU lost count is only cosmetic.
     (unsafe { KStatic::get_mut(G_STATS.as_ptr()) }).total_faults += 1;
 
-    // SAFETY: `cact_current_task_get` reads the per-CPU accessor from the #PF handler.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     // SAFETY: `t` is non-null and live; `page_directory` is a valid pointer or null.
     let pd = if !t.is_null() && !unsafe { (*t).page_directory }.is_null() {
         // SAFETY: same live `TaskStruct`; the non-null check is the enclosing `if`.
@@ -479,12 +462,8 @@ pub extern "C" fn pf_print_stats() {
     macro_rules! pf_stat {
         ($label:expr, $field:expr) => {
             kprint_str($label.as_ptr());
-            // SAFETY: `buf` is a live 16-byte stack array and `itoa` writes at most its
-            // digits plus terminator; `printk` then reads that NUL-terminated buffer.
-            unsafe {
-                itoa($field as i32, buf.as_mut_ptr());
-                printk(buf.as_ptr());
-            }
+            itoa($field as i32, buf.as_mut_ptr());
+            printk(buf.as_ptr());
             kprint_str(b"\n\0".as_ptr());
         };
     }

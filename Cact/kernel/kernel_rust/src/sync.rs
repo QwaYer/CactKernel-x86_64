@@ -243,3 +243,44 @@ pub fn scheduler_lock() -> &'static mut irq_spinlock_t {
     // (see # Safety) ensures at most one live `&mut` at a time.
     unsafe { &mut *core::ptr::addr_of_mut!(sys::scheduler_lock) }
 }
+
+// ---- scheduler signal / reap services (proc/task.h) -----------------------
+
+/// Queue a signal for `pid` with the default source (`SI_USER`).
+pub fn task_signal(pid: u32, signal: u32) {
+    // SAFETY: `task_signal` takes its arguments by value and locks internally.
+    unsafe { sys::task_signal(pid, signal) };
+}
+
+/// Queue a signal for `pid` and record its source (`si_code`) and fault address.
+pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64) {
+    // SAFETY: as in `task_signal`; all arguments are by value.
+    unsafe { sys::task_signal_code(pid, signal, code, addr) };
+}
+
+/// Queue a signal for `pid` assuming the caller already holds the scheduler lock.
+pub fn task_signal_locked(pid: u32, signal: u32) {
+    // SAFETY: the caller contract is holding the scheduler lock (which the C
+    // routine relies on); arguments are by value.
+    unsafe { sys::task_signal_locked(pid, signal) };
+}
+
+/// Apply `t`'s pending signals' dispositions (terminate on default, leave a user
+/// handler pending for delivery).
+pub fn task_handle_signals(t: *mut c_void) {
+    // SAFETY: `t` is a live task pointer the caller owns.
+    unsafe { sys::task_handle_signals(t) };
+}
+
+/// Reap a zombie task (`task_reap`); takes the scheduler lock internally.
+pub fn task_reap() {
+    // SAFETY: `task_reap` takes no arguments and locks internally.
+    unsafe { sys::task_reap() };
+}
+
+/// The scheduler's global task-list head (may be null).
+pub fn task_list_head() -> *mut c_void {
+    // SAFETY: `task_list_head` is a C global; `addr_of!` reads it without
+    // forming a reference, so no `static mut` reference is created.
+    unsafe { core::ptr::addr_of!(sys::task_list_head).read() }
+}

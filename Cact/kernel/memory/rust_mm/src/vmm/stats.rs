@@ -74,9 +74,7 @@ pub unsafe fn va_is_anonymous(proc: *const ProcMeta, va: u32) -> bool {
 
 /// The `ProcMeta` of the running task, or null (a kernel thread has none).
 pub fn current_proc() -> *const ProcMeta {
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may
-    // return null, which the check below handles.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     if t.is_null() {
         return core::ptr::null();
     }

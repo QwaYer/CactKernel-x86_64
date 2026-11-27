@@ -33,6 +33,13 @@ pub fn rdmsr(msr: u32) -> u64 {
     unsafe { sys::cact_rdmsr(msr) }
 }
 
+/// Write an MSR (`cact_wrmsr`).
+pub fn wrmsr(msr: u32, value: u64) {
+    // SAFETY: writing an MSR is the caller's responsibility — the same one the C
+    // `cact_wrmsr` carries; no memory is touched.
+    unsafe { sys::cact_wrmsr(msr, value) };
+}
+
 /// `CPUID` for `leaf`/`subleaf`.
 pub fn cpuid(leaf: u32, subleaf: u32) -> Cpuid {
     let (mut eax, mut ebx, mut ecx, mut edx) = (0u32, 0u32, 0u32, 0u32);
@@ -204,4 +211,56 @@ pub fn rdtsc() -> u64 {
                          options(nomem, nostack, preserves_flags));
     }
     ((hi as u64) << 32) | lo as u64
+}
+
+// ---- control registers, TLB and paging ------------------------------------
+
+/// Read CR2 — the linear address of the fault that invoked the current `#PF`.
+pub fn read_cr2() -> u64 {
+    let val: u64;
+    // SAFETY: reading CR2 is side-effect-free.
+    unsafe { core::arch::asm!("mov {}, cr2", out(reg) val, options(nomem, nostack)) };
+    val
+}
+
+/// Read CR3 — the **physical** address of the live top-level page table.
+///
+/// The value is raw: callers that dereference it translate through the direct
+/// map first.
+pub fn read_cr3() -> u64 {
+    let val: u64;
+    // SAFETY: reading CR3 is side-effect-free.
+    unsafe { core::arch::asm!("mov {}, cr3", out(reg) val, options(nomem, nostack)) };
+    val
+}
+
+/// Invalidate one TLB entry for `vaddr`.
+pub fn tlb_flush(vaddr: u64) {
+    // SAFETY: INVLPG is safe for any address.
+    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack)) };
+}
+
+/// Flush the whole TLB by reloading CR3 with its current value.
+pub fn tlb_flush_all() {
+    // SAFETY: reloading CR3 with the current value only flushes the TLB.
+    unsafe {
+        core::arch::asm!(
+            "mov rax, cr3",
+            "mov cr3, rax",
+            out("rax") _,
+            options(nostack)
+        );
+    }
+}
+
+/// Install `dir` (a physical PML4 address) as CR3 (`load_page_directory`).
+pub fn load_page_directory(dir: *mut u64) {
+    // SAFETY: the caller passes a live, correctly built top-level page table.
+    unsafe { sys::load_page_directory(dir) };
+}
+
+/// Turn on paging (`enable_paging`).
+pub fn enable_paging() {
+    // SAFETY: the caller has loaded a valid CR3 first.
+    unsafe { sys::enable_paging() };
 }

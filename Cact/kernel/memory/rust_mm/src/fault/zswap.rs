@@ -36,10 +36,7 @@ const ENOMEM: i32 = 12;
 /// The pool, set exactly once (under `G_INIT_LOCK` in [`zswap_enable`]) and
 /// never freed; an unlocked read is therefore sound, like `swap`'s own flags.
 static G_POOL: KStatic<*mut c_void> = KStatic::new(core::ptr::null_mut());
-static G_INIT_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock {
-    spin_locked: 0,
-    saved_flags: 0,
-});
+static G_INIT_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 /// Serialises first-use initialisation of `G_INIT_LOCK` itself.
 static G_INIT_DONE: AtomicI32 = AtomicI32::new(0);
 
@@ -76,9 +73,7 @@ fn init_lock() {
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        // SAFETY: `G_INIT_LOCK` has not been initialised elsewhere (this CAS won),
-        // and `swap_init` calls `zswap_early_init` at boot before any zswap use.
-        unsafe { irq_spinlock_init(G_INIT_LOCK.as_ptr()) };
+        irq_spinlock_init(G_INIT_LOCK.as_ptr());
     }
 }
 
@@ -392,11 +387,6 @@ pub unsafe extern "C" fn zswap_get_stats(out: *mut ZswapStats) -> i32 {
     0
 }
 
-unsafe extern "C" {
-    /// Bounded cmdline lookup (multiboot2.c): 1 found, 0 absent, -1 too long.
-    fn mb2_cmdline_value(key: *const u8, buf: *mut u8, cap: i32) -> i32;
-}
-
 /// Boot hook (from `kernel_setup_hardware`): enable the front-end when the
 /// command line carries `zswap=<pct>%` or the bare `zswap=1` (which uses
 /// `BOOT_DEFAULT_PCT`); `zswap=0` leaves it off.
@@ -409,11 +399,13 @@ pub extern "C" fn zswap_init() {
     const BOOT_DEFAULT_PCT: u32 = 20;
 
     let mut buf = [0u8; 24];
-    // SAFETY: `mb2_cmdline_value` writes at most `buf.len()` bytes into `buf`
-    // and NUL-terminates; the `c"zswap"` literal is NUL-terminated.
-    let rc = unsafe {
-        mb2_cmdline_value(c"zswap".as_ptr() as *const u8, buf.as_mut_ptr(), buf.len() as i32)
-    };
+    // `mb2_cmdline_value` writes at most `buf.len()` bytes into `buf` and
+    // NUL-terminates; the `c"zswap"` literal is NUL-terminated.
+    let rc = kernel_rust::mm::mb2_cmdline_value(
+        c"zswap".as_ptr() as *const u8,
+        buf.as_mut_ptr(),
+        buf.len() as i32,
+    );
     if rc != 1 {
         return; // absent (0), or the value did not fit (-1)
     }

@@ -29,7 +29,7 @@ struct HeapBlock {
     cnext: *mut HeapBlock,
 }
 
-static HEAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+static HEAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 const HEAP_TAIL_MAGIC: u32 = 0xC0DEC0DE;
 
 /// Header size, i.e. the offset of a block's payload.
@@ -296,9 +296,7 @@ pub extern "C" fn init_heap() {
         return;
     }
 
-    // SAFETY: boot-time initialisation of `HEAP_LOCK` before any kernel thread or
-    // SMP AP exists; single-threaded.
-    unsafe { irq_spinlock_init(HEAP_LOCK.as_ptr()) };
+    irq_spinlock_init(HEAP_LOCK.as_ptr());
 
     // Region 0 is the boot window; later regions are added by `grow_heap`.
     // SAFETY: single-threaded boot; `REGION_DESCS` is untouched before this.

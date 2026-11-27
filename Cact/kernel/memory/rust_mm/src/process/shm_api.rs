@@ -14,8 +14,7 @@ use crate::process::shm::{
 pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
     shm_ensure_init();
 
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     // SAFETY: `t` is the live current task, checked non-null; `is_kernel` and `proc`
     // are plain fields of that `TaskStruct`.
     if t.is_null() || unsafe { (*t).is_kernel } != 0 || unsafe { (*t).proc.is_null() } {
@@ -106,8 +105,7 @@ pub extern "C" fn shm_at(shmid: i32, shmaddr: u32, flags: i32) -> u32 {
 pub extern "C" fn shm_dt(shmaddr: u32) -> i32 {
     shm_ensure_init();
 
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     // SAFETY: `t` is the live current task, checked non-null; `is_kernel`/`proc` are
     // plain fields of it.
     if t.is_null() || unsafe { (*t).is_kernel } != 0 || unsafe { (*t).proc.is_null() } {
@@ -226,9 +224,7 @@ pub extern "C" fn shm_detach_all(pid: u32, page_directory: *mut u64) {
 
     // SAFETY: task_list_head is a valid kernel global.
     let mut found: *mut TaskStruct = core::ptr::null_mut();
-    // SAFETY: `task_list_head` is the C scheduler's global list head; reading it is
-    // valid, and it may be null.
-    let mut cur = unsafe { *task_list_head.get() };
+    let mut cur = task_list_head();
     if cur.is_null() {
         return;
     }
@@ -241,8 +237,7 @@ pub extern "C" fn shm_detach_all(pid: u32, page_directory: *mut u64) {
         // SAFETY: `cur` walks the task list; it is non-null at this point and the node
         // remains live for the duration of the walk.
         cur = unsafe { (*cur).next };
-        // SAFETY: re-reading `task_list_head` to detect the end of the circular list.
-        if cur.is_null() || cur == unsafe { *task_list_head.get() } {
+        if cur.is_null() || cur == task_list_head() {
             break;
         }
     }

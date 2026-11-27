@@ -14,8 +14,7 @@ const GENERIC_SIZES: [u32; GENERIC_CACHE_COUNT] = [8, 16, 32, 64, 128, 256, 512,
 
 #[unsafe(no_mangle)]
 pub extern "C" fn slab_init() {
-    // SAFETY: boot-time init, single-threaded.
-    unsafe { irq_spinlock_init(G_CACHE_LOCK.as_ptr()) };
+    irq_spinlock_init(G_CACHE_LOCK.as_ptr());
 
     for (i, &size) in GENERIC_SIZES.iter().enumerate() {
         let mut name = [0u8; SLAB_NAME_LEN];
@@ -50,13 +49,8 @@ pub extern "C" fn slab_init() {
         // `slab_init`; no allocator call can race it yet.
         (unsafe { KStatic::get_mut(G_GENERIC_CACHES.as_ptr()) })[i] = cache;
         if cache.is_null() {
-            // SAFETY: `printk_color` is a C function that takes a valid string;
-            // the literal below is a NUL-terminated static.
-            unsafe {
-                printk_color(c"slab: failed to create cache: ".as_ptr() as *const u8, COLOR_LIGHT_RED);
-            }
-            // SAFETY: `name` is the NUL-terminated stack buffer built above.
-            unsafe { printk_color(name.as_ptr(), COLOR_LIGHT_RED) };
+            printk_color(c"slab: failed to create cache: ".as_ptr() as *const u8, COLOR_LIGHT_RED);
+            printk_color(name.as_ptr(), COLOR_LIGHT_RED);
             kprint_str(c"\n".as_ptr() as *const u8);
             klog_msg(LOG_FAIL, c"slab cache creation failed".as_ptr() as *const u8);
         }

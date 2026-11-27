@@ -8,6 +8,7 @@ edition = "2021"
 
 [dependencies]
 cact_sync = { path = "../../sync" }
+kernel_rust = { path = "../../kernel_rust" }
 
 [lib]
 crate-type = ["lib"]

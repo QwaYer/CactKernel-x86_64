@@ -16,10 +16,15 @@ use crate::sync::irq_spinlock_t;
 extern "C" {
     // ---- console --------------------------------------------------------
     pub fn printk(s: *const c_char);
+    pub fn printk_color(msg: *const c_char, color: u32);
+    pub fn printk_hex(n: u32);
+    pub fn itoa(n: i32, buf: *mut u8);
+    pub fn hex_to_ascii(n: u32, buf: *mut u8);
     pub fn serial_putc(c: c_char);
 
     // ---- CPU / MSR / VMX ------------------------------------------------
     pub fn cact_rdmsr(msr: u32) -> u64;
+    pub fn cact_wrmsr(msr: u32, value: u64);
     pub fn cact_cpuid(leaf: u32, subleaf: u32, eax: *mut u32, ebx: *mut u32,
                       ecx: *mut u32, edx: *mut u32);
     pub fn cact_vmread(field: u64, value: *mut u64) -> i32;
@@ -107,4 +112,50 @@ extern "C" {
 
     // ---- scheduler sleep (proc/sched) -----------------------------------
     pub fn sched_sleep_ticks(ticks: u32);
+
+    // ---- paging primitives (memory.h) -----------------------------------
+    pub fn load_page_directory(dir: *mut u64);
+    pub fn enable_paging();
+
+    // ---- scheduler signal/reap services (proc/task.h) -------------------
+    pub fn task_signal(pid: u32, signal: u32);
+    pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64);
+    pub fn task_signal_locked(pid: u32, signal: u32);
+    pub fn task_handle_signals(t: *mut c_void);
+    pub fn task_reap();
+    /// The scheduler's global task-list head (a C global).
+    pub static mut task_list_head: *mut c_void;
+
+    // ---- diagnostics (core/kernel.h) ------------------------------------
+    pub fn dump_context_frame(regs: *const c_void, fault_addr: u64, signal: u32);
+
+    // ---- VFS backing store for mmap / demand paging (vfs.h) -------------
+    pub fn read_vfs(node: *mut c_void, off: u64, size: u32, buf: *mut u8) -> i32;
+    pub fn vfs_mmap_resolve(
+        fd: i32,
+        off: u32,
+        len: u32,
+        backing_out: *mut i32,
+        obj_off_out: *mut u32,
+    ) -> i32;
+    pub fn vfs_as_flush_fd(fd: i32, off: u32, size: u32);
+
+    // ---- zstd (drivers/zstd) — the compressed page pool ------------------
+    pub fn cact_zstd_compress_bound(src_size: usize) -> usize;
+    pub fn cact_zstd_compress(
+        level: i32,
+        src: *const u8,
+        src_size: usize,
+        dst: *mut u8,
+        dst_capacity: usize,
+    ) -> usize;
+    pub fn cact_zstd_decompress(
+        src: *const u8,
+        src_size: usize,
+        dst: *mut u8,
+        dst_capacity: usize,
+    ) -> usize;
+
+    // ---- Multiboot2 command line (multiboot2.h) -------------------------
+    pub fn mb2_cmdline_value(key: *const c_char, buf: *mut u8, cap: i32) -> i32;
 }

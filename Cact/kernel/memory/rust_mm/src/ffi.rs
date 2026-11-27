@@ -3,30 +3,13 @@
 // Copyright (C) 2026 CactOS Project
 
 
-//! Physical layout constants, PTE/PDE flags, `extern "C"` kernel entry points, and boot MMAP types.
+//! Physical layout constants, PTE/PDE flags, the `cact_mm`-local mirror types,
+//! and safe wrappers over the kernel entry points this crate calls.
 //!
-//! This is the single source of truth for sizes and symbols shared between `rust_mm` and C.
+//! This is the single source of truth for sizes and symbols shared between
+//! `rust_mm` and C; the `extern "C"` surface itself lives in `kernel_rust`.
 
-use core::cell::UnsafeCell;
-
-/// A `Sync`-safe transparent wrapper for `UnsafeCell<T>`, used for `extern` statics
-/// that are mutated by C code under spinlock protection.
-///
-/// # Safety
-///
-/// All access through [`SyncMut::get`] is `unsafe` — the caller must ensure
-/// the kernel's spinlock protocol is observed.
-#[repr(transparent)]
-pub struct SyncMut<T>(UnsafeCell<T>);
-
-// SAFETY: kernel guarantees access is serialised via IrqSpinlock.
-unsafe impl<T: Send> Sync for SyncMut<T> {}
-
-impl<T> SyncMut<T> {
-    pub fn get(&self) -> *mut T {
-        self.0.get()
-    }
-}
+use core::ffi::c_void;
 
 pub const PAGE_SIZE: u32 = 4096;
 
@@ -256,11 +239,9 @@ pub fn page_offset(vaddr: u64) -> u64 {
     vaddr & 0xFFF
 }
 
-#[repr(C)]
-pub struct IrqSpinlock {
-    pub spin_locked: u32,
-    pub saved_flags: u32,
-}
+/// The kernel's IRQ-saving spinlock, defined once in `kernel_rust`; `cact_mm`'s
+/// internal locks all have this shape.
+pub use kernel_rust::sync::irq_spinlock_t as IrqSpinlock;
 
 #[repr(C)]
 pub struct VfsNode {
@@ -519,118 +500,123 @@ const _: () = assert!(core::mem::size_of::<Mb2MmapFlat>() == 24);
 const _: () = assert!(core::mem::offset_of!(Mb2MmapFlat, ty) == 16);
 const _: () = assert!(core::mem::offset_of!(Mb2MmapTable, count) == MB2_MMAP_MAX_ENTRIES * 24);
 
-// SAFETY: Each function and static in this block is backed by a C definition
-// in the kernel.  All pointer parameters must be non-null and correctly
-// aligned.  `task_list_head` and `scheduler_lock` are
-// mutated under the scheduler spinlock — callers must hold that lock or be
-// in a single-threaded context (boot / IRQ-off) before accessing them.
-unsafe extern "C" {
-    pub fn printk(msg: *const u8);
-    pub fn printk_color(msg: *const u8, color: u32);
-    pub fn printk_hex(n: u32);
-    pub fn itoa(n: i32, buf: *mut u8);
-    pub fn hex_to_ascii(n: u32, buf: *mut u8);
-
-    pub fn irq_spinlock_init(lock: *mut IrqSpinlock);
-    pub fn irq_spinlock_acquire(lock: *mut IrqSpinlock);
-    pub fn irq_spinlock_release(lock: *mut IrqSpinlock);
-
-    pub fn load_page_directory(dir: *mut u64);
-    pub fn enable_paging();
-
-    /// Read/write an MSR (cpu_ops.c, cpu_ops.h).  The kernel's only MSR access;
-    /// the PAT driver uses it for IA32_PAT.
-    pub fn cact_rdmsr(msr: u32) -> u64;
-    pub fn cact_wrmsr(msr: u32, value: u64);
-    /// Raw CPUID (cpudev.c, cpudev.h): leaf/subleaf in, the four registers out.
-    pub fn cact_cpuid(
-        leaf: u32,
-        subleaf: u32,
-        eax: *mut u32,
-        ebx: *mut u32,
-        ecx: *mut u32,
-        edx: *mut u32,
-    );
-
-    pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut u8) -> i32;
-
-    /// C memfd glue: returns the memfd object handle for an open fd, or -1.
-    pub fn memfd_fd_handle(fd: i32) -> i32;
-
-    /// C VFS glue (vfs_ops.c): resolve an fd + mmap offset to a shared backing
-    /// object.  Returns 0 and writes the object handle + in-object byte offset
-    /// when the fd is backed (memfd, DRM GEM, …); < 0 when it is not, in which
-    /// case do_mmap() falls back to a private copy through read().
-    pub fn vfs_mmap_resolve(
-        fd: i32,
-        off: u32,
-        len: u32,
-        backing_out: *mut i32,
-        obj_off_out: *mut u32,
-    ) -> i32;
-
-    /// Per-CPU `current_task` accessor supplied by the `sched` crate.
-    pub fn cact_current_task_get() -> *mut TaskStruct;
-    pub static task_list_head: SyncMut<*mut TaskStruct>;
-    pub static scheduler_lock: SyncMut<IrqSpinlock>;
-
-    pub fn task_signal(pid: u32, signal: u32);
-    /// Queue a signal *and* record its source (si_code) and fault address.
-    pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64);
-    /// Apply a task's pending signals' dispositions: a default action
-    /// terminates the task, a user handler is left pending for delivery.
-    pub fn task_handle_signals(t: *mut TaskStruct);
-    pub fn schedule();
-    pub fn task_reap();
-
-    pub fn dump_context_frame(regs: *const ContextFrame, fault_addr: u64, signal: u32);
-}
-
 // ---------------------------------------------------------------------------
-// Inline-asm helpers — encapsulated in safe functions
+// Thin safe wrappers around `kernel_rust` — the C ABI itself lives there.
+//
+// Every kernel entry point this crate used to declare as `extern "C"` is now a
+// safe wrapper in `kernel_rust`; these re-export it under the name (and the
+// `cact_mm`-local type) the module code already used, so callers just drop the
+// `unsafe` they no longer need.
 // ---------------------------------------------------------------------------
 
-/// Read CR2 (page-fault address).  CR2 is 64-bit in long mode.
-#[inline(always)]
-pub fn read_cr2() -> u64 {
-    let val: u64;
-    // SAFETY: reading CR2 is side-effect-free.
-    unsafe { core::arch::asm!("mov {}, cr2", out(reg) val, options(nomem, nostack)) };
-    val
+// ---- console ---------------------------------------------------------------
+pub fn printk(msg: *const u8) {
+    kernel_rust::console::printk(msg)
+}
+pub fn printk_color(msg: *const u8, color: u32) {
+    kernel_rust::console::printk_color(msg, color)
+}
+pub fn printk_hex(n: u32) {
+    kernel_rust::console::printk_hex(n)
+}
+pub fn itoa(n: i32, buf: *mut u8) {
+    kernel_rust::console::itoa(n, buf)
+}
+pub fn hex_to_ascii(n: u32, buf: *mut u8) {
+    kernel_rust::console::hex_to_ascii(n, buf)
 }
 
-/// Read CR3 (current page directory — the PML4 in long mode) as a **kernel VA**.
-///
-/// CR3 holds the *physical* address of the live PML4; the kernel reaches that
-/// frame through the direct map (PML4[256], see [`crate::vmm::paging::p2v`]), so
-/// the raw value is translated before it is handed back — a caller dereferences
-/// the result (it walks the tables) and would otherwise be relying on the low
-/// identity map.
-#[inline(always)]
-pub fn get_current_pd() -> *mut u64 {
-    let val: u64;
-    // SAFETY: reading CR3 is side-effect-free.
-    unsafe { core::arch::asm!("mov {}, cr3", out(reg) val, options(nomem, nostack)) };
-    crate::vmm::paging::p2v(val) as *mut u64
-}
-
-/// Invalidate a single TLB entry.
-#[inline(always)]
-pub fn tlb_flush(vaddr: u64) {
-    // SAFETY: INVLPG is safe for any address.
-    unsafe { core::arch::asm!("invlpg [{}]", in(reg) vaddr, options(nostack)) };
-}
-
-/// Flush the entire TLB by reloading CR3.
-#[inline(always)]
-pub fn tlb_flush_all() {
-    // SAFETY: reloading CR3 with the current value only flushes the TLB.
-    unsafe {
-        core::arch::asm!(
-            "mov rax, cr3",
-            "mov cr3, rax",
-            out("rax") _,
-            options(nostack)
-        );
+// ---- internal IRQ spinlocks ------------------------------------------------
+pub fn irq_spinlock_init(lock: *mut IrqSpinlock) {
+    if !lock.is_null() {
+        kernel_rust::ptr::as_mut(lock).init();
     }
+}
+
+// ---- paging ----------------------------------------------------------------
+pub fn load_page_directory(dir: *mut u64) {
+    kernel_rust::cpu::load_page_directory(dir)
+}
+pub fn enable_paging() {
+    kernel_rust::cpu::enable_paging()
+}
+
+// ---- MSR / CPUID -----------------------------------------------------------
+/// Read/write an MSR (cpu_ops.c, cpu_ops.h).  The kernel's only MSR access;
+/// the PAT driver uses it for IA32_PAT.
+pub fn cact_rdmsr(msr: u32) -> u64 {
+    kernel_rust::cpu::rdmsr(msr)
+}
+pub fn cact_wrmsr(msr: u32, value: u64) {
+    kernel_rust::cpu::wrmsr(msr, value)
+}
+/// Raw CPUID (cpudev.c, cpudev.h): leaf/subleaf in, the four registers out.
+pub fn cact_cpuid(
+    leaf: u32,
+    subleaf: u32,
+    eax: *mut u32,
+    ebx: *mut u32,
+    ecx: *mut u32,
+    edx: *mut u32,
+) {
+    let c = kernel_rust::cpu::cpuid(leaf, subleaf);
+    kernel_rust::ptr::write(eax, c.eax);
+    kernel_rust::ptr::write(ebx, c.ebx);
+    kernel_rust::ptr::write(ecx, c.ecx);
+    kernel_rust::ptr::write(edx, c.edx);
+}
+
+// ---- VFS backing store -----------------------------------------------------
+pub fn read_vfs(node: *mut VfsNode, off: u64, size: u32, buf: *mut u8) -> i32 {
+    kernel_rust::vfs::read(node as *mut c_void, off, size, buf)
+}
+/// C VFS glue (vfs_ops.c): resolve an fd + mmap offset to a shared backing
+/// object.  Returns 0 and writes the object handle + in-object byte offset
+/// when the fd is backed (memfd, DRM GEM, …); < 0 when it is not, in which
+/// case do_mmap() falls back to a private copy through read().
+pub fn vfs_mmap_resolve(
+    fd: i32,
+    off: u32,
+    len: u32,
+    backing_out: *mut i32,
+    obj_off_out: *mut u32,
+) -> i32 {
+    kernel_rust::vfs::mmap_resolve(fd, off, len, backing_out, obj_off_out)
+}
+
+// ---- scheduler -------------------------------------------------------------
+/// Per-CPU `current_task` accessor supplied by the `sched` crate.
+pub fn cact_current_task_get() -> *mut TaskStruct {
+    kernel_rust::sync::current_task() as *mut TaskStruct
+}
+/// The scheduler's global task-list head (may be null).
+pub fn task_list_head() -> *mut TaskStruct {
+    kernel_rust::sync::task_list_head() as *mut TaskStruct
+}
+/// The scheduler's global IRQ spinlock (defined by `sched`).
+pub fn scheduler_lock() -> *mut IrqSpinlock {
+    kernel_rust::sync::scheduler_lock()
+}
+pub fn task_signal(pid: u32, signal: u32) {
+    kernel_rust::sync::task_signal(pid, signal)
+}
+/// Queue a signal *and* record its source (si_code) and fault address.
+pub fn task_signal_code(pid: u32, signal: u32, code: u32, addr: u64) {
+    kernel_rust::sync::task_signal_code(pid, signal, code, addr)
+}
+/// Apply a task's pending signals' dispositions: a default action
+/// terminates the task, a user handler is left pending for delivery.
+pub fn task_handle_signals(t: *mut TaskStruct) {
+    kernel_rust::sync::task_handle_signals(t as *mut c_void)
+}
+pub fn schedule() {
+    kernel_rust::sync::schedule_yield()
+}
+pub fn task_reap() {
+    kernel_rust::sync::task_reap()
+}
+
+// ---- diagnostics -----------------------------------------------------------
+pub fn dump_context_frame(regs: *const ContextFrame, fault_addr: u64, signal: u32) {
+    kernel_rust::mm::dump_context_frame(regs as *const c_void, fault_addr, signal)
 }

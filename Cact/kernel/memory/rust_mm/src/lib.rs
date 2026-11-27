@@ -69,9 +69,7 @@ impl core::fmt::Write for PanicConsole {
             let n = core::cmp::min(bytes.len() - off, buf.len() - 1);
             buf[..n].copy_from_slice(&bytes[off..off + n]);
             buf[n] = 0;
-            // SAFETY: `buf` holds `n` bytes plus the NUL just written, so `printk` sees a valid
-            // NUL-terminated string that outlives the call.
-            unsafe { crate::ffi::printk(buf.as_ptr()) };
+            crate::ffi::printk(buf.as_ptr());
             off += n;
         }
         Ok(())

@@ -51,9 +51,7 @@ static PAT_PRESENT: AtomicBool = AtomicBool::new(false);
 /// Raw CPUID for one leaf/subleaf.
 fn cpuid(leaf: u32, subleaf: u32) -> (u32, u32, u32, u32) {
     let (mut eax, mut ebx, mut ecx, mut edx) = (0u32, 0u32, 0u32, 0u32);
-    // SAFETY: `cact_cpuid` writes exactly the four out-pointers it is handed and
-    // nothing else.
-    unsafe { cact_cpuid(leaf, subleaf, &mut eax, &mut ebx, &mut ecx, &mut edx) };
+    cact_cpuid(leaf, subleaf, &mut eax, &mut ebx, &mut ecx, &mut edx);
     (eax, ebx, ecx, edx)
 }
 
@@ -75,13 +73,10 @@ pub extern "C" fn pat_init() {
     // Program PAT entry 4 = Write-Combining (bits 34:32).  The framebuffer map
     // selects entry 4 (PAT=1, PCD=0, PWT=0), but that entry's reset value is
     // Write-Back and a resume restores it, so write it on every call.
-    // SAFETY: rdmsr/wrmsr touch only the named MSR, which this CPUID check just
-    // proved present, and cannot fault.
-    let pat = unsafe { cact_rdmsr(MSR_IA32_PAT) };
+    let pat = cact_rdmsr(MSR_IA32_PAT);
     let want = (pat & !(0x7u64 << 32)) | (0x1u64 << 32);
     if want != pat {
-        // SAFETY: writing IA32_PAT with a valid memory-type encoding.
-        unsafe { cact_wrmsr(MSR_IA32_PAT, want) };
+        cact_wrmsr(MSR_IA32_PAT, want);
     }
 
     // Report once: a resume re-runs this to restore the MSR.

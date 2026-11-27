@@ -83,8 +83,7 @@ const MEMFD_EMPTY: MemFd = MemFd {
 
 static MEMFD_TABLE: KStatic<[MemFd; MEMFD_MAX]> =
     KStatic::new([MEMFD_EMPTY; MEMFD_MAX]);
-static MEMFD_LOCK: KStatic<IrqSpinlock> =
-    KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+static MEMFD_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 static MEMFD_INITIALIZED: KStatic<i32> = KStatic::new(0);
 
 fn memfd_ensure_init() {
@@ -93,8 +92,7 @@ fn memfd_ensure_init() {
     if *unsafe { KStatic::get_mut(MEMFD_INITIALIZED.as_ptr()) } != 0 {
         return;
     }
-    // SAFETY: boot-time / first-use init, single-threaded.
-    unsafe { irq_spinlock_init(MEMFD_LOCK.as_ptr()) };
+    irq_spinlock_init(MEMFD_LOCK.as_ptr());
     // SAFETY: single-threaded first-use init: the latch is set after the lock is
     // initialised.
     *unsafe { KStatic::get_mut(MEMFD_INITIALIZED.as_ptr()) } = 1;

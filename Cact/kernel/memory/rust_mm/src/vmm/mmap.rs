@@ -13,16 +13,10 @@ use crate::process::memfd::{
     F_SEAL_FUTURE_WRITE, F_SEAL_WRITE,
 };
 
-unsafe extern "C" {
-    /// Flush a file-backed mapping's page-cache range back to its filesystem.
-    fn vfs_as_flush_fd(fd: i32, off: u32, size: u32);
-}
 use crate::safe::{zero_page, flush_tlb, kprint_str, klog_msg};
 
 fn fd_to_node(fd: i32) -> *mut VfsNode {
-    // SAFETY: `cact_current_task_get` is the scheduler's per-CPU accessor; it may return null,
-    // which the test below handles.
-    let t = unsafe { cact_current_task_get() };
+    let t = cact_current_task_get();
     if t.is_null() {
         return core::ptr::null_mut();
     }
@@ -299,11 +293,7 @@ pub unsafe extern "C" fn do_mmap(
         if flags & MAP_SHARED != 0 {
             let mut backing: i32 = 0;
             let mut backing_off: u32 = 0;
-            // SAFETY: `vfs_mmap_resolve` only reads the fd table and the node's ops table
-            // (never user memory) and the caller supplied valid out-pointers.
-            let rc = unsafe {
-                vfs_mmap_resolve(fd, offset, length, &mut backing, &mut backing_off)
-            };
+            let rc = vfs_mmap_resolve(fd, offset, length, &mut backing, &mut backing_off);
             if rc == 0 && backing > 0 {
                 shobj = backing;
                 obj_off = backing_off;
@@ -403,9 +393,7 @@ pub unsafe extern "C" fn do_mmap(
                 }
                 zero_page(phys);
                 if !node.is_null() {
-                    // SAFETY: node is a valid VfsNode; `phys` is the kalloc'd
-                    // frame (a direct-map VA) the read fills.
-                    unsafe { read_vfs(node, file_off as u64, PAGE_SIZE, phys); }
+                    read_vfs(node, file_off as u64, PAGE_SIZE, phys);
                 }
                 // SAFETY: `pd` is valid, `va + i * PAGE_SIZE` is inside the region
                 // reserved above, and `phys` is the frame just allocated for it;
@@ -553,10 +541,9 @@ pub unsafe extern "C" fn do_munmap(
         // Write the file-backed dirty range this slice covers back to disk before
         // the mapping goes away (mmap writes bypass write()).
         if r_fd >= 0 && r_shobj > 0 {
-            // SAFETY: the fd is the one that backs this mapping; the VFS resolves
-            // it to its inode's address space and flushes (a no-op when there is
-            // none).
-            unsafe { vfs_as_flush_fd(r_fd, r_off + (lo - r_base), hi - lo) };
+            // The fd is the one that backs this mapping; the VFS resolves it to
+            // its inode's address space and flushes (a no-op when there is none).
+            kernel_rust::vfs::as_flush_fd(r_fd, r_off + (lo - r_base), hi - lo);
         }
 
         match slice.kind {
@@ -694,35 +681,23 @@ pub unsafe extern "C" fn mmap_print_regions(tbl: *const MmapTable) {
             continue;
         }
         kprint_str(c"  [".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes within it.
-        unsafe { itoa(i as i32, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-        unsafe { printk(buf.as_ptr()) };
+        itoa(i as i32, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c"] base=0x".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `hex_to_ascii` writes within it.
-        unsafe { hex_to_ascii(r.base, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `hex_to_ascii`.
-        unsafe { printk(buf.as_ptr()) };
+        hex_to_ascii(r.base, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c" len=0x".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `hex_to_ascii` writes within it.
-        unsafe { hex_to_ascii(r.length, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `hex_to_ascii`.
-        unsafe { printk(buf.as_ptr()) };
+        hex_to_ascii(r.length, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c" prot=".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes within it.
-        unsafe { itoa(r.prot as i32, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-        unsafe { printk(buf.as_ptr()) };
+        itoa(r.prot as i32, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c" flags=".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes within it.
-        unsafe { itoa(r.flags as i32, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-        unsafe { printk(buf.as_ptr()) };
+        itoa(r.flags as i32, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c" fd=".as_ptr() as *const u8);
-        // SAFETY: `buf` is a live 16-byte stack array, so `itoa` writes within it.
-        unsafe { itoa(r.fd, buf.as_mut_ptr()) };
-        // SAFETY: `buf` was just made a NUL-terminated string by `itoa`.
-        unsafe { printk(buf.as_ptr()) };
+        itoa(r.fd, buf.as_mut_ptr());
+        printk(buf.as_ptr());
         kprint_str(c"\n".as_ptr() as *const u8);
     }
 }

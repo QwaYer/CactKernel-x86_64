@@ -31,7 +31,7 @@ static G_STATS: KStatic<SwapStats> = KStatic::new(SwapStats {
     pages_swapped_in: 0,
     swap_failures: 0,
 });
-static G_SWAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock { spin_locked: 0, saved_flags: 0 });
+static G_SWAP_LOCK: KStatic<IrqSpinlock> = KStatic::new(IrqSpinlock::new());
 /// Clock hand for the eviction scan: the user virtual address the next scan
 /// starts from (page-aligned, inside the user window).  Only advanced by
 /// `swap_evict_page`; a torn read across CPUs merely restarts the scan earlier.
@@ -124,8 +124,7 @@ pub extern "C" fn swap_init(
     // SAFETY: no capacity until a backing device is attached.
     *unsafe { KStatic::get_mut(G_TOTAL_SLOTS.as_ptr()) } = 0;
 
-    // SAFETY: boot-time init.
-    unsafe { irq_spinlock_init(G_SWAP_LOCK.as_ptr()) };
+    irq_spinlock_init(G_SWAP_LOCK.as_ptr());
     // SAFETY: stays off; set last so no reader can see `G_ENABLED` before the
     // tables above are initialised.
     *unsafe { KStatic::get_mut(G_ENABLED.as_ptr()) } = 0;
