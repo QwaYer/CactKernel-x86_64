@@ -25,6 +25,8 @@
 //! the box's own traffic); routing packets *between* interfaces needs a
 //! forwarding layer the stack does not have yet.
 
+use kernel_rust::ptr;
+
 use crate::config;
 use crate::conntrack::{self, Key};
 use crate::stack::StackGuard;
@@ -347,11 +349,8 @@ fn rule_matches(r: &FwRule, p: &Pkt, slot: usize, state: u8) -> bool {
 /// True while any chain has a rule or a `DROP` policy — the fast path that keeps
 /// an unconfigured firewall completely free.
 fn configured() -> bool {
-    // SAFETY: both statics are only mutated under `STACK_LOCK`, which every
-    // caller of `configured` holds (the hooks run under it, like the ioctls).
-    let counts = unsafe { &*core::ptr::addr_of!(RULE_COUNT) };
-    // SAFETY: as above, for `POLICY`.
-    let policy = unsafe { &*core::ptr::addr_of!(POLICY) };
+    let counts = ptr::as_ref(core::ptr::addr_of!(RULE_COUNT));
+    let policy = ptr::as_ref(core::ptr::addr_of!(POLICY));
     if policy.iter().any(|&p| p == FW_ACTION_DROP) {
         return true;
     }
@@ -437,15 +436,8 @@ fn embedded_ports(frame: &[u8], off: usize, proto: u8) -> (u16, u16) {
 /// the decided action; with no matching rule the chain's default policy applies.
 fn eval_chain(chain: u8, p: &Pkt, slot: usize, state: u8) -> u8 {
     let ch = chain as usize;
-    // SAFETY: the tables are only mutated under `STACK_LOCK`; every call site
-    // holds it (the poll path and the TX token), so this read cannot race a
-    // configuration change.
-    let count = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] };
-    // One unsafe operation per block (crate lint): the shared borrow below is
-    // turned into an exclusive one only to bump counters, which the same lock
-    // makes sound — no other context reads the table concurrently.
-    // SAFETY: `RULES` is only touched under `STACK_LOCK`, held here.
-    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    let count = ptr::as_ref(core::ptr::addr_of!(RULE_COUNT))[ch];
+    let rules = ptr::as_mut(core::ptr::addr_of_mut!(RULES));
     for i in 0..count as usize {
         let r = &mut rules[ch][i];
         if rule_matches(r, p, slot, state) {
@@ -454,8 +446,7 @@ fn eval_chain(chain: u8, p: &Pkt, slot: usize, state: u8) -> u8 {
             return r.action;
         }
     }
-    // SAFETY: `POLICY` is read under `STACK_LOCK` just like the tables above.
-    unsafe { (*core::ptr::addr_of!(POLICY))[ch] }
+    ptr::as_ref(core::ptr::addr_of!(POLICY))[ch]
 }
 
 /// The conntrack key that identifies one frame.
@@ -596,10 +587,8 @@ fn nat_forward(frame: &mut [u8], p: &mut Pkt, slot: usize, state: u8, idx: u32, 
     let key = conntrack::key_of(idx);
     let mut xlate = key;
     let ch = chain as usize;
-    // SAFETY: as in `eval_chain`; this runs under `STACK_LOCK`.
-    let count = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] };
-    // SAFETY: `RULES` is only touched under `STACK_LOCK`, held here.
-    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    let count = ptr::as_ref(core::ptr::addr_of!(RULE_COUNT))[ch];
+    let rules = ptr::as_mut(core::ptr::addr_of_mut!(RULES));
     for i in 0..count as usize {
         let r = &mut rules[ch][i];
         if !rule_matches(r, p, slot, state) {
@@ -819,20 +808,14 @@ fn chain_accepts_action(chain: u32, action: u32) -> bool {
 
 /// Append `*rule` to its chain.  Returns 0 on success, -1 on a bad argument:
 /// null pointer, unknown chain, an action the chain does not take, an unknown
-/// connection-state bit, or a full table.
-///
-/// # Safety
-///
-/// `rule` must be null or point to a live, properly aligned [`FwRule`] that
-/// stays readable for the duration of the call.
-pub unsafe fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
+/// connection-state bit, or a full table.  `rule` must be null or point to a
+/// live, properly aligned [`FwRule`] that stays readable for the call.
+pub fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
     if rule.is_null() {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: the caller contract (see # Safety) makes `rule` a live, aligned
-    // `FwRule`; the borrow ends before the table is touched below.
-    let r = unsafe { &*rule };
+    let r = ptr::as_ref(rule);
     if !chain_accepts_action(r.chain as u32, r.action as u32) {
         return -1;
     }
@@ -842,8 +825,7 @@ pub unsafe fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
         return -1;
     }
     let ch = r.chain as usize;
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
-    let counts = unsafe { &mut *core::ptr::addr_of_mut!(RULE_COUNT) };
+    let counts = ptr::as_mut(core::ptr::addr_of_mut!(RULE_COUNT));
     let n = counts[ch] as usize;
     if n >= FW_RULES_MAX {
         return -1;
@@ -851,9 +833,7 @@ pub unsafe fn rust_net_fw_rule_add(rule: *const FwRule) -> i32 {
     let mut copy = *r;
     copy.packets = 0;
     copy.bytes = 0;
-    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` and
-    // `n` are bounds-checked above.
-    unsafe { (&mut *core::ptr::addr_of_mut!(RULES))[ch][n] = copy };
+    ptr::as_mut(core::ptr::addr_of_mut!(RULES))[ch][n] = copy;
     counts[ch] += 1;
     0
 }
@@ -866,17 +846,13 @@ pub fn rust_net_fw_rule_del(chain: u32, index: u32) -> i32 {
     }
     let ch = chain as usize;
     let _guard = StackGuard::new();
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
-    let counts = unsafe { &mut *core::ptr::addr_of_mut!(RULE_COUNT) };
+    let counts = ptr::as_mut(core::ptr::addr_of_mut!(RULE_COUNT));
     let n = counts[ch] as usize;
     let i = index as usize;
     if i >= n {
         return -1;
     }
-    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` is a
-    // valid chain and `i < n <= FW_RULES_MAX`, so both ranges are in bounds and
-    // `i + 1 <= n <= FW_RULES_MAX` keeps the shift's source in bounds too.
-    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    let rules = ptr::as_mut(core::ptr::addr_of_mut!(RULES));
     for k in i..n - 1 {
         rules[ch][k] = rules[ch][k + 1];
     }
@@ -891,36 +867,25 @@ pub fn rust_net_fw_rule_count(chain: u32) -> i32 {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here; a u32
-    // load cannot tear.
-    unsafe { (*core::ptr::addr_of!(RULE_COUNT))[chain as usize] as i32 }
+    ptr::as_ref(core::ptr::addr_of!(RULE_COUNT))[chain as usize] as i32
 }
 
 /// Copy rule `index` of `chain` (with its counters) into `*out`.  Returns 0 on
-/// success, -1 on a bad chain, an out-of-range index, or a null `out`.
-///
-/// # Safety
-///
-/// `out` may be null (the call then returns -1), but if non-null it must point
-/// to a writable, properly aligned [`FwRule`] that stays live for the call.
-pub unsafe fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut FwRule) -> i32 {
+/// success, -1 on a bad chain, an out-of-range index, or a null `out`.  `out`,
+/// when non-null, must point to a writable, properly aligned [`FwRule`].
+pub fn rust_net_fw_rule_get(chain: u32, index: u32, out: *mut FwRule) -> i32 {
     if out.is_null() || chain as usize >= FW_CHAIN_COUNT {
         return -1;
     }
     let ch = chain as usize;
     let _guard = StackGuard::new();
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
-    let n = unsafe { (*core::ptr::addr_of!(RULE_COUNT))[ch] } as usize;
+    let n = ptr::as_ref(core::ptr::addr_of!(RULE_COUNT))[ch] as usize;
     let i = index as usize;
     if i >= n {
         return -1;
     }
-    // SAFETY: `RULES` is read under `STACK_LOCK`, held here, and `ch`/`i` are
-    // bounds-checked above.
-    let rule = unsafe { (*core::ptr::addr_of!(RULES))[ch][i] };
-    // SAFETY: the caller contract (see # Safety) makes `out` a live, aligned
-    // `FwRule`; `rule` is a local copy, so the ranges cannot overlap.
-    unsafe { core::ptr::write(out, rule) };
+    let rule = ptr::as_ref(core::ptr::addr_of!(RULES))[ch][i];
+    ptr::write(out, rule);
     0
 }
 
@@ -932,13 +897,9 @@ pub fn rust_net_fw_flush(chain: u32) -> i32 {
     }
     let ch = chain as usize;
     let _guard = StackGuard::new();
-    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here; `ch` is a
-    // valid chain index.
-    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    let rules = ptr::as_mut(core::ptr::addr_of_mut!(RULES));
     rules[ch] = [FwRule::empty(); FW_RULES_MAX];
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here; `ch`
-    // is a valid chain index.
-    unsafe { (*core::ptr::addr_of_mut!(RULE_COUNT))[ch] = 0 };
+    ptr::as_mut(core::ptr::addr_of_mut!(RULE_COUNT))[ch] = 0;
     0
 }
 
@@ -952,9 +913,7 @@ pub fn rust_net_fw_policy_set(chain: u32, policy: u32) -> i32 {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here; `chain` is
-    // bounds-checked above.
-    unsafe { (*core::ptr::addr_of_mut!(POLICY))[chain as usize] = policy as u8 };
+    ptr::as_mut(core::ptr::addr_of_mut!(POLICY))[chain as usize] = policy as u8;
     0
 }
 
@@ -964,21 +923,16 @@ pub fn rust_net_fw_policy_get(chain: u32) -> i32 {
         return -1;
     }
     let _guard = StackGuard::new();
-    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here; a byte load
-    // cannot tear.
-    unsafe { (*core::ptr::addr_of!(POLICY))[chain as usize] as i32 }
+    ptr::as_ref(core::ptr::addr_of!(POLICY))[chain as usize] as i32
 }
 
 /// Flush every chain and reset every policy to `ACCEPT`.
 pub fn rust_net_fw_reset() -> i32 {
     let _guard = StackGuard::new();
-    // SAFETY: `RULES` is only mutated under `STACK_LOCK`, held here.
-    let rules = unsafe { &mut *core::ptr::addr_of_mut!(RULES) };
+    let rules = ptr::as_mut(core::ptr::addr_of_mut!(RULES));
     *rules = [[FwRule::empty(); FW_RULES_MAX]; FW_CHAIN_COUNT];
-    // SAFETY: `RULE_COUNT` is only mutated under `STACK_LOCK`, held here.
-    unsafe { *core::ptr::addr_of_mut!(RULE_COUNT) = [0; FW_CHAIN_COUNT] };
-    // SAFETY: `POLICY` is only mutated under `STACK_LOCK`, held here.
-    unsafe { *core::ptr::addr_of_mut!(POLICY) = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT] };
+    *ptr::as_mut(core::ptr::addr_of_mut!(RULE_COUNT)) = [0; FW_CHAIN_COUNT];
+    *ptr::as_mut(core::ptr::addr_of_mut!(POLICY)) = [FW_ACTION_ACCEPT; FW_CHAIN_COUNT];
     0
 }
 
