@@ -24,6 +24,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ffi::{c_int, c_void};
 
+use kernel_rust::ptr;
+
 use cact_crypto::provider::cact_crypto_provider;
 use rustls::client::UnbufferedClientConnection;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -160,8 +162,7 @@ fn now_ticks() -> u32 {
 
 /// Sleep for `t` ticks (safe wrapper).
 fn sleep_ticks(t: u32) {
-    // SAFETY: ffi_kernel re-exports the C scheduler sleep.
-    unsafe { sched::timer_wheel::sched_sleep_ticks(t) }
+    sched::timer_wheel::sleep_ticks(t)
 }
 
 /// True when the underlying TCP socket reached a closed state (FIN received or
@@ -480,19 +481,14 @@ static mut TLS_CONNS: [Option<TlsStream>; TLS_MAX_CONNECTIONS] = [const { None }
 /// handshake and the data path block by design and a lock held across a sleep
 /// would wedge the stack.  Using one handle from two tasks at once is still not
 /// supported.
-static mut TLS_LOCK: [u32; 2] = [0; 2];
+static TLS_LOCK: cact_sync::IrqLock = cact_sync::IrqLock::new();
 
 struct TlsGuard;
 
 impl TlsGuard {
     #[inline]
     fn new() -> Self {
-        // SAFETY: `TLS_LOCK` is a kernel-lifetime `irq_spinlock_t` static;
-        // `addr_of_mut!` yields its stable, properly aligned address for the kernel's
-        // C acquire/release pair.
-        unsafe {
-            ffi_kernel::irq_spinlock_acquire(core::ptr::addr_of_mut!(TLS_LOCK).cast());
-        }
+        TLS_LOCK.lock();
         TlsGuard
     }
 }
@@ -500,68 +496,43 @@ impl TlsGuard {
 impl Drop for TlsGuard {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: as in `TlsGuard::new` — `TLS_LOCK` is a live kernel-lifetime lock,
-        // and this is the matching release for the acquire in `TlsGuard::new`.
-        unsafe {
-            ffi_kernel::irq_spinlock_release(core::ptr::addr_of_mut!(TLS_LOCK).cast());
-        }
+        TLS_LOCK.unlock();
     }
 }
 
-/// Read a NUL-terminated C string (bounded).
-///
-/// # Safety
-///
-/// `ptr` must be a NUL-terminated string readable up to and including its
-/// terminator (the scan is capped at 1024 bytes).
-unsafe fn cstr(ptr: *const c_void) -> Option<alloc::string::String> {
-    let p = ptr as *const u8;
+/// Read a NUL-terminated C string (bounded).  `ptr` must be a NUL-terminated
+/// string readable up to and including its terminator (the scan is capped at
+/// 1024 bytes).
+fn cstr(ptr: *const c_void) -> Option<alloc::string::String> {
+    let p = ptr.cast::<u8>();
     let mut len = 0usize;
     loop {
         if len > 1024 {
             return None;
         }
-        // SAFETY: the caller contract (see # Safety) makes `p` a NUL-terminated
-        // string; `len <= 1024` here, so `add` stays within that string's first
-        // 1025 bytes (or the cap fails the call).
-        let q = unsafe { p.add(len) };
-        // SAFETY: `q` is a byte of the NUL-terminated string above; the scan
-        // stops as soon as it is the terminator.
-        if unsafe { *q } == 0 {
+        if kernel_rust::ptr::read(p.wrapping_add(len)) == 0 {
             break;
         }
         len += 1;
     }
-    // SAFETY: as above, `len` is the number of initialised bytes before the NUL
-    // and they all stay readable for the call.
-    let slice = unsafe { core::slice::from_raw_parts(p, len) };
+    let slice = kernel_rust::ptr::slice(p, len);
     core::str::from_utf8(slice).ok().map(String::from)
 }
 
 pub fn cact_tls_init() {}
 
 /// Connect TLS over an open connected TCP socket. Legacy entry: uses the
-/// verified (root store) path.
-///
-/// # Safety
-///
-/// `server_name` must be a NUL-terminated C string that stays readable for the
-/// call (the name is copied out before use).
-pub unsafe fn cact_tls_connect(sock: c_int, server_name: *const c_void) -> c_int {
-    // SAFETY: this only forwards its arguments; the caller contract above
-    // (identical to `cact_tls_connect_ex`'s) is what makes the call sound.
-    unsafe { cact_tls_connect_ex(sock, server_name, 0) }
+/// verified (root store) path.  `server_name` must be a NUL-terminated C string
+/// readable for the call (the name is copied out before use).
+pub fn cact_tls_connect(sock: c_int, server_name: *const c_void) -> c_int {
+    cact_tls_connect_ex(sock, server_name, 0)
 }
 
 /// Connect TLS over an open connected TCP socket. `skip_verify` != 0 disables
 /// certificate chain verification (see module docs). Returns a connection
 /// handle >= 0 to use with [`cact_tls_send`]/[`cact_tls_recv`], or -1.
-///
-/// # Safety
-///
-/// `server_name` must be a NUL-terminated C string that stays readable for the
-/// duration of the call.
-pub unsafe fn cact_tls_connect_ex(
+/// `server_name` must be a NUL-terminated C string readable for the call.
+pub fn cact_tls_connect_ex(
     sock: c_int,
     server_name: *const c_void,
     skip_verify: c_int,
@@ -569,18 +540,15 @@ pub unsafe fn cact_tls_connect_ex(
     if sock < 0 || server_name.is_null() {
         return -1;
     }
-    // SAFETY: server_name is a NUL-terminated C string.
-    let Some(name) = (unsafe { cstr(server_name) }) else {
+    let Some(name) = cstr(server_name) else {
         return -1;
     };
     let Some(stream) = tls_stream_open(sock, &name, skip_verify != 0) else {
         return -1;
     };
-    // SAFETY: the slot table is guarded so two tasks cannot take one slot; the
-    // stream itself is moved in and never touched under the lock.
-    unsafe {
+    {
         let _guard = TlsGuard::new();
-        for (i, slot) in (*core::ptr::addr_of_mut!(TLS_CONNS)).iter_mut().enumerate() {
+        for (i, slot) in ptr::as_mut(core::ptr::addr_of_mut!(TLS_CONNS)).iter_mut().enumerate() {
             if slot.is_none() {
                 *slot = Some(stream);
                 return i as c_int;
@@ -591,24 +559,16 @@ pub unsafe fn cact_tls_connect_ex(
 }
 
 /// Send plaintext data over a TLS connection. Returns bytes accepted, or -1.
-///
-/// # Safety
-///
-/// `data` must point to `len` readable bytes that stay live for the duration of
-/// the call (it may be null, in which case the call returns -1).
-pub unsafe fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int {
+/// `data` must point to `len` readable bytes that stay live for the call (it may
+/// be null, in which case the call returns -1).
+pub fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int {
     if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || data.is_null() {
         return -1;
     }
-    // SAFETY: `conn_idx` is bounds-checked above, so this indexes the
-    // kernel-lifetime `TLS_CONNS` static in bounds; the borrow is the only
-    // access to that slot for the rest of the call.
-    let Some(stream) = (unsafe { TLS_CONNS[conn_idx as usize].as_mut() }) else {
+    let Some(stream) = ptr::as_mut(core::ptr::addr_of_mut!(TLS_CONNS))[conn_idx as usize].as_mut() else {
         return -1;
     };
-    // SAFETY: the caller contract (see # Safety) makes `data` point to `len`
-    // readable bytes that stay live for the duration of the call.
-    let plaintext = unsafe { core::slice::from_raw_parts(data, len as usize) };
+    let plaintext = ptr::slice(data, len as usize);
     if tls_stream_write(stream, plaintext).is_ok() {
         len as c_int
     } else {
@@ -617,25 +577,17 @@ pub unsafe fn cact_tls_send(conn_idx: c_int, data: *const u8, len: u16) -> c_int
 }
 
 /// Receive plaintext data from a TLS connection. Returns bytes read, 0 when no
-/// data is available yet, or -1 on error/close.
-///
-/// # Safety
-///
-/// `buf` must point to `max_len` writable bytes that stay live for the duration
-/// of the call (it may be null, in which case the call returns -1).
-pub unsafe fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u16) -> c_int {
+/// data is available yet, or -1 on error/close.  `buf` must point to `max_len`
+/// writable bytes that stay live for the call (it may be null, in which case the
+/// call returns -1).
+pub fn cact_tls_recv(conn_idx: c_int, buf: *mut u8, max_len: u16) -> c_int {
     if conn_idx < 0 || conn_idx as usize >= TLS_MAX_CONNECTIONS || buf.is_null() {
         return -1;
     }
-    // SAFETY: `conn_idx` is bounds-checked above, so this indexes the
-    // kernel-lifetime `TLS_CONNS` static in bounds; the borrow is the only
-    // access to that slot for the rest of the call.
-    let Some(stream) = (unsafe { TLS_CONNS[conn_idx as usize].as_mut() }) else {
+    let Some(stream) = ptr::as_mut(core::ptr::addr_of_mut!(TLS_CONNS))[conn_idx as usize].as_mut() else {
         return -1;
     };
-    // SAFETY: the caller contract (see # Safety) makes `buf` point to `max_len`
-    // writable bytes that stay live for the duration of the call.
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf, max_len as usize) };
+    let dst = ptr::slice_mut(buf, max_len as usize);
     if append_to_inbuf(stream).is_err() {
         return -1;
     }
@@ -661,12 +613,9 @@ pub fn cact_tls_close(conn: c_int) {
     // Take the stream out under the lock, then drop it outside: freeing the
     // rustls state can touch the allocator, which has no business running with
     // interrupts disabled.
-    // SAFETY: `conn` was bounds-checked above and `TLS_CONNS` is a kernel-lifetime
-    // static; the take runs under `TlsGuard`, so no other task can take the same
-    // slot, and the stream is dropped outside the lock.
-    let victim = unsafe {
+    let victim = {
         let _guard = TlsGuard::new();
-        TLS_CONNS[conn as usize].take()
+        ptr::as_mut(core::ptr::addr_of_mut!(TLS_CONNS))[conn as usize].take()
     };
     drop(victim);
 }
