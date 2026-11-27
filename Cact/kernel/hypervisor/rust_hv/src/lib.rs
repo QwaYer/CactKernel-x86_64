@@ -44,13 +44,11 @@
 #![no_std]
 // This crate talks to the C kernel only through `kernel_rust`, the graph's one
 // `unsafe` crate: the `extern "C"` surface and the raw-pointer/`static mut`
-// plumbing both live there, so this crate holds no `unsafe` of its own.
-//
-// `unsafe_code` is denied rather than `forbid`-den, because the kernel's C-ABI
-// entry points need `#[no_mangle]` and Rust groups that attribute under the
-// same lint (a clashing symbol cannot be checked).  Each export carries a
-// scoped `#[allow(unsafe_code)]`; nothing else in the crate may be unsafe.
-#![deny(unsafe_code)]
+// plumbing both live there, so this crate holds no `unsafe` of its own and
+// forbids it outright.  The kernel's C-ABI entry points — which need
+// `#[no_mangle]`, itself an `unsafe_code`-linted attribute — live in the
+// dedicated boundary crate `kernel_abi`.
+#![forbid(unsafe_code)]
 
 use kernel_rust::cell::KCell;
 use kernel_rust::console::{printk_bytes, serial_putc};
@@ -213,11 +211,9 @@ const VCPU_DEFAULT: Vcpu = Vcpu {
 
 static VCPU: KCell<Vcpu> = KCell::new(VCPU_DEFAULT);
 
-/* ---- the vCPU uAPI entry points (called from chv.c) -------------------- */
+/* ---- the vCPU uAPI (exported as C by `kernel_abi`, driven from chv.c) --- */
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_get_regs(out: *mut ChvRegs) -> i32 {
+pub fn hv_get_regs(out: *mut ChvRegs) -> i32 {
     if out.is_null() {
         return 1;
     }
@@ -225,9 +221,7 @@ pub extern "C" fn hv_get_regs(out: *mut ChvRegs) -> i32 {
     0
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_set_regs(inp: *const ChvRegs) -> i32 {
+pub fn hv_set_regs(inp: *const ChvRegs) -> i32 {
     if inp.is_null() {
         return 1;
     }
@@ -235,9 +229,7 @@ pub extern "C" fn hv_set_regs(inp: *const ChvRegs) -> i32 {
     0
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_get_sregs(out: *mut ChvSregs) -> i32 {
+pub fn hv_get_sregs(out: *mut ChvSregs) -> i32 {
     if out.is_null() {
         return 1;
     }
@@ -245,9 +237,7 @@ pub extern "C" fn hv_get_sregs(out: *mut ChvSregs) -> i32 {
     0
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_set_sregs(inp: *const ChvSregs) -> i32 {
+pub fn hv_set_sregs(inp: *const ChvSregs) -> i32 {
     if inp.is_null() {
         return 1;
     }
@@ -255,9 +245,7 @@ pub extern "C" fn hv_set_sregs(inp: *const ChvSregs) -> i32 {
     0
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_get_msrs(io: *mut ChvMsrs) -> i32 {
+pub fn hv_get_msrs(io: *mut ChvMsrs) -> i32 {
     if io.is_null() {
         return 1;
     }
@@ -283,9 +271,7 @@ pub extern "C" fn hv_get_msrs(io: *mut ChvMsrs) -> i32 {
     0
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_set_msrs(io: *const ChvMsrs) -> i32 {
+pub fn hv_set_msrs(io: *const ChvMsrs) -> i32 {
     if io.is_null() {
         return 1;
     }
@@ -305,9 +291,7 @@ pub extern "C" fn hv_set_msrs(io: *const ChvMsrs) -> i32 {
     rc
 }
 
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_inject_irq(vector: u32) -> i32 {
+pub fn hv_inject_irq(vector: u32) -> i32 {
     if vector > 255 {
         return 1;
     }
@@ -381,9 +365,7 @@ fn mem_slot_remove(s: usize) {
 /// calling process's page map), pin its frames and record the slot for the next
 /// RUN.  Returns 0, or 1 on a bad argument (alignment, overlap, unsupported
 /// page, or out of slot space).
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_add_memory_region(inp: *const ChvMem, pd: *mut u64) -> i32 {
+pub fn hv_add_memory_region(inp: *const ChvMem, pd: *mut u64) -> i32 {
     if inp.is_null() {
         return 1;
     }
@@ -439,9 +421,7 @@ pub extern "C" fn hv_add_memory_region(inp: *const ChvMem, pd: *mut u64) -> i32 
 }
 
 /// `UNMAP_MEMORY`: unpin a slot's frames and drop it.  Only `slot` matters.
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_del_memory_region(inp: *const ChvMem) -> i32 {
+pub fn hv_del_memory_region(inp: *const ChvMem) -> i32 {
     if inp.is_null() {
         return 1;
     }
@@ -732,9 +712,7 @@ static HOST_STACK: KCell<HostStack> = KCell::new(HostStack([0; 16384]));
 static GUEST_PTABLE_PAGES: KCell<u32> = KCell::new(0);
 
 /// Guest page-table pages the model currently holds.
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn cact_hv_guest_table_pages() -> u32 {
+pub fn cact_hv_guest_table_pages() -> u32 {
     GUEST_PTABLE_PAGES.get()
 }
 
@@ -825,9 +803,7 @@ fn free_guest_pages(pages: [Page; 11]) {
 /// VM-exit entry, called by the C/asm stub with RDI = the saved-GPR frame
 /// (`frame[k]` = RAX, RBX, RCX, RDX, RSI, RDI, RBP, R8..R15).  Returns the
 /// stub's verdict: 0 finishes the run, 1 re-enters the guest with VMRESUME.
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
+pub fn hv_vmx_exit_entry(regs: *mut u64) -> i32 {
     let frame = Frame::new(regs);
     let mut reason = 0u64;
     let _ = cpu::vmread(VMCS_VM_EXIT_REASON, &mut reason);
@@ -992,9 +968,7 @@ fn record_ept() {
 /// reset no handler can see.
 ///
 /// Returns 0 once the guest has exited, -1 when VT-x host mode is unavailable.
-#[allow(unsafe_code)] // for `#[no_mangle]`: exporting the C ABI, not memory-unsafe
-#[no_mangle]
-pub extern "C" fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
+pub fn hv_run_guest(out_exit_reason: *mut u64) -> i32 {
     if !out_exit_reason.is_null() {
         ptr::write(out_exit_reason, 0);
     }

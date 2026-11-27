@@ -303,6 +303,7 @@ subdir('Cact/fs/rust_vfs')
 # is built by kernel_link; kernel_rust is the safe Rust <-> C interface crate
 # it (and every other crate) depends on.
 subdir('Cact/kernel/kernel_rust')
+subdir('Cact/kernel/kernel_abi')
 subdir('Cact/kernel/kernel_link')
 subdir('Cact/crypto/hmac_ffi')
 

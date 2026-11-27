@@ -17,6 +17,7 @@ crate-type = ["staticlib"]
 
 [dependencies]
 kernel_rust   = { path = "../kernel_rust" }
+kernel_abi    = { path = "../kernel_abi" }
 cact_mm       = { path = "../memory/rust_mm" }
 cact_hv       = { path = "../hypervisor/rust_hv" }
 sched         = { path = "../proc/sched" }

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 CactOS Project
+
+[package]
+name    = "kernel_abi"
+version = "0.1.0"
+edition = "2021"
+
+# The kernel's exported C ABI: all `#[no_mangle]` entry points C calls into
+# Rust, as thin thunks onto the logic crates' safe functions.  An rlib, pulled
+# into kernel.bin by `Cact/kernel/kernel_link`.
+[lib]
+crate-type = ["lib"]
+
+[dependencies]
+cact_hv = { path = "../hypervisor/rust_hv" }
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
+codegen-units = 1
+
+[profile.dev]
+panic = "abort"

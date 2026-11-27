@@ -27,5 +27,6 @@ pub use cact_mm as mm;
 pub use cact_net as net;
 pub use cact80211 as wireless;
 pub use cact_vfs as vfs;
+pub use kernel_abi as abi;
 pub use kernel_rust as krt;
 pub use sched as sched;
