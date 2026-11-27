@@ -82,6 +82,7 @@ version = "0.1.0"
 dependencies = [
  "cact_net",
  "cact_sync",
+ "kernel_rust",
 ]
 
 [[package]]
@@ -124,6 +125,7 @@ dependencies = [
  "cact_mm",
  "cact_shim",
  "cact_sync",
+ "kernel_rust",
  "rustls",
  "rustls-pki-types 1.12.0",
  "sched",
@@ -138,6 +140,9 @@ version = "0.1.0"
 [[package]]
 name = "cact_sync"
 version = "0.1.0"
+dependencies = [
+ "kernel_rust",
+]
 
 [[package]]
 name = "cc"
@@ -428,6 +433,10 @@ checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
 dependencies = [
  "generic-array",
 ]
+
+[[package]]
+name = "kernel_rust"
+version = "0.1.0"
 
 [[package]]
 name = "lazy_static"

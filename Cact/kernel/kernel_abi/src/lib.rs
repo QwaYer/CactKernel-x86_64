@@ -21,6 +21,7 @@
 
 mod net;
 mod sync;
+mod wireless;
 
 use cact_hv::{ChvMem, ChvMsrs, ChvRegs, ChvSregs};
 

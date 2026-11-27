@@ -61,4 +61,18 @@ extern "C" {
     pub fn cact_current_task_get() -> *mut c_void;
     /// The scheduler's global IRQ spinlock (defined by `sched`).
     pub static mut scheduler_lock: irq_spinlock_t;
+
+    // ---- user-copy / validation services (validate.h) -------------------
+    pub fn validate_user_ptr(ptr: *const c_void, size: u32) -> i32;
+    pub fn copy_from_user(dst: *mut c_void, src: *const c_void, size: u32) -> i32;
+    pub fn copy_to_user(dst: *mut c_void, src: *const c_void, size: u32) -> i32;
+
+    // ---- devfs character-device registration ----------------------------
+    pub fn register_chrdev(
+        name: *const c_char,
+        flags: u32,
+        drv: *mut c_void,
+        drv_priv: *mut c_void,
+    ) -> *mut c_void;
+    pub fn unregister_chrdev(name: *const c_char) -> i32;
 }

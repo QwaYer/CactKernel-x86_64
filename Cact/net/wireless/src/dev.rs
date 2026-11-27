@@ -19,6 +19,9 @@ use cact_net::runtime::{netif_rx, register_netdev, unregister_netdev};
 use cact_net::skb::{kfree_skb, skb_alloc, skb_data, skb_len, skb_put};
 use cact_net::types::{MacAddr, NetDriver, Skb};
 
+use kernel_rust::net::{ktime_busy_wait_us, ktime_get_usec};
+use kernel_rust::ptr;
+
 use crate::control;
 use crate::frame::{self, Bss, DOT11_HDR, LLC_SNAP_LEN};
 use crate::hw::{self, Cact80211Conf, Cact80211Hw, Q_DATA};
@@ -93,9 +96,9 @@ fn rx_enqueue(f: &[u8]) {
     if f.is_empty() || f.len() > RX_FRAME_MAX {
         return;
     }
-    // SAFETY: `RXQ` is the engine's kernel-lifetime mailbox; the driver callback
-    // is the single producer and runs on the polling thread.
-    let q = unsafe { &mut *core::ptr::addr_of_mut!(RXQ) };
+    // `RXQ` is the engine's kernel-lifetime mailbox; the driver callback is the
+    // single producer and runs on the polling thread.
+    let q = ptr::as_mut(core::ptr::addr_of_mut!(RXQ));
     let next = (q.head + 1) % RX_RING;
     if next == q.tail {
         return; // full: drop
@@ -206,21 +209,19 @@ impl Dev {
 static mut DEV: Dev = Dev::new();
 
 fn dev() -> &'static mut Dev {
-    // SAFETY: the engine's single state object.  Every accessor holds
-    // `RADIO_LOCK`, which serialises the poll task, the transmit path and the
-    // ioctls, so no two callers of `dev()` are live at once (recursive
-    // acquisition by the RX→stack→send path is the same task).
-    unsafe { &mut *core::ptr::addr_of_mut!(DEV) }
+    // The engine's single state object.  Every accessor holds `RADIO_LOCK`,
+    // which serialises the poll task, the transmit path and the ioctls, so no
+    // two callers of `dev()` are live at once (recursive acquisition by the
+    // RX→stack→send path is the same task).
+    ptr::as_mut(core::ptr::addr_of_mut!(DEV))
 }
 
 fn now_us() -> u64 {
-    // SAFETY: a kernel time service with no preconditions.
-    unsafe { crate::ffi::ktime_get_usec() }
+    ktime_get_usec()
 }
 
 fn sleep_us(us: u64) {
-    // SAFETY: a kernel delay service with no preconditions.
-    unsafe { crate::ffi::ktime_busy_wait_us(us) };
+    ktime_busy_wait_us(us);
 }
 
 // ── registration ──────────────────────────────────────────────────────────────
@@ -243,18 +244,18 @@ pub fn register(hw: *mut Cact80211Hw) -> i32 {
     d.hw = hw;
     d.bss_count = 0;
 
-    // SAFETY: `hw` is non-null (checked) and points at the driver's live config.
-    let mac = unsafe { (*hw).mac };
+    // `hw` is non-null (checked) and points at the driver's live config.
+    let mac = ptr::as_ref(hw).mac;
     d.our_mac = mac;
 
     // Bring the control node up first so userspace can see errors through
     // CACT_WLANCTL_STATUS even when the radio init below is incomplete.
     control::register_node();
 
-    // SAFETY: `NETDEV` is the engine's kernel-lifetime NIC descriptor; every
-    // field is initialised above.
+    // `NETDEV` is the engine's kernel-lifetime NIC descriptor; every field is
+    // initialised above.
     let nd = core::ptr::addr_of_mut!(NETDEV);
-    unsafe { (*nd).mac = MacAddr { b: mac } };
+    ptr::as_mut(nd).mac = MacAddr { b: mac };
     // `register_netdev` takes a live `NetDriver`; this runs on the driver's
     // bring-up path.
     register_netdev(nd);
@@ -295,8 +296,8 @@ fn apply_config(d: &mut Dev, assoc: bool) {
         basic_rates: basic,
         erp_flags: erp,
     };
-    // SAFETY: `d.hw` is live while registered.
-    unsafe { hw::radio_config(d.hw, &conf) };
+    // `d.hw` is live while registered.
+    hw::radio_config(d.hw, &conf);
 }
 
 /// Drive the radio for one poll and dispatch everything it delivered.
@@ -304,23 +305,22 @@ fn pump(d: &mut Dev) -> usize {
     if d.hw.is_null() {
         return 0;
     }
-    // SAFETY: `d.hw` is live while registered.
-    unsafe { hw::radio_rx_poll(d.hw) };
+    hw::radio_rx_poll(d.hw);
     drain(d)
 }
 
 fn drain(d: &mut Dev) -> usize {
     let mut n = 0;
     loop {
-        // SAFETY: `RXQ` is the engine's mailbox; the consumer runs here.
-        let q = unsafe { &mut *core::ptr::addr_of_mut!(RXQ) };
+        // `RXQ` is the engine's mailbox; the consumer runs here.
+        let q = ptr::as_mut(core::ptr::addr_of_mut!(RXQ));
         if q.tail == q.head {
             break;
         }
         let idx = q.tail;
         let len = q.len[idx] as usize;
-        // SAFETY: `RXQ.data[idx]` is a live `len`-byte frame in the mailbox.
-        let f = unsafe { core::slice::from_raw_parts(q.data[idx].as_ptr(), len) };
+        // `RXQ.data[idx]` is a live `len`-byte frame in the mailbox.
+        let f = ptr::slice(q.data[idx].as_ptr(), len);
         dispatch(d, f);
         q.tail = (q.tail + 1) % RX_RING;
         n += 1;
@@ -332,8 +332,8 @@ fn hw_tx(d: &mut Dev, frame: &[u8], qid: u8) -> i32 {
     if d.hw.is_null() {
         return ENODEV;
     }
-    // SAFETY: `d.hw` is live while registered.
-    unsafe { hw::radio_tx(d.hw, frame, qid) }
+    // `d.hw` is live while registered.
+    hw::radio_tx(d.hw, frame, qid)
 }
 
 // ── BSS list ──────────────────────────────────────────────────────────────────
@@ -507,8 +507,8 @@ fn rx_data(d: &mut Dev, f: &[u8]) {
         }
         let mut key = [0u8; 16];
         key.copy_from_slice(if key_id != 0 { &d.gtk } else { &d.tk });
-        // SAFETY: `RX_SCRATCH` is the engine's decrypt buffer, used only here.
-        let buf = unsafe { &mut *core::ptr::addr_of_mut!(RX_SCRATCH) };
+        // `RX_SCRATCH` is the engine's decrypt buffer, used only here.
+        let buf = ptr::as_mut(core::ptr::addr_of_mut!(RX_SCRATCH));
         let n = f.len().min(buf.len());
         buf[..n].copy_from_slice(&f[..n]);
         match crate::ccmp::decrypt(&key, buf, n, hdr) {
@@ -547,8 +547,8 @@ fn deliver_ethernet(d: &mut Dev, buf: &[u8], base: usize, plen: usize, da_off: u
         kfree_skb(skb);
         return;
     }
-    // SAFETY: `dst` points at the freshly reserved (14 + payload.len()) bytes.
-    let out = unsafe { core::slice::from_raw_parts_mut(dst, 14 + payload.len()) };
+    // `dst` points at the freshly reserved (14 + payload.len()) bytes.
+    let out = ptr::slice_mut(dst, 14 + payload.len());
     out[..6].copy_from_slice(&buf[da_off..da_off + 6]); // DA
     out[6..12].copy_from_slice(&buf[sa_off..sa_off + 6]); // SA
     out[12] = (ethertype >> 8) as u8;
@@ -568,16 +568,16 @@ extern "C" fn net_send(skb: *mut Skb) -> i32 {
     if skb.is_null() {
         return 0;
     }
-    let (ptr, len) = (skb_data(skb), skb_len(skb) as usize);
+    let (buf, len) = (skb_data(skb), skb_len(skb) as usize);
     let mut rc = 0;
-    if !ptr.is_null() && len >= 14 {
-        // SAFETY: `ptr`/`len` describe the Ethernet frame in the skb.
-        let eth = unsafe { core::slice::from_raw_parts(ptr, len) };
+    if !buf.is_null() && len >= 14 {
+        // `buf`/`len` describe the Ethernet frame in the skb.
+        let eth = ptr::slice(buf, len);
         radio_lock();
         rc = tx_ethernet(dev(), eth);
         radio_unlock();
     }
-    // SAFETY: `skb` came from the stack's pool and is consumed here.
+    // `skb` came from the stack's pool and is consumed here.
     kfree_skb(skb);
     rc
 }

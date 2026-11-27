@@ -10,8 +10,10 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
+use kernel_rust::{devfs, ptr, user};
+
 use crate::dev;
-use crate::ffi::{self, DevfsDriver, DEVFS_F_CHAR};
+use crate::ffi::{DevfsDriver, DEVFS_F_CHAR};
 
 // ── ABI (mirrors the CACT_WLANCTL_* block in ioctl_abi.h) ─────────────────────
 const WLANCTL_SCAN: u32 = 0x3F00;
@@ -110,13 +112,11 @@ fn copy_in<T: Copy>(arg: *mut c_void, out: &mut T) -> bool {
         return false;
     }
     let size = core::mem::size_of::<T>() as u32;
-    // `validate_user_ptr` returns non-zero when the range is a valid user range.
-    // SAFETY: a kernel validation service; it only inspects the pointer.
-    if unsafe { ffi::validate_user_ptr(arg, size) } == 0 {
+    // `validate_user_ptr` is true when the range is a valid user range.
+    if !user::validate_user_ptr(arg, size) {
         return false;
     }
-    // SAFETY: `out` is a live `T` and `arg` was just validated for `size` bytes.
-    unsafe { ffi::copy_from_user(out as *mut T as *mut c_void, arg, size) == 0 }
+    user::copy_from_user(out as *mut T as *mut c_void, arg, size)
 }
 
 fn copy_out<T>(arg: *mut c_void, val: &T) -> bool {
@@ -124,12 +124,10 @@ fn copy_out<T>(arg: *mut c_void, val: &T) -> bool {
         return false;
     }
     let size = core::mem::size_of::<T>() as u32;
-    // SAFETY: a kernel validation service; it only inspects the pointer.
-    if unsafe { ffi::validate_user_ptr(arg, size) } == 0 {
+    if !user::validate_user_ptr(arg, size) {
         return false;
     }
-    // SAFETY: `arg` was just validated for `size` bytes and `val` is a live `T`.
-    unsafe { ffi::copy_to_user(arg, val as *const T as *const c_void, size) == 0 }
+    user::copy_to_user(arg, val as *const T as *const c_void, size)
 }
 
 // ── read(): the AP list as text ───────────────────────────────────────────────
@@ -139,9 +137,9 @@ extern "C" fn wlan_read(_priv: *mut c_void, off: u64, size: u32, buf: *mut c_cha
     if buf.is_null() || size == 0 {
         return 0;
     }
-    // SAFETY: `READ_BUF` is the engine's single read scratch buffer; devfs is
+    // `READ_BUF` is the engine's single read scratch buffer; devfs is
     // single-consumer per device.
-    let text = unsafe { &mut *core::ptr::addr_of_mut!(READ_BUF) };
+    let text = ptr::as_mut(core::ptr::addr_of_mut!(READ_BUF));
     let len = dev::bss_list_text(text);
     if off >= len as u64 {
         return 0;
@@ -149,8 +147,7 @@ extern "C" fn wlan_read(_priv: *mut c_void, off: u64, size: u32, buf: *mut c_cha
     let n = core::cmp::min(len as u64 - off, size as u64) as usize;
     // The devfs read path hands a kernel-accessible buffer, so a direct copy is
     // correct (the retired C driver did the same).
-    // SAFETY: `buf` is a `size`-byte writable buffer and `n <= size`.
-    let dst = unsafe { core::slice::from_raw_parts_mut(buf as *mut u8, n) };
+    let dst = ptr::slice_mut(buf as *mut u8, n);
     dst.copy_from_slice(&text[off as usize..off as usize + n]);
     n as c_int
 }
@@ -358,34 +355,27 @@ static mut DRIVER: DevfsDriver = DevfsDriver {
 static mut NODE_UP: bool = false;
 
 pub fn register_node() {
-    // SAFETY: `NODE_UP` is this engine's one-time flag.
-    if unsafe { NODE_UP } {
+    if ptr::read(core::ptr::addr_of!(NODE_UP)) {
         return;
     }
-    // SAFETY: `DRIVER` is a kernel-lifetime static table; `register_chrdev`
-    // records it.  `wlan0` is registered once per radio.
-    let ok = unsafe {
-        !ffi::register_chrdev(
-            b"wlan0\0".as_ptr() as *const c_char,
-            DEVFS_F_CHAR,
-            core::ptr::addr_of_mut!(DRIVER),
-            core::ptr::null_mut(),
-        )
-        .is_null()
-    };
+    // `DRIVER` is a kernel-lifetime static table; `register_chrdev` records it.
+    // `wlan0` is registered once per radio.
+    let ok = !devfs::register_chrdev(
+        c"wlan0",
+        DEVFS_F_CHAR,
+        core::ptr::addr_of_mut!(DRIVER) as *mut c_void,
+        core::ptr::null_mut(),
+    )
+    .is_null();
     if ok {
-        // SAFETY: publishing the one-time flag.
-        unsafe { NODE_UP = true };
+        ptr::write(core::ptr::addr_of_mut!(NODE_UP), true);
     }
 }
 
 pub fn unregister_node() {
-    // SAFETY: `NODE_UP` is the engine's flag.
-    if !unsafe { NODE_UP } {
+    if !ptr::read(core::ptr::addr_of!(NODE_UP)) {
         return;
     }
-    // SAFETY: `unregister_chrdev` takes a NUL-terminated name.
-    unsafe { ffi::unregister_chrdev(b"wlan0\0".as_ptr() as *const c_char) };
-    // SAFETY: clearing the flag.
-    unsafe { NODE_UP = false };
+    devfs::unregister_chrdev(c"wlan0");
+    ptr::write(core::ptr::addr_of_mut!(NODE_UP), false);
 }

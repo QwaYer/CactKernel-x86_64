@@ -82,6 +82,7 @@ version = "0.1.0"
 dependencies = [
  "cact_net",
  "cact_sync",
+ "kernel_rust",
 ]
 
 [[package]]
@@ -474,6 +475,7 @@ dependencies = [
 name = "kernel_abi"
 version = "0.1.0"
 dependencies = [
+ "cact80211",
  "cact_hv",
  "cact_net",
  "cact_sync",

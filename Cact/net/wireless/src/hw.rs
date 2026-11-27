@@ -12,6 +12,8 @@
 
 use core::ffi::{c_char, c_int, c_void};
 
+use kernel_rust::ptr;
+
 /// TX queue class the engine hands to the radio; the driver maps it to a
 /// bulk-OUT endpoint.  (Not the hardware's queue id — that stays in the driver.)
 pub const Q_MGMT: u8 = 0;
@@ -54,93 +56,81 @@ const _: () = assert!(core::mem::offset_of!(Cact80211Hw, name) == 24);
 
 /// Transmit one raw 802.11 MPDU (no FCS) on the given queue class.
 ///
-/// # Safety
 /// `hw` must be a live `Cact80211Hw` whose `ops` table is valid.
-pub unsafe fn radio_tx(hw: *mut Cact80211Hw, frame: &[u8], qid: u8) -> c_int {
+pub fn radio_tx(hw: *mut Cact80211Hw, frame: &[u8], qid: u8) -> c_int {
     if hw.is_null() {
         return -22;
     }
-    // SAFETY: the caller contract makes `hw` valid for the read.
-    let ops = unsafe { (*hw).ops };
+    let h = ptr::as_ref(hw);
+    let ops = h.ops;
     if ops.is_null() || frame.len() > 2312 {
         return -22;
     }
-    // SAFETY: `ops` was checked non-null; `tx` is an optional function pointer.
-    match unsafe { (*ops).tx } {
-        // SAFETY: the driver's `tx` contract is (priv, buf, len, qid).
-        Some(f) => unsafe { f((*hw).priv_, frame.as_ptr(), frame.len() as c_int, qid) },
+    match ptr::as_ref(ops).tx {
+        Some(f) => f(h.priv_, frame.as_ptr(), frame.len() as c_int, qid),
         None => -22,
     }
 }
 
 /// Program the radio (channel, BSSID/association, basic rates, ERP).
 ///
-/// # Safety
 /// `hw` must be a live `Cact80211Hw` whose `ops` table is valid.
-pub unsafe fn radio_config(hw: *mut Cact80211Hw, conf: &Cact80211Conf) {
+pub fn radio_config(hw: *mut Cact80211Hw, conf: &Cact80211Conf) {
     if hw.is_null() {
         return;
     }
-    // SAFETY: the caller contract makes `hw` valid for the read.
-    let ops = unsafe { (*hw).ops };
+    let h = ptr::as_ref(hw);
+    let ops = h.ops;
     if ops.is_null() {
         return;
     }
-    // SAFETY: `ops` was checked non-null; `config` is an optional pointer.
-    if let Some(f) = unsafe { (*ops).config } {
-        // SAFETY: the driver's `config` contract is (priv, conf).
-        unsafe { f((*hw).priv_, conf) };
+    if let Some(f) = ptr::as_ref(ops).config {
+        f(h.priv_, conf);
     }
 }
 
 /// Drive one receive poll on the radio; the driver calls `cact80211_rx` for
 /// each frame it delivers.  Returns the number of frames (or <= 0).
 ///
-/// # Safety
 /// `hw` must be a live `Cact80211Hw` whose `ops` table is valid.
-pub unsafe fn radio_rx_poll(hw: *mut Cact80211Hw) -> c_int {
+pub fn radio_rx_poll(hw: *mut Cact80211Hw) -> c_int {
     if hw.is_null() {
         return 0;
     }
-    // SAFETY: the caller contract makes `hw` valid for the read.
-    let ops = unsafe { (*hw).ops };
+    let h = ptr::as_ref(hw);
+    let ops = h.ops;
     if ops.is_null() {
         return 0;
     }
-    // SAFETY: `ops` was checked non-null; `rx_poll` is an optional pointer.
-    match unsafe { (*ops).rx_poll } {
-        // SAFETY: the driver's `rx_poll` contract is (priv).
-        Some(f) => unsafe { f((*hw).priv_) },
+    match ptr::as_ref(ops).rx_poll {
+        Some(f) => f(h.priv_),
         None => 0,
     }
 }
 
-// ── Engine entry points (exported to modules through ksym) ────────────────────
+// ── Engine entry points (re-exported to modules through ksym) ─────────────────
 
 /// Register a radio with the engine: brings up `wlan0` (netdev + control node).
 /// Returns 0 on success, a negative errno otherwise.
-#[no_mangle]
-pub extern "C" fn cact80211_register(hw: *mut Cact80211Hw) -> c_int {
+/// `hw` must be a live `Cact80211Hw` supplied by the driver.
+pub fn cact80211_register(hw: *mut Cact80211Hw) -> c_int {
     crate::dev::register(hw)
 }
 
 /// Tear a radio down (netdev + control node + state).
-#[no_mangle]
-pub extern "C" fn cact80211_unregister(hw: *mut Cact80211Hw) {
+/// `hw` must be the pointer previously passed to [`cact80211_register`].
+pub fn cact80211_unregister(hw: *mut Cact80211Hw) {
     crate::dev::unregister(hw);
 }
 
 /// Hand one received 802.11 MPDU to the engine (called by the driver's RX path).
 ///
-/// # Safety
 /// `frame` must point to `len` readable bytes; both live only for the call.
-#[no_mangle]
-pub unsafe extern "C" fn cact80211_rx(hw: *mut Cact80211Hw, frame: *const u8, len: c_int) {
+pub fn cact80211_rx(hw: *mut Cact80211Hw, frame: *const u8, len: c_int) {
     if hw.is_null() || frame.is_null() || len <= 0 || len > 2312 {
         return;
     }
-    // SAFETY: the caller contract makes `frame` a `len`-byte readable buffer.
-    let f = unsafe { core::slice::from_raw_parts(frame, len as usize) };
+    let f = ptr::slice(frame, len as usize);
     crate::dev::rx_frame(hw, f);
 }
 
