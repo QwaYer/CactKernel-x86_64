@@ -12,9 +12,15 @@
 
 use core::ffi::{c_int, c_void};
 
-use cact_drm::kms::mode_object::{Connector, Encoder};
+use cact_drm::event::drm_crtc_handle_vblank as handle_vblank;
+use cact_drm::kms::mode_object::{Connector, Crtc, Encoder};
 use cact_drm::mode::DisplayMode;
 use cact_drm::structs::DrmDevice;
+
+#[no_mangle]
+pub unsafe extern "C" fn drm_crtc_handle_vblank(crtc: *mut c_void) {
+    handle_vblank(crtc as *mut Crtc);
+}
 
 #[no_mangle]
 pub unsafe extern "C" fn drm_mode_crtc_init(dev: *mut DrmDevice, index: c_int, name: *const u8) -> c_int {

@@ -13,6 +13,8 @@
 //! Migrated slice 2: `drm_mode_to_modeinfo`, `drm_modeinfo_to_mode` and
 //! `drm_format_bpp` used to live in `kms/drm_mode_object.c`.
 
+use kernel_rust::ptr;
+
 /// `DRM_MODE_NAME_LEN` (drm_drv.h) — also the uapi's `name[]` length.
 pub const MODE_NAME_LEN: usize = 32;
 
@@ -79,20 +81,19 @@ const _: () = assert!(core::mem::offset_of!(ModeInfo, name) == 36);
 ///
 /// `mode_to_modeinfo` in C: the target is zeroed, the timings copied, and the
 /// name copied up to and including its NUL (so the padding stays zero).
-#[no_mangle]
-pub extern "C" fn drm_mode_to_modeinfo(m: *const DisplayMode, mi: *mut ModeInfo) {
+pub fn drm_mode_to_modeinfo(m: *const DisplayMode, mi: *mut ModeInfo) {
     if m.is_null() || mi.is_null() {
         return;
     }
-    // SAFETY: the caller guarantees `mi` points to a writable uapi struct, so
-    // zeroing one `ModeInfo` is in bounds.
-    unsafe { core::ptr::write_bytes(mi, 0, 1) };
+    // The caller guarantees `mi` points to a writable uapi struct, so zeroing one
+    // `ModeInfo` is in bounds.
+    ptr::write_bytes(mi, 0, 1);
     {
-        // SAFETY: as above, and `m` points to a valid source mode; the borrow is
-        // consumed by the field copies below.
-        let m = unsafe { &*m };
-        // SAFETY: as above — `mi` points to the writable uapi struct.
-        let mi = unsafe { &mut *mi };
+        // as above, and `m` points to a valid source mode; the borrow is consumed
+        // by the field copies below.
+        let m = ptr::as_ref(m);
+        // as above — `mi` points to the writable uapi struct.
+        let mi = ptr::as_mut(mi);
         mi.clock = m.clock;
         mi.hdisplay = m.hdisplay;
         mi.hsync_start = m.hsync_start;
@@ -120,20 +121,19 @@ pub extern "C" fn drm_mode_to_modeinfo(m: *const DisplayMode, mi: *mut ModeInfo)
 }
 
 /// A mode a client hands back through SETCRTC -> the kernel-side form.
-#[no_mangle]
-pub extern "C" fn drm_modeinfo_to_mode(mi: *const ModeInfo, m: *mut DisplayMode) {
+pub fn drm_modeinfo_to_mode(mi: *const ModeInfo, m: *mut DisplayMode) {
     if mi.is_null() || m.is_null() {
         return;
     }
-    // SAFETY: the caller guarantees `m` points to a writable kernel mode, so
-    // zeroing one `DisplayMode` is in bounds.
-    unsafe { core::ptr::write_bytes(m, 0, 1) };
+    // The caller guarantees `m` points to a writable kernel mode, so zeroing one
+    // `DisplayMode` is in bounds.
+    ptr::write_bytes(m, 0, 1);
     {
-        // SAFETY: as above, and `mi` points to a valid uapi mode struct; the borrow
-        // is consumed by the field copies below.
-        let mi = unsafe { &*mi };
-        // SAFETY: as above — `m` points to the writable kernel mode.
-        let m = unsafe { &mut *m };
+        // as above, and `mi` points to a valid uapi mode struct; the borrow is
+        // consumed by the field copies below.
+        let mi = ptr::as_ref(mi);
+        // as above — `m` points to the writable kernel mode.
+        let m = ptr::as_mut(m);
         m.clock = mi.clock;
         m.hdisplay = mi.hdisplay;
         m.hsync_start = mi.hsync_start;
@@ -185,8 +185,7 @@ const RGBA8888: u32 = fourcc(b'R', b'A', b'2', b'4');
 const BGRA8888: u32 = fourcc(b'B', b'A', b'2', b'4');
 
 /// Bits per pixel for the fourcc values this core accepts.  0 = unsupported.
-#[no_mangle]
-pub extern "C" fn drm_format_bpp(fourcc_raw: u32) -> u32 {
+pub fn drm_format_bpp(fourcc_raw: u32) -> u32 {
     match fourcc_raw & !DRM_FORMAT_BIG_ENDIAN {
         C8 => 8,
         RGB565 | BGR565 | RGBA4444 | XRGB1555 => 16,

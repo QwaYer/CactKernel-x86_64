@@ -59,7 +59,7 @@ extern crate alloc;
 
 mod device;
 mod devfs;
-mod event;
+pub mod event;
 mod ffi;
 mod file;
 mod gem;
